@@ -1,10 +1,299 @@
 #include "pixel_world.h"
 
+#include <chrono>
+#include <cmath>
+#include <cstdlib>
+
+#include <godot_cpp/classes/image.hpp>
+#include <godot_cpp/classes/rendering_server.hpp>
 #include <godot_cpp/core/class_db.hpp>
+#include <godot_cpp/variant/utility_functions.hpp>
 
 namespace godot {
 
+namespace {
+
+Color color_from_rgba32(uint32_t p_rgba) {
+	return Color(((p_rgba >> 24) & 0xFF) / 255.0f, ((p_rgba >> 16) & 0xFF) / 255.0f,
+	             ((p_rgba >> 8) & 0xFF) / 255.0f, (p_rgba & 0xFF) / 255.0f);
+}
+
+uint8_t to_byte(float p_value) { return (uint8_t)(CLAMP(p_value, 0.0f, 1.0f) * 255.0f); }
+
+} // namespace
+
 void PixelWorld::_bind_methods() {
+	ClassDB::bind_method(D_METHOD("set_cell", "pos", "material"), &PixelWorld::set_cell);
+	ClassDB::bind_method(D_METHOD("get_material_at", "pos"), &PixelWorld::get_material_at);
+	ClassDB::bind_method(D_METHOD("fill_rect", "rect", "material"), &PixelWorld::fill_rect);
+	ClassDB::bind_method(D_METHOD("fill_circle", "center", "radius", "material"), &PixelWorld::fill_circle);
+	ClassDB::bind_method(D_METHOD("step", "ticks"), &PixelWorld::step);
+	ClassDB::bind_method(D_METHOD("is_chunk_loaded", "chunk"), &PixelWorld::is_chunk_loaded);
+	ClassDB::bind_method(D_METHOD("get_stats"), &PixelWorld::get_stats);
+
+	ClassDB::bind_method(D_METHOD("set_material_set", "value"), &PixelWorld::set_material_set);
+	ClassDB::bind_method(D_METHOD("get_material_set"), &PixelWorld::get_material_set);
+	ClassDB::bind_method(D_METHOD("set_world_seed", "value"), &PixelWorld::set_world_seed);
+	ClassDB::bind_method(D_METHOD("get_world_seed"), &PixelWorld::get_world_seed);
+	ClassDB::bind_method(D_METHOD("set_worker_threads", "value"), &PixelWorld::set_worker_threads);
+	ClassDB::bind_method(D_METHOD("get_worker_threads"), &PixelWorld::get_worker_threads);
+	ClassDB::bind_method(D_METHOD("set_follow_target", "value"), &PixelWorld::set_follow_target);
+	ClassDB::bind_method(D_METHOD("get_follow_target"), &PixelWorld::get_follow_target);
+	ClassDB::bind_method(D_METHOD("set_load_radius", "value"), &PixelWorld::set_load_radius);
+	ClassDB::bind_method(D_METHOD("get_load_radius"), &PixelWorld::get_load_radius);
+	ClassDB::bind_method(D_METHOD("set_arena", "value"), &PixelWorld::set_arena);
+	ClassDB::bind_method(D_METHOD("get_arena"), &PixelWorld::get_arena);
+	ClassDB::bind_method(D_METHOD("set_simulating", "value"), &PixelWorld::set_simulating);
+	ClassDB::bind_method(D_METHOD("get_simulating"), &PixelWorld::get_simulating);
+
+	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "material_set", PROPERTY_HINT_RESOURCE_TYPE, "PixelMaterialSet"), "set_material_set", "get_material_set");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "world_seed"), "set_world_seed", "get_world_seed");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "worker_threads"), "set_worker_threads", "get_worker_threads");
+	ADD_PROPERTY(PropertyInfo(Variant::NODE_PATH, "follow_target"), "set_follow_target", "get_follow_target");
+	ADD_PROPERTY(PropertyInfo(Variant::VECTOR2I, "load_radius"), "set_load_radius", "get_load_radius");
+	ADD_PROPERTY(PropertyInfo(Variant::RECT2I, "arena"), "set_arena", "get_arena");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "simulating"), "set_simulating", "get_simulating");
+}
+
+void PixelWorld::_ready() {
+	if (grid) return;  // _ready runs again if the node re-enters the tree
+
+	if (!material_set.is_valid()) {
+		UtilityFunctions::push_error("PixelWorld: material_set is not set; the world is disabled");
+		return;
+	}
+	String error;
+	if (!material_set->build_table(table, error)) {
+		UtilityFunctions::push_error("PixelWorld: material set does not compile: " + error);
+		return;
+	}
+	const MatId rock = table.id_of("rock");
+	if (rock == NO_MAT) {
+		UtilityFunctions::push_error("PixelWorld: material set has no 'rock' material for the arena border");
+		return;
+	}
+
+	palette.resize(table.size());
+	for (size_t i = 0; i < table.size(); ++i) {
+		const CompiledMaterial &material = table.get((MatId)i);
+		palette[i].color = color_from_rgba32(material.color_rgba);
+		palette[i].shade_amount = material.shade_amount;
+	}
+
+	// The pool must outlive the simulator, which is why the node owns both.
+	pool = std::make_unique<JobPool>(worker_threads == -1 ? JobPool::default_workers() : worker_threads);
+	grid = std::make_unique<WorldGrid>(table, (uint32_t)world_seed);
+	sim = std::make_unique<Simulator>(*grid, pool.get());
+	generator = std::make_unique<BoxGenerator>(arena.position.x, arena.position.y,
+	                                           arena.position.x + arena.size.x,
+	                                           arena.position.y + arena.size.y, rock, table);
+
+	pixels.resize(CHUNK * CHUNK * 4);
+	upload_image = Image::create_from_data(CHUNK, CHUNK, false, Image::FORMAT_RGBA8, pixels);
+
+	stream_chunks();
+}
+
+void PixelWorld::_process(double) {
+	if (!grid) return;
+	stream_chunks();
+	upload_dirty_chunks();
+}
+
+void PixelWorld::_physics_process(double) {
+	if (simulating && sim) sim->tick();
+}
+
+void PixelWorld::_notification(int p_what) {
+	if (p_what != NOTIFICATION_PREDELETE) return;
+	RenderingServer *rs = RenderingServer::get_singleton();
+	if (!rs) return;
+	for (const auto &kv : views) {
+		if (kv.second.texture.is_valid()) rs->free_rid(kv.second.texture);
+		if (kv.second.canvas_item.is_valid()) rs->free_rid(kv.second.canvas_item);
+	}
+	views.clear();
+}
+
+MatId PixelWorld::material_id(const StringName &p_material) const {
+	const MatId id = table.id_of(String(p_material).utf8().get_data());
+	if (id == NO_MAT) {
+		UtilityFunctions::push_error("PixelWorld: unknown material '" + String(p_material) + "'");
+	}
+	return id;
+}
+
+Vector2i PixelWorld::target_cell() const {
+	if (!follow_target.is_empty()) {
+		const Node2D *target = Object::cast_to<Node2D>(get_node_or_null(follow_target));
+		if (target) {
+			const Vector2 pos = target->get_global_position();
+			return Vector2i((int)std::floor(pos.x), (int)std::floor(pos.y));
+		}
+	}
+	return Vector2i(0, 0);
+}
+
+void PixelWorld::stream_chunks() {
+	const Vector2i cell = target_cell();
+	const ChunkCoord centre = chunk_of(cell.x, cell.y);
+
+	for (int dy = -load_radius.y; dy <= load_radius.y; ++dy)
+		for (int dx = -load_radius.x; dx <= load_radius.x; ++dx) {
+			const ChunkCoord coord{centre.x + dx, centre.y + dy};
+			if (grid->find(coord)) continue;
+			grid->load(coord, *generator);
+			loaded.push_back(coord);
+		}
+
+	// Unload what the target has moved away from; the data and its canvas item go with it.
+	for (size_t i = 0; i < loaded.size();) {
+		const ChunkCoord coord = loaded[i];
+		if (std::abs(coord.x - centre.x) <= load_radius.x && std::abs(coord.y - centre.y) <= load_radius.y) {
+			++i;
+			continue;
+		}
+		grid->unload(coord);
+		drop_view(coord);
+		loaded[i] = loaded.back();
+		loaded.pop_back();
+	}
+}
+
+void PixelWorld::upload_dirty_chunks() {
+	RenderingServer *rs = RenderingServer::get_singleton();
+	const auto start = std::chrono::steady_clock::now();
+
+	grid->for_each_chunk([&](Chunk &chunk) {
+		if (!chunk.render_dirty.exchange(false)) return;
+		write_chunk_image(chunk, pixels.ptrw());
+		upload_image->set_data(CHUNK, CHUNK, false, Image::FORMAT_RGBA8, pixels);
+
+		ChunkView &view = view_for(chunk.coord);
+		if (view.has_texture) {
+			rs->texture_2d_update(view.texture, upload_image, 0);
+		} else {
+			view.texture = rs->texture_2d_create(upload_image);
+			const Vector2 origin((float)(chunk.coord.x * CHUNK), (float)(chunk.coord.y * CHUNK));
+			rs->canvas_item_add_texture_rect(view.canvas_item, Rect2(origin, Vector2(CHUNK, CHUNK)), view.texture);
+			view.has_texture = true;
+		}
+	});
+
+	const auto elapsed = std::chrono::steady_clock::now() - start;
+	upload_ms = (double)std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count() / 1000.0;
+}
+
+void PixelWorld::write_chunk_image(const Chunk &chunk, uint8_t *out) const {
+	for (int ly = 0; ly < CHUNK; ++ly)
+		for (int lx = 0; lx < CHUNK; ++lx) {
+			const Cell &cell = chunk.cells[(size_t)ly * CHUNK + lx];
+			uint8_t *px = out + ((size_t)ly * CHUNK + lx) * 4;
+			if (cell.mat == MAT_AIR) {
+				px[0] = px[1] = px[2] = px[3] = 0;
+				continue;
+			}
+			const PaletteEntry &entry = palette[cell.mat];
+			const float scale = 1.0f + entry.shade_amount * ((float)cell.shade / 255.0f - 0.5f);
+			float r = entry.color.r * scale, g = entry.color.g * scale, b = entry.color.b * scale;
+			if (cell.flags & FLAG_BURNING) {  // half-way towards a glowing orange
+				r = Math::lerp(r, 1.0f, 0.5f);
+				g = Math::lerp(g, 0.5f, 0.5f);
+				b = Math::lerp(b, 0.1f, 0.5f);
+			}
+			px[0] = to_byte(r);
+			px[1] = to_byte(g);
+			px[2] = to_byte(b);
+			px[3] = to_byte(entry.color.a);
+		}
+}
+
+PixelWorld::ChunkView &PixelWorld::view_for(ChunkCoord coord) {
+	auto it = views.find(chunk_key(coord));
+	if (it != views.end()) return it->second;
+
+	RenderingServer *rs = RenderingServer::get_singleton();
+	ChunkView view;
+	view.canvas_item = rs->canvas_item_create();
+	rs->canvas_item_set_parent(view.canvas_item, get_canvas_item());
+	return views.emplace(chunk_key(coord), view).first->second;
+}
+
+void PixelWorld::drop_view(ChunkCoord coord) {
+	auto it = views.find(chunk_key(coord));
+	if (it == views.end()) return;
+	RenderingServer *rs = RenderingServer::get_singleton();
+	if (it->second.texture.is_valid()) rs->free_rid(it->second.texture);
+	if (it->second.canvas_item.is_valid()) rs->free_rid(it->second.canvas_item);
+	views.erase(it);
+}
+
+bool PixelWorld::set_cell(const Vector2i &p_pos, const StringName &p_material) {
+	if (!grid) return false;
+	const MatId id = material_id(p_material);
+	if (id == NO_MAT) return false;
+	return grid->set(p_pos.x, p_pos.y, id);
+}
+
+StringName PixelWorld::get_material_at(const Vector2i &p_pos) const {
+	if (!grid) return StringName();
+	Cell cell{};
+	if (!grid->get(p_pos.x, p_pos.y, cell)) return StringName();
+	return StringName(table.name_of(cell.mat).c_str());
+}
+
+int PixelWorld::fill_rect(const Rect2i &p_rect, const StringName &p_material) {
+	if (!grid) return 0;
+	const MatId id = material_id(p_material);
+	if (id == NO_MAT) return 0;
+
+	int written = 0;
+	for (int y = p_rect.position.y; y < p_rect.position.y + p_rect.size.y; ++y)
+		for (int x = p_rect.position.x; x < p_rect.position.x + p_rect.size.x; ++x)
+			if (grid->set(x, y, id)) ++written;
+	return written;
+}
+
+int PixelWorld::fill_circle(const Vector2i &p_center, int p_radius, const StringName &p_material) {
+	if (!grid) return 0;
+	const MatId id = material_id(p_material);
+	if (id == NO_MAT) return 0;
+
+	int written = 0;
+	const int radius_squared = p_radius * p_radius;
+	for (int dy = -p_radius; dy <= p_radius; ++dy)
+		for (int dx = -p_radius; dx <= p_radius; ++dx)
+			if (dx * dx + dy * dy <= radius_squared && grid->set(p_center.x + dx, p_center.y + dy, id)) ++written;
+	return written;
+}
+
+void PixelWorld::step(int p_ticks) {
+	if (!sim) return;
+	for (int i = 0; i < p_ticks; ++i) sim->tick();
+}
+
+bool PixelWorld::is_chunk_loaded(const Vector2i &p_chunk) const {
+	if (!grid) return false;
+	return grid->find({p_chunk.x, p_chunk.y}) != nullptr;
+}
+
+Dictionary PixelWorld::get_stats() const {
+	Dictionary stats;
+	if (sim) {
+		const SimStats &last = sim->last_stats();
+		stats["sim_ms"] = last.sim_ms;
+		stats["chunks_simulated"] = last.chunks_simulated;
+		stats["cells_updated"] = last.cells_updated;
+		stats["tick"] = (int64_t)sim->tick_count();
+	} else {
+		stats["sim_ms"] = 0.0;
+		stats["chunks_simulated"] = 0;
+		stats["cells_updated"] = 0;
+		stats["tick"] = (int64_t)0;
+	}
+	stats["upload_ms"] = upload_ms;
+	stats["chunks_loaded"] = (int64_t)loaded.size();
+	return stats;
 }
 
 } // namespace godot
