@@ -32,7 +32,7 @@ just fails to load.
 scons tests && build/tests/run_tests
 ```
 
-Expected tail: `test cases: 40 | 40 passed | 0 failed`, then `Status: SUCCESS!`.
+Expected tail: `test cases: 41 | 41 passed | 0 failed`, then `Status: SUCCESS!`.
 
 ## 4. Godot-side tests
 
