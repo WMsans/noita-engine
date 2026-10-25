@@ -1,5 +1,6 @@
 #pragma once
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "chunk.h"
@@ -47,7 +48,9 @@ inline MaterialTable movement_table() {
 // 120 tick lifetime, lava is a fixed 1200 degree source, wood ignites at 300 and burns for
 // 60 ticks at 600, fire is a fixed 600 degree gas that dies after 20 ticks, and the two
 // reactions are water + lava -> steam + rock (certain) and acid + rock -> air + air (5%).
-inline MaterialTable make_chem_table() {
+// fire_first puts fire at id 1 instead of 6 in a table of the same size, which is what the
+// fire-id cache test recompiles into an existing table object.
+inline MaterialTable make_chem_table(bool fire_first = false) {
 	std::vector<MaterialDef> defs(7);
 	defs[0].name = "water";
 	defs[0].cls = MatClass::Liquid;
@@ -90,6 +93,8 @@ inline MaterialTable make_chem_table() {
 	defs[6].name = "acid";
 	defs[6].cls = MatClass::Liquid;
 	defs[6].density = 1.1f;
+
+	if (fire_first) std::swap(defs[0], defs[5]);
 
 	ReactionDef water_lava;
 	water_lava.a = "water";

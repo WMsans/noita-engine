@@ -17,6 +17,27 @@ void open_arena(WorldGrid& grid, const MaterialTable& table) {
 	simtest::load_arena(grid, table, 0, 0, ARENA, ARENA, table.id_of("rock"));
 }
 
+// A wood cell in a sealed rock pocket with one air neighbour above it, lit by starting it
+// at 500 degrees (over its 300 ignite temperature): it burns for 60 ticks and only that air
+// cell can receive the fire it spreads. A burning cell marks itself, so the pocket stays
+// awake for the whole burn. Returns the tick a fire cell was first seen on, or -1 when the
+// wood never produced fire.
+int ticks_to_fire(const MaterialTable& table) {
+	const MatId wood = table.id_of("wood"), fire = table.id_of("fire");
+	WorldGrid grid(table, 5);
+	open_arena(grid, table);
+	simtest::paint(grid, {{40, 90, 60, 110, table.id_of("rock")},
+	                      {50, 99, 51, 100, MAT_AIR},
+	                      {50, 100, 51, 101, wood}});
+	simtest::set_temp(grid, 50, 100, 500);
+	Simulator sim(grid);
+	for (int t = 1; t <= 200; ++t) {
+		sim.tick();
+		if (simtest::count_mat(grid, fire) > 0) return t;
+	}
+	return -1;
+}
+
 }  // namespace
 
 TEST_CASE("water touching lava becomes steam and rock") {
@@ -44,10 +65,11 @@ TEST_CASE("water touching lava becomes steam and rock") {
 	Cell s{};
 	REQUIRE(grid.get(50, 62, s));
 	// The reaction spawns the steam with its material defaults (base_temp 110, lifetime 120)
-	// and does not stamp it, so the same tick still reaches the new steam cell and runs its
-	// lifetime countdown once.
+	// and stamps it as updated for this tick, so the scan does not visit it a second time
+	// (no chemistry pass, no lifetime decrement) whether or not its row is reached later:
+	// the tick is order-independent, and both cells of the pair may react in the same tick.
 	CHECK(s.temp >= 90);  // still above steam's 90 degree condensation point
-	CHECK(s.life == 119);
+	CHECK(s.life == 120);
 }
 
 TEST_CASE("acid eats rock over time") {
@@ -122,7 +144,12 @@ TEST_CASE("fire spreads along wood") {
 	open_arena(grid, table);
 	// A 20-cell wood beam in open air with three trapped fire cells around its near end:
 	// left, above and below the first wood cell, walled in by rock so they cannot drift off
-	// before their 20 ticks of lifetime are up.
+	// before their 20 ticks of lifetime are up. The brief says "fire at one end"; a single fire
+	// cell was measured with this fixture and does not reach the bound: the first wood cell then
+	// draws 18 degrees from the fire on one tick in four and loses 12 to each ambient rock draw,
+	// peaks at 256 degrees (its ignite temperature is 300) and burns 0 of 20 cells in 600 ticks.
+	// Three fires make 3 of the 4 draws land on a fixed_temp 600 degree source, which is what the
+	// chain in this data set needs.
 	constexpr int BEAM_X0 = 41, BEAM_X1 = 61, BEAM_Y = 100;
 	simtest::paint(grid, {{39, 99, 40, 102, rock},
 	                      {40, 98, 41, 100, rock},
@@ -137,10 +164,10 @@ TEST_CASE("fire spreads along wood") {
 	                      {41, 101, 42, 102, fire}});
 
 	// The beam starts warm. Measured with this exact fixture: a cold 20 degree beam burns 0
-	// cells in 600 ticks (the end cell needs ~13 heat hits at 600 degrees and the three fire
-	// cells die of old age after 20 ticks), 100 degrees also burns 0, 150 degrees reaches 10
-	// burnt cells at tick 204. At 250 degrees it takes 3 hits per cell, so the chain reaches 10
-	// cells by tick 84 (and all 20 by tick 600) with enough margin for the 600 tick budget.
+	// cells in 600 ticks (the end cell needs ~13 heat hits at 600 degrees and the fire cells
+	// die of old age after 20 ticks), 100 degrees also burns 0, 150 degrees reaches 10 burnt
+	// cells at tick 204. At 250 degrees it takes 3 hits per cell, so the chain reaches 10 cells
+	// by tick 84 (and all 20 by tick 600) with enough margin for the 600 tick budget.
 	for (int x = BEAM_X0; x < BEAM_X1; ++x) simtest::set_temp(grid, x, BEAM_Y, 250);
 	REQUIRE(simtest::count_mat(grid, wood) == 20);
 
@@ -228,4 +255,20 @@ TEST_CASE("lava pool stays hot") {
 		CHECK(c.mat == lava);
 		CHECK(c.temp == 1200);  // fixed_temp: the rock around it heats up, the lava does not cool
 	}
+}
+
+TEST_CASE("the fire id is not cached across a recompiled table") {
+	// Burning wood resolves the id of "fire" once per table. Callers reuse one MaterialTable
+	// object (compile leaves it untouched on failure, so a table can be replaced in place),
+	// and a fresh table can reuse a freed table's address, so the cache must re-validate the
+	// id instead of trusting the address: this table keeps its size but fire moves from id 6
+	// to id 1, and water takes id 6.
+	MaterialTable table = simtest::make_chem_table();
+	REQUIRE(table.id_of("fire") == 6);
+	CHECK(ticks_to_fire(table) > 0);  // warms the fire-id cache for this table object
+
+	table = simtest::make_chem_table(true);
+	REQUIRE(table.id_of("fire") == 1);
+	REQUIRE(table.id_of("water") == 6);  // the old fire id now names water
+	CHECK(ticks_to_fire(table) > 0);
 }

@@ -153,20 +153,20 @@ struct Chem {
 };
 
 // The id of the "fire" material, resolved once per table: id_of() scans names, which must
-// not run per cell per tick. The table is immutable while it is being simulated and every
-// thread resolves the same name to the same id, so the cache cannot change results.
-// shortcut: keyed on the table's address, so recompiling a table in place while it is being
-// simulated would keep the old fire id; compile before building the world.
+// not run per cell per tick. A table's address alone is not a safe key: the same address
+// can hold a different table later (callers recompile into a reused MaterialTable object,
+// and a fresh table can reuse a freed table's address), so a hit is only trusted while the
+// cached id still names fire, and the name is resolved again when it does not. Every thread
+// resolves the same name to the same id, so the cache cannot change results.
 MatId fire_id(const MaterialTable& mt) {
 	struct Entry {
 		const MaterialTable* table;
+		std::size_t size;
 		MatId fire;
 	};
-	thread_local Entry cache{nullptr, NO_MAT};
-	if (cache.table != &mt) {
-		cache.table = &mt;
-		cache.fire = mt.id_of("fire");
-	}
+	thread_local Entry cache{nullptr, 0, NO_MAT};
+	if (cache.table != &mt || cache.size != mt.size() || mt.name_of(cache.fire) != "fire")
+		cache = Entry{&mt, mt.size(), mt.id_of("fire")};
 	return cache.fire;
 }
 
@@ -190,6 +190,10 @@ void react(Chem& c) {
 		const MatId self_into = r->a_into, other_into = r->b_into;
 		c.self = spawn_cell(self_into, c.mt, c.seed, c.wx, c.wy);
 		*n = spawn_cell(other_into, c.mt, c.seed, c.wx + NDX[i], c.wy + NDY[i]);
+		// The product spawned into the neighbour is stamped: if the scan reaches its row or
+		// chunk later this tick it must not run chemistry (or count its lifetime) a second
+		// time, so the result does not depend on scan or chunk order.
+		n->stamp = (uint8_t)c.tick;
 		c.nb.mark(c.lx, c.ly);
 		c.nb.mark(nx, ny);
 		return;
@@ -267,6 +271,7 @@ void burn(Chem& c) {
 		Cell* n = c.nb.cell(nx, ny);
 		if (n && c.mt.get(n->mat).cls == MatClass::Empty) {
 			*n = spawn_cell(fire, c.mt, c.seed, c.wx + NDX[i], c.wy + NDY[i]);
+			n->stamp = (uint8_t)c.tick;  // as in react: a neighbour spawned this tick is done
 			c.nb.mark(nx, ny);
 		}
 	}
