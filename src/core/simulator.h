@@ -3,7 +3,7 @@
 
 #include "world_grid.h"
 
-class JobPool;  // Task 6; this build always runs single-threaded
+class JobPool;
 
 struct SimStats {
 	int chunks_simulated = 0;
@@ -22,7 +22,7 @@ public:
 
 private:
 	WorldGrid& grid;
-	JobPool* pool;  // the parallel tick lands in Task 6
+	JobPool* pool;  // null runs the single-threaded tick; see tick() for the phased one
 	uint32_t tick_ = 0;
 	SimStats stats_{};
 };

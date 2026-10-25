@@ -31,6 +31,11 @@ tests_env.Append(
     CXXFLAGS=["-O2", "-g", "-pthread", "-std=c++17"],
     LINKFLAGS=["-pthread"],
 )
+# scons tests tsan=yes — ThreadSanitizer for the test binary only; the extension build and
+# its env are untouched, so a shipped library never carries the sanitizer runtime. -g above
+# keeps the reports pointing at source lines.
+if ARGUMENTS.get("tsan") == "yes":
+    tests_env.Append(CXXFLAGS=["-fsanitize=thread"], LINKFLAGS=["-fsanitize=thread"])
 tests = tests_env.Program(
     "build/tests/run_tests",
     source=Glob("src/core/*.cpp") + Glob("tests/core/*.cpp"),

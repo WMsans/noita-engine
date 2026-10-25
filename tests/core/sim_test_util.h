@@ -48,10 +48,12 @@ inline MaterialTable movement_table() {
 // 120 tick lifetime, lava is a fixed 1200 degree source, wood ignites at 300 and burns for
 // 60 ticks at 600, fire is a fixed 600 degree gas that dies after 20 ticks, and the two
 // reactions are water + lava -> steam + rock (certain) and acid + rock -> air + air (5%).
+// sand and oil are in here for the parallel determinism test, which needs the brief's five
+// materials in one table; they have no chemistry and the same densities as movement_table.
 // fire_first puts fire at id 1 instead of 6 in a table of the same size, which is what the
 // fire-id cache test recompiles into an existing table object.
 inline MaterialTable make_chem_table(bool fire_first = false) {
-	std::vector<MaterialDef> defs(7);
+	std::vector<MaterialDef> defs(9);
 	defs[0].name = "water";
 	defs[0].cls = MatClass::Liquid;
 	defs[0].density = 1.0f;
@@ -93,6 +95,13 @@ inline MaterialTable make_chem_table(bool fire_first = false) {
 	defs[6].name = "acid";
 	defs[6].cls = MatClass::Liquid;
 	defs[6].density = 1.1f;
+	defs[7].name = "sand";
+	defs[7].cls = MatClass::Powder;
+	defs[7].density = 1.6f;
+	defs[8].name = "oil";
+	defs[8].cls = MatClass::Liquid;
+	defs[8].density = 0.8f;
+	defs[8].dispersion = 4;
 
 	if (fire_first) std::swap(defs[0], defs[5]);
 
