@@ -2,6 +2,7 @@
 #include <array>
 #include <atomic>
 #include <cassert>
+#include <cstddef>
 
 #include "cell.h"
 #include "coords.h"
