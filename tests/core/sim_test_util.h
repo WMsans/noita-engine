@@ -43,6 +43,73 @@ inline MaterialTable movement_table() {
 	return table;
 }
 
+// Chemistry set: water boils to steam at 100, steam returns to water at 90 or after its
+// 120 tick lifetime, lava is a fixed 1200 degree source, wood ignites at 300 and burns for
+// 60 ticks at 600, fire is a fixed 600 degree gas that dies after 20 ticks, and the two
+// reactions are water + lava -> steam + rock (certain) and acid + rock -> air + air (5%).
+inline MaterialTable make_chem_table() {
+	std::vector<MaterialDef> defs(7);
+	defs[0].name = "water";
+	defs[0].cls = MatClass::Liquid;
+	defs[0].density = 1.0f;
+	defs[0].conductivity = 0.6f;
+	defs[0].high_temp = 100;
+	defs[0].high_into = "steam";
+	defs[1].name = "steam";
+	defs[1].cls = MatClass::Gas;
+	defs[1].density = 0.3f;
+	defs[1].base_temp = 110;
+	defs[1].lifetime = 120;
+	defs[1].decays_into = "water";
+	defs[1].low_temp = 90;
+	defs[1].low_into = "water";
+	defs[2].name = "lava";
+	defs[2].cls = MatClass::Liquid;
+	defs[2].density = 2.5f;
+	defs[2].fixed_temp = true;
+	defs[2].base_temp = 1200;
+	defs[2].conductivity = 0.5f;
+	defs[3].name = "rock";
+	defs[3].cls = MatClass::Solid;
+	defs[3].density = 3.0f;
+	defs[3].collision_solid = true;
+	defs[4].name = "wood";
+	defs[4].cls = MatClass::Solid;
+	defs[4].density = 0.5f;
+	defs[4].ignite_temp = 300;
+	defs[4].burn_life = 60;
+	defs[4].burn_heat = 600;
+	// burns_into left empty: burnt wood leaves air.
+	defs[5].name = "fire";
+	defs[5].cls = MatClass::Gas;
+	defs[5].density = 0.2f;
+	defs[5].lifetime = 20;
+	defs[5].fixed_temp = true;
+	defs[5].base_temp = 600;
+	defs[5].conductivity = 0.8f;
+	defs[6].name = "acid";
+	defs[6].cls = MatClass::Liquid;
+	defs[6].density = 1.1f;
+
+	ReactionDef water_lava;
+	water_lava.a = "water";
+	water_lava.b = "lava";
+	water_lava.a_into = "steam";
+	water_lava.b_into = "rock";
+	water_lava.probability = 1.0f;
+	ReactionDef acid_rock;
+	acid_rock.a = "acid";
+	acid_rock.b = "rock";
+	acid_rock.a_into = "air";
+	acid_rock.b_into = "air";
+	acid_rock.probability = 0.05f;
+
+	MaterialTable table;
+	std::string error;
+	REQUIRE(MaterialTable::compile(defs, {water_lava, acid_rock}, table, error));
+	return table;
+}
+
 // Half-open world rect [x0,x1) x [y0,y1) painted with one material.
 struct Rect {
 	int x0, y0, x1, y1;
@@ -105,6 +172,14 @@ inline MatPos locate(WorldGrid& grid, MatId mat) {
 				}
 	});
 	return out;
+}
+
+// Writes one cell's temperature. Paint the cell first: `set` is what wakes the world, this
+// helper only overwrites the value the paint left behind.
+inline void set_temp(WorldGrid& grid, int wx, int wy, int16_t temp) {
+	Chunk* chunk = grid.find(chunk_of(wx, wy));
+	REQUIRE(chunk != nullptr);
+	chunk->at(floor_mod(wx, CHUNK), floor_mod(wy, CHUNK)).temp = temp;
 }
 
 inline void tick_n(Simulator& sim, int n) {
