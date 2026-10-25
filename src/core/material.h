@@ -80,7 +80,9 @@ struct Reaction {
 class MaterialTable {
 public:
 	// Air (id 0, Empty, density 0) is implicit; defs get ids 1..n in order.
-	// Returns false and fills `error` on an unknown *_into name or a duplicate pair.
+	// Returns false and fills `error` on an unknown *_into name or a duplicate pair; on false
+	// `out` is left unchanged (a previous successful table stays usable, and a fresh one is
+	// never half-built) — `out` holds a usable table only when this returns true.
 	static bool compile(const std::vector<MaterialDef>& defs,
 	                    const std::vector<ReactionDef>& reactions, MaterialTable& out,
 	                    std::string& error);

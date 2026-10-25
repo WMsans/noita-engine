@@ -128,8 +128,7 @@ TEST_CASE("reaction lookup is symmetric with oriented outputs") {
 	CHECK(table.reaction(1, 1) == nullptr);
 }
 
-TEST_CASE("duplicate reaction pair is an error") {
-	std::vector<MaterialDef> defs{make_def("water", MatClass::Liquid),
+TEST_CASE("duplicate reaction pair is an error") {	std::vector<MaterialDef> defs{make_def("water", MatClass::Liquid),
 	                              make_def("lava", MatClass::Liquid)};
 	ReactionDef first;
 	first.a = "water";
@@ -146,4 +145,37 @@ TEST_CASE("duplicate reaction pair is an error") {
 	CHECK_FALSE(MaterialTable::compile(defs, {first, dup}, table, error));
 	CHECK(has(error, "water"));
 	CHECK(has(error, "lava"));
+}
+
+TEST_CASE("failed compile leaves the previous table intact") {
+	std::vector<MaterialDef> defs{make_def("water", MatClass::Liquid),
+	                              make_def("lava", MatClass::Liquid),
+	                              make_def("steam", MatClass::Gas),
+	                              make_def("rock", MatClass::Solid)};
+	ReactionDef r;
+	r.a = "water";
+	r.b = "lava";
+	r.a_into = "steam";
+	r.b_into = "rock";
+	r.probability = 1.0f;
+
+	MaterialTable table;
+	std::string error;
+	REQUIRE(MaterialTable::compile(defs, {r}, table, error));
+
+	MaterialDef wood = make_def("wood", MatClass::Solid);
+	wood.burns_into = "ash";  // no ash defined: this compile fails
+	CHECK_FALSE(MaterialTable::compile({wood}, {}, table, error));
+	CHECK(has(error, "ash"));
+
+	// the previous table must still be the good one
+	CHECK(table.size() == 5);
+	CHECK(table.id_of("water") == 1);
+	const Reaction* fwd = table.reaction(1, 2);  // water, lava
+	REQUIRE(fwd != nullptr);
+	CHECK(fwd->a_into == 3);  // water -> steam
+	CHECK(fwd->b_into == 4);  // lava -> rock
+
+	// a table that never compiled is never usable
+	CHECK(MaterialTable{}.reaction(0, 0) == nullptr);
 }
