@@ -168,6 +168,88 @@ TEST_CASE("Neighborhood returns nullptr for missing chunks") {
 	CHECK(nb.cell(63, 63) != nullptr);  // last cell of the loaded chunk
 }
 
+// mark/cell must use the same local->chunk mapping: floor_div(l, CHUNK) + 1 for the
+// window slot, floor_mod for the index. mark(-1,y) and mark(64,y) sit one past the
+// centre chunk, so the old `+ ox` term put the mark in the wrong chunk (or dropped it).
+TEST_CASE("Neighborhood::mark maps locals onto the owning chunk") {
+	MaterialTable table = make_table();
+	BoxGenerator gen = open_air(table);
+	WorldGrid grid(table, 11);
+	Chunk* left = grid.load({-1, 0}, gen);
+	Chunk* centre = grid.load({0, 0}, gen);
+	Chunk* right = grid.load({1, 0}, gen);
+	REQUIRE(left != nullptr);
+	REQUIRE(centre != nullptr);
+	REQUIRE(right != nullptr);
+
+	Neighborhood nb;
+	nb.build(grid, {0, 0});
+
+	// local -1 = world -1 = chunk (-1,0) local 63; its world 3x3 is world -2..0.
+	left->next.reset();
+	centre->next.reset();
+	right->next.reset();
+	nb.mark(-1, 5);
+	CHECK(left->next.x0 == 62);
+	CHECK(left->next.x1 == 63);
+	CHECK(left->next.y0 == 4);
+	CHECK(left->next.y1 == 6);
+	CHECK(centre->next.x0 == 0);
+	CHECK(centre->next.x1 == 0);
+	CHECK(centre->next.y0 == 4);
+	CHECK(centre->next.y1 == 6);
+	CHECK(right->next.empty());
+	CHECK(left->render_dirty.load());
+
+	// local 64 = world 64 = chunk (1,0) local 0; its world 3x3 is world 63..65.
+	left->next.reset();
+	centre->next.reset();
+	right->next.reset();
+	nb.mark(64, 5);
+	CHECK(right->next.x0 == 0);
+	CHECK(right->next.x1 == 1);
+	CHECK(right->next.y0 == 4);
+	CHECK(right->next.y1 == 6);
+	CHECK(centre->next.x0 == 63);
+	CHECK(centre->next.x1 == 63);
+	CHECK(centre->next.y0 == 4);
+	CHECK(centre->next.y1 == 6);
+	CHECK(left->next.empty());
+
+	// One past the window: guard must reject it instead of indexing c[3][1].
+	left->next.reset();
+	centre->next.reset();
+	right->next.reset();
+	nb.mark(128, 5);
+	nb.mark(5, 128);
+	nb.mark(-65, 5);
+	CHECK(left->next.empty());
+	CHECK(centre->next.empty());
+	CHECK(right->next.empty());
+}
+
+// Pins the mapping the brief spells out, next to the reported mark bug.
+TEST_CASE("Neighborhood::cell maps locals onto the owning chunk") {
+	MaterialTable table = make_table();
+	const MatId sand = table.id_of("sand");
+	BoxGenerator gen = open_air(table);
+	WorldGrid grid(table, 12);
+	Chunk* left = grid.load({-1, 0}, gen);
+	Chunk* right = grid.load({1, 0}, gen);
+	grid.load({0, 0}, gen);
+	REQUIRE(left != nullptr);
+	REQUIRE(right != nullptr);
+	left->at(63, 5) = spawn_cell(sand, table, grid.seed(), -1, 5);
+	right->at(0, 5) = spawn_cell(sand, table, grid.seed(), 64, 5);
+
+	Neighborhood nb;
+	nb.build(grid, {0, 0});
+	CHECK(nb.cell(-1, 5) == &left->at(63, 5));
+	CHECK(nb.cell(64, 5) == &right->at(0, 5));
+	CHECK(nb.cell(0, 5) == &grid.find({0, 0})->at(0, 5));
+	CHECK(nb.cell(128, 5) == nullptr);  // outside [-64, 128)
+}
+
 // Sixth case: the five above never exercise a negative-coordinate dirty rect,
 // nor Neighborhood::mark crossing a chunk edge (Task 4 depends on both).
 TEST_CASE("dirty marks cross chunk borders at negative coords") {

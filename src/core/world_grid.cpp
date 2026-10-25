@@ -4,6 +4,11 @@
 
 #include "rng.h"
 
+namespace {
+// Window slot of the chunk owning local coord l (locals are centre-relative, [-64, 128)).
+int slot(int l) { return floor_div(l, CHUNK) + 1; }
+}  // namespace
+
 Chunk* WorldGrid::load(ChunkCoord coord, const ChunkGenerator& gen) {
 	auto it = chunks.find(chunk_key(coord));
 	if (it != chunks.end()) return it->second.get();
@@ -61,8 +66,7 @@ void Neighborhood::build(const WorldGrid& grid, ChunkCoord centre) {
 }
 
 Cell* Neighborhood::cell(int lx, int ly) {
-	const int cx = floor_div(lx, CHUNK) + 1;
-	const int cy = floor_div(ly, CHUNK) + 1;
+	const int cx = slot(lx), cy = slot(ly);
 	if ((unsigned)cx > 2u || (unsigned)cy > 2u) return nullptr;  // outside [-64, 128)
 	Chunk* chunk = c[cx][cy];
 	if (!chunk) return nullptr;
@@ -70,16 +74,16 @@ Cell* Neighborhood::cell(int lx, int ly) {
 }
 
 void Neighborhood::mark(int lx, int ly) {
-	const int ox = floor_div(lx, CHUNK), oy = floor_div(ly, CHUNK);  // -1..1: chunk owning (lx,ly)
-	if (!c[ox + 1][oy + 1]) return;
+	const int cx = slot(lx), cy = slot(ly);
+	if ((unsigned)cx > 2u || (unsigned)cy > 2u) return;  // outside [-64, 128)
+	if (!c[cx][cy]) return;
 
 	for (int dy = -1; dy <= 1; ++dy)
 		for (int dx = -1; dx <= 1; ++dx) {
-			const int tx = lx + dx, ty = ly + dy;  // local to the owning chunk
-			const int bx = ox + floor_div(tx, CHUNK) + 1;  // window index of the target chunk
-			const int by = oy + floor_div(ty, CHUNK) + 1;
-			// Only the far corner of a diagonal owner falls outside the 3x3 window; that
-			// chunk's own worker marks its cells.
+			const int tx = lx + dx, ty = ly + dy;  // also centre-relative
+			const int bx = slot(tx), by = slot(ty);
+			// Only a neighbourhood reaching past the 3x3 window is dropped; that chunk's own
+			// worker marks its cells.
 			if ((unsigned)bx > 2u || (unsigned)by > 2u) continue;
 			Chunk* chunk = c[bx][by];
 			if (!chunk) continue;  // unloaded neighbours never wake

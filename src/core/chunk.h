@@ -1,6 +1,7 @@
 #pragma once
 #include <array>
 #include <atomic>
+#include <cassert>
 
 #include "cell.h"
 #include "coords.h"
@@ -13,6 +14,7 @@ struct DirtyRect {
 	bool empty() const { return x1 < x0; }
 
 	void include(int lx, int ly) {
+		assert(lx >= 0 && lx < CHUNK && ly >= 0 && ly < CHUNK);  // debug only
 		if (lx < x0) x0 = lx;
 		if (lx > x1) x1 = lx;
 		if (ly < y0) y0 = ly;
@@ -29,7 +31,10 @@ struct Chunk {
 	std::atomic_flag next_lock = ATOMIC_FLAG_INIT;  // guards `next`; other chunks' workers write it
 	std::atomic<bool> render_dirty{true};
 
-	Cell& at(int lx, int ly) { return cells[(size_t)ly * CHUNK + lx]; }
+	Cell& at(int lx, int ly) {
+		assert(lx >= 0 && lx < CHUNK && ly >= 0 && ly < CHUNK);  // debug only
+		return cells[(size_t)ly * CHUNK + lx];
+	}
 
 	// Spinlocked: a neighbour chunk's worker may mark `next` at the same moment we do.
 	void mark_next(int lx, int ly) {
