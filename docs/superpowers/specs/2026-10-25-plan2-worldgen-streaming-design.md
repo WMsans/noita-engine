@@ -213,35 +213,67 @@ For each cell (wx, wy) the generator computes, in order:
    `depth = wy - h(wx)`. Depth is measured from the **local surface**, not from absolute y,
    so bands follow the hills. This is my call; it keeps the first metres under a hill the
    same as under a valley.
-2. **Biome.**
+2. **Biome weights.** Biomes don't switch at a line. Each cell gets a **weight per biome**
+   that sums to 1, and borders become transition bands (approach A below; user's choice).
    - **Depth band.** Biomes declare `[min_depth, max_depth)`. Band edges are warped by 2-D
      noise (`band_warp` cells) so layer boundaries wobble instead of running flat.
    - **Within the band**, x is split into **regions** of about `region_width` cells, also
-     noise-warped. Each region picks one of that band's biomes by weighted hash of
-     (seed, band, region index).
+     noise-warped. Each band has its own region split. Each region picks one of that band's
+     biomes by weighted hash of (seed, band, region index).
+   - **Weights are computed directly from the layout.** No scattered sampling is needed,
+     because the layout is separable: regions along x within bands along depth.
+     - Across a (warped) region border, the two regions' weights ramp with a smoothstep
+       over `region_transition` cells.
+     - Across a (warped) band border, the two bands ramp over `band_transition` cells.
+     - A cell's weight for a biome is (its band's depth weight) × (its region's x weight
+       within that band). At most 4 biomes contribute, at a corner where a band border
+       meets region borders.
+     - Away from borders, a single biome has weight 1, and that's the fast path.
    - The last band's `max_depth` is open, so the deepest biome continues forever.
    - Above the surface (`depth < 0`) is air, always.
-3. **Ground material.**
-   - The top `surface_depth` cells of the ground use the biome's `surface_material` (grass,
-     sand).
-   - Below that, `base_material`, except where pocket noise exceeds `pocket_threshold`,
-     which gives `pocket_material` (sand pockets in rock, and so on).
-4. **Caves.**
-   - A cell becomes air when the biome's cave noise passes its threshold. The noise is
-     sampled with y scaled by `cave_stretch > 1`, so caves run wider than they are tall.
-   - The threshold tapers to "no caves" over the first `cave_taper_depth` cells below the
+   - **The cell's biome** is a **dithered pick**: `hash5(seed, 0, wx, wy, salt)` against
+     the cumulative weights. Inside a transition band this gives a ragged pixel fringe, with
+     one biome's material thinning out into the other's, instead of a line or a muddy
+     average. The cell's materials come from its picked biome.
+   - **Prior art (researched).** Minecraft 1.18+ drives terrain shape from shared noise and
+     lets biomes pick surface materials. Terraria converts a shared base world in later
+     passes and breaks the edges up with scattered patches. KdotJPG's scattered biome
+     blending computes biome weights that sum to 1 and blends numeric terrain parameters by
+     them. Our separable layout lets us get exact weights without the scattered sampler.
+     Climate-based biome selection (Minecraft-style, so neighbours make sense) was
+     considered and deferred; it can sit on top of this later.
+3. **Biomes don't own the shape.** Every noise field (caves, pockets, pools) is **one
+   shared field** for the whole world, with a fixed frequency and stretch. Biomes only set
+   **thresholds**, and thresholds are **blended by weight**: `t = Σ wᵢ · tᵢ`. So a cave
+   that crosses a border continues smoothly and only grows or shrinks across the
+   transition. It never ends in a flat wall where one biome's noise stopped. Frequency and
+   stretch aren't per-biome, because blending them distorts a field.
+4. **Ground material.**
+   - The top `surface_depth` cells of the ground (blended by weight, then rounded) use the
+     picked biome's `surface_material` (grass, sand).
+   - Below that, the picked biome's `base_material`, except where the shared pocket field
+     exceeds the blended `pocket_threshold`, which gives the picked biome's
+     `pocket_material` (sand pockets in rock, and so on).
+5. **Caves**, from two shared fields:
+   - a **tunnel** field, sampled with y scaled by a global `cave_stretch > 1`, so tunnels
+     run wider than they are tall (Terraria-like sideways exploration),
+   - a blobby **cavern** field for big open rooms.
+
+   A cell is air if either field passes its blended threshold (`tunnel_threshold`,
+   `cavern_threshold`). A biome mixes the two styles by setting both thresholds.
+   - The thresholds taper to "no caves" over the first `cave_taper_depth` cells below the
      surface. A separate low-frequency field occasionally cancels the taper, giving surface
      cave entrances.
-5. **Liquid pools.** Inside cave air, a low-frequency pool field above `liquid_threshold`
-   fills the cell with the biome's `liquid_material` (water near the top, oil and lava
-   deeper).
+6. **Liquid pools.** Inside cave air, a shared low-frequency pool field above the blended
+   `liquid_threshold` fills the cell with the picked biome's `liquid_material` (water near
+   the top, oil and lava deeper).
    - **Visible settling is acceptable (user).** Pools generated in mid-air, and sand over
      caves, start falling when their chunk activates. At camera speed that's often on
      screen, and it repeats on every return because chunks regenerate. The generator does
      **not** try to produce terrain already at rest.
    - Cave-floor-only pool placement stays an optional builder's call, not a requirement.
-6. **Rooms** overwrite the result (next section).
-7. Cells spawn through Plan 1's `spawn_cell`, so shade, temperature and life match painted
+7. **Rooms** overwrite the result (next section).
+8. Cells spawn through Plan 1's `spawn_cell`, so shade, temperature and life match painted
    cells.
 
 ### Rooms (pixel scenes)
@@ -276,7 +308,8 @@ For each cell (wx, wy) the generator computes, in order:
   256×256, 4×4 chunks).
 - For each placement cell, a hash of (seed, cell) decides:
   - whether the cell holds a room (`room_chance`),
-  - which room: weighted among the rooms eligible for the biome at the cell's centre,
+  - which room: weighted among the rooms eligible for the **highest-weight** biome at the
+    cell's centre (not the dithered pick, so the choice is stable),
   - an offset that keeps the whole room **inside its placement cell**, so rooms never
     overlap and a chunk only consults the 1–4 placement cells it overlaps.
 - **Anchors** are resolved analytically, so no other chunk is read:
@@ -319,16 +352,20 @@ For each cell (wx, wy) the generator computes, in order:
 **New Resources:**
 - `PixelWorldGenerator`:
   - `surface_y`, `surface_amplitude`, `surface_frequency`
-  - `band_warp`, `region_width`, `cave_taper_depth`
+  - `band_warp`, `region_width`, `region_transition`, `band_transition`, `cave_taper_depth`
+  - shared fields: `tunnel_frequency`, `cave_stretch`, `cavern_frequency`,
+    `pocket_frequency`, `pool_frequency`
   - `room_cell_size`, `room_chance`
   - `biomes: Array[PixelBiome]`, `rooms: Array[PixelRoom]`, `room_palette: PixelRoomPalette`
   - `validate(material_set) -> String`, matching `PixelMaterialSet.validate()`. It checks
-    material names, depth bands with no gaps, and every room's colours and size.
+    material names, depth bands with no gaps, `region_transition ≤ region_width / 2`,
+    `band_transition` no more than half the thinnest band, and every room's colours and
+    size.
 - `PixelBiome`:
   - `name`, `min_depth`, `max_depth` (−1 = open), `weight`
   - `surface_material`, `surface_depth`, `base_material`
-  - `pocket_material`, `pocket_frequency`, `pocket_threshold`
-  - `cave_frequency`, `cave_threshold`, `cave_stretch`
+  - `pocket_material`, `pocket_threshold`
+  - `tunnel_threshold`, `cavern_threshold`
   - `liquid_material`, `liquid_threshold`
 
   An empty material name means none.
@@ -396,7 +433,14 @@ Core tests (doctest, Godot-free):
 - **Surface.** With caves and rooms off, every column is air above `h(x)` and ground below
   it.
 - **Biome selection.** Depth bands and x regions pick the expected biome on a hand-built
-  config.
+  config. Weights sum to 1 everywhere, including at corners.
+- **Transitions are gradual.** Across a region border between a sand biome and a dirt
+  biome, the fraction of sand cells measured in slices across the transition band falls
+  from about 1 to about 0, with no slice jumping by more than a bound the builder sets.
+  Outside the band, the fraction is exactly 1 or 0.
+- **Biomes don't own the shape.** With two biomes that differ only in materials, the cave
+  mask (air or not) is identical to a single-biome world. So assigning biomes never cuts a
+  cave.
 - **Streamer.**
   - It delivers every wanted chunk.
   - It delivers nearer chunks before farther ones.
@@ -450,6 +494,15 @@ Checkpoints:
   (user).
 - Generated sand and liquids may visibly settle on screen; the generator doesn't produce
   pre-settled terrain (user).
+- Smooth biome transitions (user raised it; researched Minecraft, Terraria, Noita and
+  KdotJPG's blending). Chosen approach A (user):
+  - weights computed directly from the region/band layout,
+  - shared noise fields with weight-blended thresholds,
+  - dithered material pick in transition bands.
+
+  Rejected or deferred:
+  - B, climate-based selection: deferred, can be layered on later.
+  - C, porting the scattered blender: it only pays off with an arbitrary 2-D biome map.
 - Mine, marked in the text: zone default sizes, depth measured from the local surface,
   room-to-biome eligibility on the room, rooms confined to their placement cell, and the
   bench gate thresholds.
