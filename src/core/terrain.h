@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -38,6 +39,11 @@ struct RoomDef {
 	std::vector<std::string> biomes;  // empty = any
 };
 
+struct RoomPlacement {
+	int room;
+	int x, y;  // world top-left
+};
+
 struct TerrainConfig {
 	int surface_y = 0;
 	float surface_amplitude = 48, surface_frequency = 0.004f;
@@ -71,6 +77,8 @@ public:
 	BiomeWeights weights_at(int wx, int wy) const;  // count 0 above the surface
 	int biome_at(int wx, int wy) const;             // dithered pick; -1 above the surface
 	bool cave_at(int wx, int wy) const;  // tunnel || cavern, thresholds blended, taper applied
+	// The room the placement cell (px, py) holds, if any. Cells are room_cell_size square.
+	std::optional<RoomPlacement> room_in_cell(int px, int py) const;
 
 private:
 	// Biomes grouped by an identical depth range, ordered by min_depth.
@@ -102,6 +110,8 @@ private:
 	const MaterialTable& table_;  // must outlive the generator
 	const uint32_t seed_;
 	const TerrainConfig config_;
+	// Each room's pixels resolved through the palette: a MatId, or MAT_KEEP for keep.
+	std::vector<std::vector<MatId>> room_pixels_;  // parallel to config_.rooms
 	std::vector<Band> bands_;
 	std::vector<int> region_offset_;  // per band, from a hash of the seed
 	std::vector<BiomeIds> ids_;

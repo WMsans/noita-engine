@@ -4,6 +4,8 @@
 #include <climits>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
+#include <map>
 
 #include "coords.h"
 #include "rng.h"
@@ -23,6 +25,13 @@ constexpr uint32_t SALT_ENTRANCE = 0x58u;
 constexpr uint32_t SALT_REGION_OFFSET = 0x59u;
 constexpr uint32_t SALT_REGION_PICK = 0x5Au;
 constexpr uint32_t SALT_BIOME_PICK = 0x5Bu;
+constexpr uint32_t SALT_ROOM = 0x5Cu;
+constexpr uint32_t SALT_ROOM_PICK = 0x5Du;
+constexpr uint32_t SALT_ROOM_X = 0x5Eu;
+constexpr uint32_t SALT_ROOM_Y = 0x5Fu;
+
+// Sentinel in a room's resolved pixel table: the palette said keep the generated cell.
+constexpr MatId MAT_KEEP = 0xFFFE;
 
 // Feature sizes the config has no field for: a band edge wobbles over ~500 cells, the
 // region warp over ~1000.
@@ -61,6 +70,12 @@ bool resolve_material(const MaterialTable& table, const BiomeDef& biome, const s
 	return true;
 }
 
+std::string colour_hex(uint32_t rgba) {
+	char buf[10];
+	snprintf(buf, sizeof buf, "#%08x", rgba);
+	return buf;
+}
+
 }  // namespace
 
 std::unique_ptr<TerrainGenerator> TerrainGenerator::compile(const TerrainConfig& cfg,
@@ -90,6 +105,73 @@ std::unique_ptr<TerrainGenerator> TerrainGenerator::compile(const TerrainConfig&
 		    !resolve_material(table, def, def.liquid_material, "liquid_material", ids.liquid,
 		                      error))
 			return nullptr;
+	}
+
+	std::map<uint32_t, MatId> palette;  // rgba -> what a room pixel stamps
+	for (const PaletteEntry& entry : cfg.palette) {
+		MatId mat = MAT_AIR;  // markers stamp air
+		if (entry.kind == PaletteKind::Material) {
+			mat = table.id_of(entry.material);
+			if (mat == NO_MAT) {
+				error = "palette colour " + colour_hex(entry.rgba) + " names unknown material '" +
+				        entry.material + "'";
+				return nullptr;
+			}
+		} else if (entry.kind == PaletteKind::Keep) {
+			mat = MAT_KEEP;
+		}
+		palette.emplace(entry.rgba, mat);  // a duplicate colour keeps its first entry
+	}
+
+	if (cfg.room_cell_size <= 0 || cfg.room_cell_size % CHUNK != 0) {
+		error = "room_cell_size must be a positive multiple of " + std::to_string(CHUNK) +
+		        ", not " + std::to_string(cfg.room_cell_size);
+		return nullptr;
+	}
+	gen->room_pixels_.resize(cfg.rooms.size());
+	for (size_t i = 0; i < cfg.rooms.size(); ++i) {
+		const RoomDef& def = cfg.rooms[i];
+		if (def.width <= 0 || def.height <= 0 || def.width > cfg.room_cell_size ||
+		    def.height > cfg.room_cell_size) {
+			error = "room '" + def.name + "' is " + std::to_string(def.width) + "x" +
+			        std::to_string(def.height) + ", which does not fit room_cell_size " +
+			        std::to_string(cfg.room_cell_size);
+			return nullptr;
+		}
+		for (const std::string& wanted : def.biomes) {
+			bool known = false;
+			for (const BiomeDef& other : cfg.biomes)
+				if (other.name == wanted) known = true;
+			if (!known) {
+				error = "room '" + def.name + "': unknown biome '" + wanted + "'";
+				return nullptr;
+			}
+		}
+		const size_t count = (size_t)def.width * (size_t)def.height;
+		if (def.rgba.size() != count) {
+			error = "room '" + def.name + "': " + std::to_string(count) + " pixels expected, " +
+			        std::to_string(def.rgba.size()) + " given";
+			return nullptr;
+		}
+		std::vector<MatId>& cells = gen->room_pixels_[i];
+		cells.resize(count);
+		for (int y = 0; y < def.height; ++y)
+			for (int x = 0; x < def.width; ++x) {
+				const size_t cell = (size_t)y * def.width + x;
+				const uint32_t rgba = def.rgba[cell];
+				MatId mat = MAT_KEEP;  // alpha 0 is keep, before any palette lookup
+				if ((rgba & 0xFFu) != 0) {
+					auto it = palette.find(rgba);
+					if (it == palette.end()) {
+						error = "room '" + def.name + "': pixel (" + std::to_string(x) + ", " +
+						        std::to_string(y) + ") has colour " + colour_hex(rgba) +
+						        ", which is not in the palette";
+						return nullptr;
+					}
+					mat = it->second;
+				}
+				cells[cell] = mat;
+			}
 	}
 
 	// Group biomes by depth range, then order the bands by depth.
@@ -381,10 +463,83 @@ bool TerrainGenerator::cave_at(int wx, int wy) const {
 	return cave_for(wx, wy, depth, blend(w));
 }
 
+std::optional<RoomPlacement> TerrainGenerator::room_in_cell(int px, int py) const {
+	const int size = config_.room_cell_size;
+	if (config_.rooms.empty() ||
+	    !(hash_unit(hash5(seed_, 0, px, py, SALT_ROOM)) < config_.room_chance))
+		return std::nullopt;
+
+	// Highest-weight biome at the cell centre; above the surface only rooms with no biome fit.
+	const BiomeWeights weights = weights_at(px * size + size / 2, py * size + size / 2);
+	int top = -1;
+	for (int i = 0; i < weights.count; ++i)
+		if (top < 0 || weights.weight[i] > weights.weight[top]) top = i;
+	const std::string* top_name = top >= 0 ? &config_.biomes[weights.biome[top]].name : nullptr;
+
+	std::vector<int> candidates;
+	double total = 0;
+	for (size_t i = 0; i < config_.rooms.size(); ++i) {
+		const RoomDef& def = config_.rooms[i];
+		bool eligible = def.biomes.empty();
+		for (const std::string& name : def.biomes)
+			if (top_name != nullptr && name == *top_name) eligible = true;
+		if (!eligible) continue;
+		candidates.push_back((int)i);
+		total += (double)def.weight;
+	}
+	if (candidates.empty() || total <= 0) return std::nullopt;
+
+	const double target = (double)hash_unit(hash5(seed_, 0, px, py, SALT_ROOM_PICK)) * total;
+	int room = candidates.back();
+	double acc = 0;
+	for (int candidate : candidates) {
+		acc += (double)config_.rooms[candidate].weight;
+		if (target < acc) {
+			room = candidate;
+			break;
+		}
+	}
+
+	const RoomDef& def = config_.rooms[room];
+	const int span_x = size - def.width, span_y = size - def.height;
+	const int off_x =
+	    span_x > 0 ? (int)(hash5(seed_, 0, px, py, SALT_ROOM_X) % (uint32_t)(span_x + 1)) : 0;
+	const int off_y =
+	    span_y > 0 ? (int)(hash5(seed_, 0, px, py, SALT_ROOM_Y) % (uint32_t)(span_y + 1)) : 0;
+	const int x = px * size + off_x;
+	int y = py * size + off_y;
+
+	switch (def.anchor) {
+		case RoomAnchor::Surface: {
+			const int top_y = surface_height(x + def.width / 2) - def.height + 1;
+			if (top_y < py * size || top_y + def.height > (py + 1) * size) return std::nullopt;
+			y = top_y;
+			break;
+		}
+		case RoomAnchor::Embedded: {
+			int highest = INT_MIN;
+			for (int i = 0; i < def.width; ++i) highest = std::max(highest, surface_height(x + i));
+			if (!(y > highest)) return std::nullopt;
+			break;
+		}
+		case RoomAnchor::Cave:
+			if (!cave_at(x + def.width / 2, y + def.height / 2)) return std::nullopt;
+			break;
+	}
+	return RoomPlacement{room, x, y};
+}
+
 void TerrainGenerator::generate(ChunkCoord coord, Chunk& out, uint32_t seed) const {
 	(void)seed;  // every field was seeded by compile(); a different seed needs a new generator
 	const int base_x = coord.x * CHUNK;
 	const int base_y = coord.y * CHUNK;
+	// room_cell_size is a multiple of CHUNK, so a chunk lies in exactly one placement cell.
+	std::optional<RoomPlacement> room;
+	if (!config_.rooms.empty())
+		room = room_in_cell(floor_div(base_x, config_.room_cell_size),
+		                    floor_div(base_y, config_.room_cell_size));
+	const RoomDef* room_def = room ? &config_.rooms[room->room] : nullptr;
+	const std::vector<MatId>* room_cells = room ? &room_pixels_[room->room] : nullptr;
 	for (int lx = 0; lx < CHUNK; ++lx) {
 		const int wx = base_x + lx;
 		const int h = surface_height(wx);
@@ -414,6 +569,13 @@ void TerrainGenerator::generate(ChunkCoord coord, Chunk& out, uint32_t seed) con
 					    (double)n_pool_.GetNoise((double)wx, (double)wy) >
 					        1.0 - 2.0 * amounts.liquid)
 						mat = ids.liquid;
+				}
+			}
+			if (room_def != nullptr) {
+				const int rx = wx - room->x, ry = wy - room->y;
+				if (rx >= 0 && ry >= 0 && rx < room_def->width && ry < room_def->height) {
+					const MatId stamped = (*room_cells)[(size_t)ry * room_def->width + rx];
+					if (stamped != MAT_KEEP) mat = stamped;
 				}
 			}
 			out.at(lx, ly) = spawn_cell(mat, table_, seed_, wx, wy);
