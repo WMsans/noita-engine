@@ -19,6 +19,19 @@ struct ChunkCoord {
 
 inline ChunkCoord chunk_of(int wx, int wy) { return {floor_div(wx, CHUNK), floor_div(wy, CHUNK)}; }
 
+// Inclusive chunk rectangle; empty when x1 < x0 or y1 < y0, which contains() rejects for free.
+struct ChunkRect {
+	int x0, y0, x1, y1;
+
+	bool contains(ChunkCoord c) const {
+		return c.x >= x0 && c.x <= x1 && c.y >= y0 && c.y <= y1;
+	}
+
+	static ChunkRect around(ChunkCoord centre, int rx, int ry) {
+		return {centre.x - rx, centre.y - ry, centre.x + rx, centre.y + ry};
+	}
+};
+
 // Packs the two 32-bit coordinate bit patterns; unique per (x, y) pair. The shift is done on
 // the unsigned value: shifting a negative x past INT64_MAX would be UB, so build it in
 // uint64_t and convert back.

@@ -2,6 +2,13 @@
 
 #include "rng.h"
 
+std::unique_ptr<Chunk> make_chunk(ChunkCoord coord, const ChunkGenerator& gen, uint32_t seed) {
+	std::unique_ptr<Chunk> chunk = std::make_unique<Chunk>();
+	chunk->coord = coord;
+	gen.generate(coord, *chunk, seed);
+	return chunk;
+}
+
 Cell spawn_cell(MatId mat, const MaterialTable& table, uint32_t seed, int wx, int wy) {
 	const CompiledMaterial& def = table.get(mat);
 	Cell c{};

@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <memory>
 
 #include "chunk.h"
 #include "coords.h"
@@ -14,6 +15,10 @@ public:
 	virtual ~ChunkGenerator() = default;
 	virtual void generate(ChunkCoord coord, Chunk& out, uint32_t seed) const = 0;
 };
+
+// Fresh heap chunk: coord set, cells generated, dirty rects untouched (the grid decides
+// what to wake).
+std::unique_ptr<Chunk> make_chunk(ChunkCoord coord, const ChunkGenerator& gen, uint32_t seed);
 
 // Air inside the half-open world-pixel rect [x0,x1) x [y0,y1), `solid_mat` outside.
 class BoxGenerator : public ChunkGenerator {

@@ -14,8 +14,13 @@ public:
 
 	// Chunks are created only on the main thread, between ticks.
 	Chunk* load(ChunkCoord coord, const ChunkGenerator& gen);
+	// Single main-thread entry point for a chunk made elsewhere (e.g. a generator thread).
+	// A duplicate coord keeps the loaded chunk, drops the argument and returns the loaded
+	// one; a new chunk is woken whole and wakes the touched borders of loaded neighbours.
+	Chunk* insert(std::unique_ptr<Chunk> chunk);
 	void unload(ChunkCoord coord);
 	Chunk* find(ChunkCoord coord) const;
+	size_t size() const { return chunks.size(); }
 
 	bool get(int wx, int wy, Cell& out) const;
 	bool set(int wx, int wy, MatId mat);
@@ -30,6 +35,7 @@ public:
 
 private:
 	void mark_world(int wx, int wy);
+	void wake_neighbour_borders(ChunkCoord coord);
 
 	const MaterialTable& table;
 	uint32_t world_seed;

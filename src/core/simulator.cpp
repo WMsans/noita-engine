@@ -25,12 +25,21 @@ void Simulator::tick() {
 
 	// 1. Publish what last tick marked, then start collecting this tick's marks. This has to
 	// be a full pass first: a mark written while simulating must not run in the same tick.
-	grid.for_each_chunk([](Chunk& c) {
+	// A sleeping chunk (outside the active rect) instead drops `cur` and keeps `next`, so its
+	// accumulated marks survive until it wakes; an empty `cur` also skips it below.
+	int chunks_active = 0;
+	grid.for_each_chunk([&](Chunk& c) {
+		if (active_rect && !active_rect->contains(c.coord)) {
+			c.cur.reset();
+			return;
+		}
+		++chunks_active;
 		c.cur = c.next;
 		c.next.reset();
 	});
 
 	stats_ = SimStats{};
+	stats_.chunks_active = chunks_active;
 
 	// 2. Simulate every chunk that last tick woke, rows from the bottom up.
 	// SimStats is filled from these relaxed counters once every worker is done.

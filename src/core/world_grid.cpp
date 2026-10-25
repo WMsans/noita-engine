@@ -10,19 +10,40 @@ int slot(int l) { return floor_div(l, CHUNK) + 1; }
 }  // namespace
 
 Chunk* WorldGrid::load(ChunkCoord coord, const ChunkGenerator& gen) {
-	auto it = chunks.find(chunk_key(coord));
-	if (it != chunks.end()) return it->second.get();
+	return insert(make_chunk(coord, gen, world_seed));
+}
 
-	std::unique_ptr<Chunk> chunk = std::make_unique<Chunk>();
-	chunk->coord = coord;
-	gen.generate(coord, *chunk, world_seed);
+Chunk* WorldGrid::insert(std::unique_ptr<Chunk> chunk) {
+	const ChunkCoord coord = chunk->coord;
+	auto it = chunks.find(chunk_key(coord));
+	if (it != chunks.end()) return it->second.get();  // the loaded chunk wins; the argument drops
+
 	// A new chunk must simulate at least once, so its first tick processes everything.
 	chunk->next.include(0, 0);
 	chunk->next.include(CHUNK - 1, CHUNK - 1);
+	chunk->render_dirty.store(true);
 
 	Chunk* out = chunk.get();
 	chunks.emplace(chunk_key(coord), std::move(chunk));
+	wake_neighbour_borders(coord);
 	return out;
+}
+
+// The cells of each loaded 8-neighbour that touch the new chunk: the edge column for a
+// left/right neighbour, the edge row for an above/below one, one cell for a diagonal.
+void WorldGrid::wake_neighbour_borders(ChunkCoord coord) {
+	for (int dy = -1; dy <= 1; ++dy)
+		for (int dx = -1; dx <= 1; ++dx) {
+			if (dx == 0 && dy == 0) continue;
+			Chunk* neighbour = find({coord.x + dx, coord.y + dy});
+			if (!neighbour) continue;
+			const int x0 = dx < 0 ? CHUNK - 1 : 0;
+			const int x1 = dx > 0 ? 0 : CHUNK - 1;
+			const int y0 = dy < 0 ? CHUNK - 1 : 0;
+			const int y1 = dy > 0 ? 0 : CHUNK - 1;
+			for (int ly = y0; ly <= y1; ++ly)
+				for (int lx = x0; lx <= x1; ++lx) neighbour->mark_next(lx, ly);
+		}
 }
 
 void WorldGrid::unload(ChunkCoord coord) { chunks.erase(chunk_key(coord)); }
