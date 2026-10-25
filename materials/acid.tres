@@ -1,0 +1,11 @@
+[gd_resource type="PixelMaterial" format=3]
+
+[resource]
+name = &"acid"
+material_class = 3
+density = 1.1
+color = Color(0.36, 0.85, 0.18, 1)
+dispersion = 4
+emission = Color(0.4, 1, 0.25, 1)
+emission_energy = 0.3
+light_opacity = 0.3

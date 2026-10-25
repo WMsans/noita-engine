@@ -1,0 +1,8 @@
+[gd_resource type="PixelReaction" format=3]
+
+[resource]
+a = &"water"
+b = &"lava"
+a_into = &"steam"
+b_into = &"rock"
+probability = 0.5

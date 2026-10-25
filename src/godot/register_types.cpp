@@ -4,6 +4,9 @@
 #include <godot_cpp/core/defs.hpp>
 #include <godot_cpp/godot.hpp>
 
+#include "pixel_material.h"
+#include "pixel_material_set.h"
+#include "pixel_reaction.h"
 #include "pixel_world.h"
 
 using namespace godot;
@@ -13,6 +16,9 @@ static void initialize_noita_engine_module(ModuleInitializationLevel p_level) {
 		return;
 	}
 
+	GDREGISTER_CLASS(PixelMaterial);
+	GDREGISTER_CLASS(PixelReaction);
+	GDREGISTER_CLASS(PixelMaterialSet);
 	GDREGISTER_CLASS(PixelWorld);
 }
 

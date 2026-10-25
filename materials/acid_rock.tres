@@ -1,0 +1,6 @@
+[gd_resource type="PixelReaction" format=3]
+
+[resource]
+a = &"acid"
+b = &"rock"
+probability = 0.05
