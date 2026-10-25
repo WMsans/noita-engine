@@ -14,7 +14,8 @@ class PixelRoom : public Resource {
 	GDCLASS(PixelRoom, Resource)
 
 public:
-	// Values match RoomAnchor, so to_def() casts the lower two directly.
+	// Values match RoomAnchor for the three named anchors; to_def() falls back to
+	// Embedded for anything out of range.
 	enum Anchor {
 		ANCHOR_SURFACE = 0,
 		ANCHOR_EMBEDDED = 1,

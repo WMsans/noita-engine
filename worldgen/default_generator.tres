@@ -11,8 +11,8 @@
 [ext_resource type="PixelRoom" path="res://rooms/platform.tres" id="3_platform"]
 
 [resource]
-surface_y = 0
-surface_amplitude = 96.0
+surface_y = -80
+surface_amplitude = 48.0
 surface_frequency = 0.004
 band_warp = 24
 region_width = 768
