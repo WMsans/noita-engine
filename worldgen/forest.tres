@@ -1,0 +1,16 @@
+[gd_resource type="PixelBiome" format=3]
+
+[resource]
+name = &"forest"
+min_depth = 0
+max_depth = 120
+weight = 1.0
+surface_material = &"grass"
+base_material = &"dirt"
+pocket_material = &"sand"
+liquid_material = &"water"
+surface_depth = 4
+pocket_threshold = 0.06
+tunnel_threshold = 0.045
+cavern_threshold = 0.03
+liquid_threshold = 0.08

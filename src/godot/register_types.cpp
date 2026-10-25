@@ -4,10 +4,14 @@
 #include <godot_cpp/core/defs.hpp>
 #include <godot_cpp/godot.hpp>
 
+#include "pixel_biome.h"
 #include "pixel_material.h"
 #include "pixel_material_set.h"
 #include "pixel_reaction.h"
+#include "pixel_room.h"
+#include "pixel_room_palette.h"
 #include "pixel_world.h"
+#include "pixel_world_generator.h"
 
 using namespace godot;
 
@@ -19,6 +23,10 @@ static void initialize_noita_engine_module(ModuleInitializationLevel p_level) {
 	GDREGISTER_CLASS(PixelMaterial);
 	GDREGISTER_CLASS(PixelReaction);
 	GDREGISTER_CLASS(PixelMaterialSet);
+	GDREGISTER_CLASS(PixelBiome);
+	GDREGISTER_CLASS(PixelRoomPalette);
+	GDREGISTER_CLASS(PixelRoom);
+	GDREGISTER_CLASS(PixelWorldGenerator);
 	GDREGISTER_CLASS(PixelWorld);
 }
 

@@ -1,0 +1,9 @@
+[gd_resource type="PixelRoom" load_steps=2 format=3]
+
+[ext_resource type="Texture2D" path="res://rooms/hut.png" id="1_hut"]
+
+[resource]
+image = ExtResource("1_hut")
+weight = 1.0
+anchor = 0
+biomes = PackedStringArray("forest")

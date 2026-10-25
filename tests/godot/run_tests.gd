@@ -33,7 +33,7 @@ func test_default_set_validates() -> bool:
 	if mat_set == null:
 		printerr("  default_set.tres did not load")
 		return false
-	if mat_set.materials.size() != 10 or mat_set.reactions.size() != 5:
+	if mat_set.materials.size() != 12 or mat_set.reactions.size() != 5:
 		printerr("  starter set has %d materials, %d reactions" % [mat_set.materials.size(), mat_set.reactions.size()])
 		return false
 	var error: String = mat_set.validate()
@@ -46,7 +46,7 @@ func test_default_set_validates() -> bool:
 # pins the id: rock is 1, water 4, fire 8.
 func test_starter_set_ids_and_fields() -> bool:
 	var mat_set: PixelMaterialSet = load("res://materials/default_set.tres")
-	var expected: Array[StringName] = [&"rock", &"wood", &"sand", &"water", &"oil", &"lava", &"acid", &"fire", &"steam", &"smoke"]
+	var expected: Array[StringName] = [&"rock", &"wood", &"sand", &"water", &"oil", &"lava", &"acid", &"fire", &"steam", &"smoke", &"dirt", &"grass"]
 	for i: int in expected.size():
 		if mat_set.materials[i].name != expected[i]:
 			printerr("  material %d is '%s', expected '%s'" % [i + 1, mat_set.materials[i].name, expected[i]])
@@ -225,3 +225,74 @@ func test_acid_on_rock_leaves_air() -> bool:
 		printerr("  only %d ticks were simulated, expected 300" % tick)
 		return false
 	return true
+
+
+func test_default_generator_validates() -> bool:
+	var generator: PixelWorldGenerator = load("res://worldgen/default_generator.tres")
+	if generator == null:
+		printerr("  worldgen/default_generator.tres did not load")
+		return false
+	var error: String = generator.validate(load("res://materials/default_set.tres"))
+	if error != "":
+		printerr("  validate() said: '" + error + "'")
+	return error == ""
+
+
+# The starter biome set keeps the generator's terrain config valid, so a bad room is what
+# compile reports (a lone forest biome would fail its open-ended last band first).
+func _make_room_generator(room: PixelRoom, palette: PixelRoomPalette) -> PixelWorldGenerator:
+	var generator: PixelWorldGenerator = PixelWorldGenerator.new()
+	var biomes: Array[PixelBiome] = []
+	for biome_name: String in ["forest", "desert", "underground", "caverns", "deep"]:
+		biomes.append(load("res://worldgen/%s.tres" % biome_name))
+	generator.biomes = biomes
+	var rooms: Array[PixelRoom] = [room]
+	generator.rooms = rooms
+	generator.room_palette = palette
+	return generator
+
+
+func _colour_room_image(format: int) -> Image:
+	var image: Image = Image.create_empty(4, 4, false, format)
+	image.fill(Color8(0, 0, 0, 255))
+	image.set_pixel(2, 1, Color8(18, 52, 86, 255))
+	return image
+
+
+func _room_palette(colours: Array) -> PixelRoomPalette:
+	var palette: PixelRoomPalette = PixelRoomPalette.new()
+	var entries: Dictionary = {}
+	for colour in colours:
+		entries[colour] = &"air"
+	palette.entries = entries
+	return palette
+
+
+func test_room_colour_missing_reported() -> bool:
+	var room: PixelRoom = PixelRoom.new()
+	room.image = ImageTexture.create_from_image(_colour_room_image(Image.FORMAT_RGBA8))
+	var palette: PixelRoomPalette = _room_palette([Color8(0, 0, 0, 255)])  # omits the blue pixel
+	var error: String = _make_room_generator(room, palette).validate(load("res://materials/default_set.tres"))
+	if not error.contains("(2, 1)") or not error.contains("#123456ff"):
+		printerr("  validate() said: '" + error + "'")
+		return false
+	return true
+
+
+func test_room_without_image_reported() -> bool:
+	var room: PixelRoom = PixelRoom.new()
+	var error: String = _make_room_generator(room, PixelRoomPalette.new()).validate(load("res://materials/default_set.tres"))
+	if not error.contains("room 0 has no image"):
+		printerr("  validate() said: '" + error + "'")
+		return false
+	return true
+
+
+func test_rgb8_room_image_accepted() -> bool:
+	var room: PixelRoom = PixelRoom.new()
+	room.image = ImageTexture.create_from_image(_colour_room_image(Image.FORMAT_RGB8))
+	var palette: PixelRoomPalette = _room_palette([Color8(0, 0, 0, 255), Color8(18, 52, 86, 255)])
+	var error: String = _make_room_generator(room, palette).validate(load("res://materials/default_set.tres"))
+	if error != "":
+		printerr("  validate() said: '" + error + "'")
+	return error == ""

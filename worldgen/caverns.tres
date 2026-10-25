@@ -1,0 +1,15 @@
+[gd_resource type="PixelBiome" format=3]
+
+[resource]
+name = &"caverns"
+min_depth = 500
+max_depth = 1500
+weight = 1.0
+base_material = &"rock"
+pocket_material = &"sand"
+liquid_material = &"oil"
+surface_depth = 0
+pocket_threshold = 0.08
+tunnel_threshold = 0.12
+cavern_threshold = 0.3
+liquid_threshold = 0.2
