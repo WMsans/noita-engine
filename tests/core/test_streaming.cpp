@@ -1,6 +1,14 @@
+#include <chrono>
+#include <cstdint>
+#include <memory>
+#include <mutex>
 #include <optional>
+#include <set>
+#include <thread>
+#include <vector>
 
 #include "chunk.h"
+#include "chunk_streamer.h"
 #include "coords.h"
 #include "doctest/doctest.h"
 #include "generator.h"
@@ -29,6 +37,43 @@ int count_in_chunk(WorldGrid& grid, ChunkCoord coord, MatId mat) {
 		for (int lx = 0; lx < CHUNK; ++lx)
 			if (chunk->at(lx, ly).mat == mat) ++n;
 	return n;
+}
+
+// Fills every chunk with air and stamps its coord into the first two cells' temperature,
+// so a delivered chunk can be matched back to the coord it was generated for. Sleeps
+// `sleep_ms` per chunk so shutdown can be observed with work in flight.
+class RecordingGen : public ChunkGenerator {
+public:
+	explicit RecordingGen(int sleep_ms = 0) : sleep_ms_(sleep_ms) {}
+
+	void generate(ChunkCoord coord, Chunk& out, uint32_t seed) const override {
+		(void)seed;
+		if (sleep_ms_ > 0) std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms_));
+		for (int ly = 0; ly < CHUNK; ++ly)
+			for (int lx = 0; lx < CHUNK; ++lx) out.at(lx, ly) = Cell{MAT_AIR, AMBIENT_TEMP, 0, 0, 0, 0};
+		out.at(0, 0).temp = (int16_t)coord.x;
+		out.at(1, 0).temp = (int16_t)coord.y;
+		std::lock_guard<std::mutex> lock(mutex_);
+		recorded_.push_back(coord);
+	}
+
+	std::vector<ChunkCoord> recorded() const {
+		std::lock_guard<std::mutex> lock(mutex_);
+		return recorded_;
+	}
+
+private:
+	const int sleep_ms_;
+	mutable std::mutex mutex_;
+	mutable std::vector<ChunkCoord> recorded_;
+};
+
+std::vector<ChunkCoord> block(ChunkCoord centre, int rx, int ry) {
+	std::vector<ChunkCoord> coords;
+	coords.reserve((size_t)(2 * rx + 1) * (size_t)(2 * ry + 1));
+	for (int y = centre.y - ry; y <= centre.y + ry; ++y)
+		for (int x = centre.x - rx; x <= centre.x + rx; ++x) coords.push_back({x, y});
+	return coords;
 }
 
 // Loads (0,0) alone, settles it, then inserts `added` and returns the new dirty rect of
@@ -142,6 +187,124 @@ TEST_CASE("insert wakes the touching border of loaded neighbours") {
 	CHECK(diagonal.x1 == 63);
 	CHECK(diagonal.y0 == 63);
 	CHECK(diagonal.y1 == 63);
+}
+
+TEST_CASE("streamer delivers every requested chunk") {
+	RecordingGen gen;
+	ChunkStreamer streamer(gen, 7, 4);
+	const std::vector<ChunkCoord> wanted = block({0, 0}, 4, 4);  // 9x9
+	REQUIRE(wanted.size() == 81);
+	std::set<int64_t> wanted_keys;
+	for (ChunkCoord c : wanted) wanted_keys.insert(chunk_key(c));
+
+	streamer.request(wanted, {0, 0});
+	streamer.wait_idle();
+	CHECK(streamer.pending() == 0);
+
+	std::vector<std::unique_ptr<Chunk>> got = streamer.take_ready(1000);
+	REQUIRE(got.size() == 81);
+	std::set<int64_t> seen;
+	for (const std::unique_ptr<Chunk>& chunk : got) {
+		REQUIRE(chunk != nullptr);
+		CHECK(wanted_keys.count(chunk_key(chunk->coord)) == 1);
+		CHECK((int)chunk->at(0, 0).temp == chunk->coord.x);
+		CHECK((int)chunk->at(1, 0).temp == chunk->coord.y);
+		seen.insert(chunk_key(chunk->coord));
+	}
+	CHECK(seen.size() == 81);  // no coord twice
+}
+
+TEST_CASE("streamer generates nearest first") {
+	RecordingGen gen;
+	ChunkStreamer streamer(gen, 3, 1);
+	const ChunkCoord centre{100, -40};
+	const std::vector<ChunkCoord> wanted = block(centre, 7, 7);  // 15x15
+	REQUIRE(wanted.size() == 225);
+
+	streamer.request(wanted, centre);
+	streamer.wait_idle();
+
+	const std::vector<ChunkCoord> order = gen.recorded();
+	REQUIRE(order.size() == 225);
+	int64_t previous = -1;
+	for (ChunkCoord c : order) {
+		const int64_t dx = c.x - centre.x;
+		const int64_t dy = c.y - centre.y;
+		const int64_t dist = dx * dx + dy * dy;
+		CHECK(dist >= previous);
+		previous = dist;
+	}
+}
+
+TEST_CASE("streamer drops chunks no longer requested") {
+	RecordingGen gen;
+	ChunkStreamer streamer(gen, 11, 2);
+	const std::vector<ChunkCoord> a = block({0, 0}, 1, 1);
+	const std::vector<ChunkCoord> b = block({100, 100}, 1, 1);
+	std::set<int64_t> b_keys;
+	for (ChunkCoord c : b) b_keys.insert(chunk_key(c));
+
+	streamer.request(a, {0, 0});
+	streamer.wait_idle();
+	streamer.request(b, {100, 100});
+	streamer.wait_idle();
+
+	std::vector<std::unique_ptr<Chunk>> got = streamer.take_ready(1000);
+	REQUIRE(got.size() == b.size());
+	for (const std::unique_ptr<Chunk>& chunk : got) {
+		REQUIRE(chunk != nullptr);
+		CHECK(b_keys.count(chunk_key(chunk->coord)) == 1);
+	}
+}
+
+TEST_CASE("streamer does not regenerate a delivered chunk") {
+	RecordingGen gen;
+	ChunkStreamer streamer(gen, 5, 2);
+
+	streamer.request({{0, 0}}, {0, 0});
+	streamer.wait_idle();
+	CHECK(streamer.take_ready(10).size() == 1);
+
+	streamer.request({{0, 0}}, {0, 0});
+	streamer.wait_idle();
+	CHECK(streamer.pending() == 0);
+	CHECK(streamer.take_ready(10).empty());
+
+	int calls = 0;
+	for (ChunkCoord c : gen.recorded())
+		if (c == ChunkCoord{0, 0}) ++calls;
+	CHECK(calls == 1);
+}
+
+TEST_CASE("streamer shuts down with work in flight") {
+	RecordingGen gen(5);  // 5 ms per chunk
+	const std::vector<ChunkCoord> all = block({0, 0}, 9, 9);
+	const std::vector<ChunkCoord> many(all.begin(), all.begin() + 200);
+	REQUIRE(many.size() == 200);
+
+	const auto start = std::chrono::steady_clock::now();
+	{
+		ChunkStreamer streamer(gen, 13, 2);
+		streamer.request(many, {0, 0});
+	}  // destroyed with work still queued and in flight
+	const double ms =
+	    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+	CHECK(ms < 1000.0);
+}
+
+TEST_CASE("take_stats counts generated chunks") {
+	RecordingGen gen;
+	ChunkStreamer streamer(gen, 17, 4);
+	streamer.request(block({0, 0}, 4, 4), {0, 0});
+	streamer.wait_idle();
+
+	const StreamStats stats = streamer.take_stats();
+	CHECK(stats.generated == 81);
+	CHECK(stats.gen_ms_total > 0.0);
+
+	const StreamStats again = streamer.take_stats();
+	CHECK(again.generated == 0);
+	CHECK(again.gen_ms_total == 0.0);
 }
 
 TEST_CASE("water held by an unloaded neighbour flows in once it loads") {
