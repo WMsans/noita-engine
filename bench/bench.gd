@@ -40,6 +40,7 @@ var out_path := "user://bench.json"
 var frame := 0
 var last_usec := 0
 var painted := {}
+var refused := false  # bad command line: quit without simulating or writing a JSON
 
 var frame_samples: Array[float] = []
 var sim_samples: Array[float] = []
@@ -50,11 +51,15 @@ var cell_samples: Array[float] = []
 
 func _ready() -> void:
 	_parse_args()
+	if refused:
+		return
 	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
 	last_usec = Time.get_ticks_usec()
 
 
 func _process(_delta: float) -> void:
+	if refused:
+		return
 	_pan_camera()
 	_paint_streamed_fixtures()
 	_feed_faucets()
@@ -78,7 +83,12 @@ func _process(_delta: float) -> void:
 func _parse_args() -> void:
 	for arg: String in OS.get_cmdline_user_args():
 		if arg.begins_with("--frames="):
-			total_frames = maxi(1, arg.trim_prefix("--frames=").to_int())
+			var requested := arg.trim_prefix("--frames=").to_int()
+			if requested <= WARMUP_FRAMES:
+				# Without this the run measures nothing and still reports budget_pass.
+				_refuse("%s leaves no measured frames: the first %d frames are warm-up, so --frames must be > %d" % [arg, WARMUP_FRAMES, WARMUP_FRAMES])
+				return
+			total_frames = requested
 		elif arg.begins_with("--out="):
 			out_path = arg.trim_prefix("--out=")
 
@@ -147,6 +157,9 @@ func _chunk_of(cell: Vector2i) -> Vector2i:
 
 
 func _finish() -> void:
+	if frame_samples.is_empty():
+		_refuse("no frame samples were collected after %d frames, so there is nothing to report" % frame)
+		return
 	var sim_mean := _mean(sim_samples)
 	var result := {
 		"machine": OS.get_processor_name(),
@@ -171,6 +184,12 @@ func _finish() -> void:
 		result.chunks_simulated_mean, result.cells_updated_mean,
 		"pass" if result.budget_pass else "FAIL", out_path if written else "JSON NOT WRITTEN"])
 	get_tree().quit(0 if written else 1)
+
+
+func _refuse(reason: String) -> void:
+	refused = true
+	printerr("bench: refusing to run: %s; no JSON written" % reason)
+	get_tree().quit(1)
 
 
 func _mean(values: Array[float]) -> float:

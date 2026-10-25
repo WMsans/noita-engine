@@ -99,8 +99,10 @@ The result file is the point of the checkpoint: Plan 1 is done when
 
 ## Status on this machine
 
-Executed on 2026-10-25 on this machine (Apple M1, 8 cores, macOS 26.4.1, Godot 4.7.2), steps
-1–5 all passed:
+Executed on 2026-10-25 on this machine (Apple M1, 8 cores, macOS 26.4.1, Godot 4.7.2). The
+branch was already checked out here and is not pushed, so step 1's `git fetch` /
+`git pull --ff-only` was **not** run — that part is for whoever runs this doc next. Steps 2–5
+passed:
 
 - `scons platform=macos arch=arm64 target=template_debug` and `target=template_release`: OK.
 - `scons tests && build/tests/run_tests`: `40 | 40 passed`, `Status: SUCCESS!`.
