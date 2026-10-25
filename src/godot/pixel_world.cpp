@@ -189,7 +189,9 @@ void PixelWorld::write_chunk_image(const Chunk &chunk, uint8_t *out) const {
 		for (int lx = 0; lx < CHUNK; ++lx) {
 			const Cell &cell = chunk.cells[(size_t)ly * CHUNK + lx];
 			uint8_t *px = out + ((size_t)ly * CHUNK + lx) * 4;
-			if (cell.mat == MAT_AIR) {
+			// Material ids are data-derived, so this loop bounds them itself instead of trusting
+			// them: an id past the palette draws nothing rather than reading past its end.
+			if (cell.mat == MAT_AIR || cell.mat >= palette.size()) {
 				px[0] = px[1] = px[2] = px[3] = 0;
 				continue;
 			}

@@ -88,6 +88,8 @@ public:
 	                    std::string& error);
 
 	MatId id_of(std::string_view name) const;  // NO_MAT if unknown
+	// An out-of-range id (including NO_MAT) reads as the air entry rather than UB, which is
+	// why a cell holding NO_MAT looks harmless here and must be fixed where it is spawned.
 	const CompiledMaterial& get(MatId id) const;
 	const std::string& name_of(MatId id) const;
 	// Null when the pair has no reaction. Returned orientation has a_into for `self`.

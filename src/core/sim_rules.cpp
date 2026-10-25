@@ -187,7 +187,11 @@ void react(Chem& c) {
 		if (hash_unit(hash5(c.seed, c.tick, c.wx, c.wy, SALT_REACTION + (uint32_t)i)) >=
 		    r->probability)
 			continue;
-		const MatId self_into = r->a_into, other_into = r->b_into;
+		// An unset *_into is air, as in burn and decay: NO_MAT is not a material id, and a cell
+		// holding it is invisible to a name lookup and indexes the renderer's palette out of
+		// bounds. The shipped acid reactions and water + fire rely on this.
+		const MatId self_into = r->a_into == NO_MAT ? MAT_AIR : r->a_into;
+		const MatId other_into = r->b_into == NO_MAT ? MAT_AIR : r->b_into;
 		c.self = spawn_cell(self_into, c.mt, c.seed, c.wx, c.wy);
 		*n = spawn_cell(other_into, c.mt, c.seed, c.wx + NDX[i], c.wy + NDY[i]);
 		// The product spawned into the neighbour is stamped: if the scan reaches its row or

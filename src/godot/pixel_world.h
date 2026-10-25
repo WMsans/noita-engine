@@ -48,6 +48,8 @@ class PixelWorld : public Node2D {
 	Vector2i load_radius = Vector2i(6, 4);
 	Rect2i arena = Rect2i(-512, -256, 1024, 512);
 	bool simulating = true;
+	// material_set, world_seed, worker_threads and arena are read once in _ready (set them
+	// before adding the node to the tree); load_radius, follow_target and simulating are live.
 
 	MaterialTable table;
 	std::unique_ptr<JobPool> pool;
@@ -104,6 +106,8 @@ public:
 	StringName get_material_at(const Vector2i &p_pos) const;
 	int fill_rect(const Rect2i &p_rect, const StringName &p_material);
 	int fill_circle(const Vector2i &p_center, int p_radius, const StringName &p_material);
+	// Ticks `p_ticks` times regardless of `simulating`: calling this while simulating is true
+	// double-ticks (the physics frame ticks too).
 	void step(int p_ticks);
 	bool is_chunk_loaded(const Vector2i &p_chunk) const;
 	Dictionary get_stats() const;

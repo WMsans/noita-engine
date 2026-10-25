@@ -19,7 +19,9 @@ struct ChunkCoord {
 
 inline ChunkCoord chunk_of(int wx, int wy) { return {floor_div(wx, CHUNK), floor_div(wy, CHUNK)}; }
 
-// Packs the two 32-bit coordinate bit patterns; unique per (x, y) pair.
+// Packs the two 32-bit coordinate bit patterns; unique per (x, y) pair. The shift is done on
+// the unsigned value: shifting a negative x past INT64_MAX would be UB, so build it in
+// uint64_t and convert back.
 inline int64_t chunk_key(ChunkCoord c) {
-	return ((int64_t)(uint32_t)c.x << 32) | (uint32_t)c.y;
+	return (int64_t)(((uint64_t)(uint32_t)c.x << 32) | (uint32_t)c.y);
 }

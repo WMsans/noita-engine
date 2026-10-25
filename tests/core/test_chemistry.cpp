@@ -272,3 +272,42 @@ TEST_CASE("the fire id is not cached across a recompiled table") {
 	REQUIRE(table.id_of("water") == 6);  // the old fire id now names water
 	CHECK(ticks_to_fire(table) > 0);
 }
+
+TEST_CASE("a reaction with unset products leaves air") {
+	// The shipped .tres files leave *_into unset where the plan says "-> air": acid + rock
+	// (both products) and acid + wood (both), and water + fire's b_into. An unset name
+	// compiles to NO_MAT ("no transition"), and every consumer except reactions maps that
+	// back to air before spawning. A cell holding NO_MAT is invisible to a name lookup and
+	// indexes the renderer's palette out of bounds, so reaction products must be air too.
+	std::vector<MaterialDef> defs(2);
+	defs[0].name = "acid";
+	defs[0].cls = MatClass::Liquid;
+	defs[0].density = 1.0f;
+	defs[1].name = "rock";
+	defs[1].cls = MatClass::Solid;
+	defs[1].density = 3.0f;
+	ReactionDef rx;
+	rx.a = "acid";
+	rx.b = "rock";
+	rx.probability = 1.0f;  // a sure reaction on the first tick: no need to wait for a roll
+	// a_into and b_into left empty, exactly as acid_rock.tres does.
+	MaterialTable table;
+	std::string error;
+	REQUIRE(MaterialTable::compile(defs, {rx}, table, error));
+
+	WorldGrid grid(table, 7);
+	open_arena(grid, table);
+	// An acid cell in a sealed rock pocket: it cannot move, so the only change is the reaction.
+	simtest::paint(grid, {{40, 95, 60, 105, table.id_of("rock")},
+	                      {50, 99, 51, 101, MAT_AIR},
+	                      {50, 100, 51, 101, table.id_of("acid")}});
+	REQUIRE(simtest::mat_at(grid, 50, 100) == table.id_of("acid"));
+
+	Simulator sim(grid);
+	sim.tick();
+
+	// MAT_AIR, not NO_MAT: both render as "no name", but only MAT_AIR is a real id.
+	CHECK(simtest::mat_at(grid, 50, 100) == MAT_AIR);  // the acid cell
+	CHECK(simtest::mat_at(grid, 50, 101) == MAT_AIR);  // the rock it ate
+	CHECK(simtest::count_mat(grid, NO_MAT) == 0);
+}

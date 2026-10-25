@@ -173,3 +173,55 @@ func test_bad_reference_reports_name() -> bool:
 		printerr("  validate() said: '" + error + "'")
 		return false
 	return true
+
+
+# The plan's fixed-step requirement (review focus #5): one physics tick per frame at 60 Hz,
+# with at most 3 catch-up steps per rendered frame.
+func test_physics_settings_pin_fixed_step() -> bool:
+	var steps: int = ProjectSettings.get_setting("physics/common/max_physics_steps_per_frame")
+	var tps: int = ProjectSettings.get_setting("physics/common/physics_ticks_per_second")
+	if steps != 3 or tps != 60:
+		printerr("  physics settings are max_physics_steps_per_frame=%d, physics_ticks_per_second=%d" % [steps, tps])
+		return false
+	return true
+
+
+# End-to-end over the shipped data: acid + rock has both *_into unset in acid_rock.tres, which
+# the plan reads as "-> air". An unset product used to spawn material id 65535 (NO_MAT): such a
+# cell reports "" from get_material_at (the "unloaded" answer) and indexes the renderer's
+# palette out of bounds. This drives the real material set through PixelWorld::step.
+func test_acid_on_rock_leaves_air() -> bool:
+	var world: PixelWorld = await _make_world()
+	# The arena is Rect2i(-512,-256,1024,512) and everything outside it is rock, so the sealed
+	# rock below the top edge is the reaction's rock. A pocket of acid buried in it cannot
+	# move: the only thing that can happen to those cells is the reaction.
+	var acid_cells: Array[Vector2i] = []
+	for x: int in range(0, 4):
+		acid_cells.append(Vector2i(x, 262))
+	for cell: Vector2i in acid_cells:
+		world.set_cell(cell, &"acid")
+	# A cell of a known material next to the pocket, still there at the end: without it a
+	# world that turned everything into air would pass the acid check.
+	var keep: Vector2i = Vector2i(10, 262)
+	world.set_cell(keep, &"wood")
+	world.step(300)
+	await process_frame  # render the changed chunks: write_chunk_image over their ids
+
+	var failed := ""
+	for cell: Vector2i in acid_cells:
+		var mat: StringName = world.get_material_at(cell)
+		if mat != &"air":
+			failed += " (%d,%d)=%s" % [cell.x, cell.y, mat if mat != &"" else "<empty: NO_MAT>"]
+	var kept: StringName = world.get_material_at(keep)
+	var tick: int = world.get_stats()["tick"]
+	world.free()
+	if failed != "":
+		printerr("  reacted acid cells are not air:" + failed)
+		return false
+	if kept != &"wood":
+		printerr("  the untouched wood cell at %s reports '%s'" % [keep, kept])
+		return false
+	if tick < 300:
+		printerr("  only %d ticks were simulated, expected 300" % tick)
+		return false
+	return true
