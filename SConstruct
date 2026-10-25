@@ -13,7 +13,7 @@ SConscript(
     {"env": env, "customs": customs, "api_version": "4.7"},
 )
 
-env.Append(CPPPATH=["src/"])
+env.Append(CPPPATH=["src/", "thirdparty/"])
 sources = Glob("src/core/*.cpp") + Glob("src/godot/*.cpp")
 
 # libnoita_engine.<platform>.<target>.<arch>.<ext> — godot-cpp's suffix without
