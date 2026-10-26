@@ -16,6 +16,10 @@ const SIM_BUDGET_MS := 6.0
 const STREAM_BUDGET_MS := 1.0
 const STREAM_P99_BUDGET_MS := 3.0
 const FRAME_P99_BUDGET_MS := 16.6
+const PARTICLE_BUDGET_MS := 1.0
+# A bench that makes no particles must not pass: at least this many material particles in
+# flight on average.
+const PARTICLES_BUDGET := 200.0
 # 50% of Plan 1's M1 figure (108383.9), the plan's floor for this bench: the generated world
 # must keep at least half an arena frame of work moving, so a gutted streaming demo cannot pass
 # by doing less work. The committed M1 run reports 3x this (325127).
@@ -43,6 +47,14 @@ const OIL_PERIOD := 30  # frames between the oil + fire drops
 const OIL_OFFSET := Vector2i(220, 40)
 const OIL_RADIUS := 10
 const FIRE_RADIUS := 3
+# Every EXPLODE_PERIOD frames: fill a sand disc and blow it up (starter ground is solid, so a
+# blast in it would throw nothing), plus a burst of visual sparks at the same spot.
+const EXPLODE_PERIOD := 20
+const EXPLODE_OFFSET := Vector2i(-60, -40)
+const EXPLODE_RADIUS := 24
+const EXPLODE_POWER := 400.0  # cells per second at the centre
+const SPARK_COUNT := 150
+const SPARK_LIFETIME := 0.8
 
 @onready var world: PixelWorld = $PixelWorld
 @onready var camera: Camera2D = $Camera2D
@@ -62,6 +74,9 @@ var chunk_samples: Array[float] = []
 var cell_samples: Array[float] = []
 var stream_samples: Array[float] = []
 var gen_samples: Array[float] = []  # only frames that finished a chunk
+var particle_samples: Array[float] = []
+var particles_material_samples: Array[float] = []
+var particles_visual_samples: Array[float] = []
 var view_missing_frames := 0
 
 
@@ -91,6 +106,9 @@ func _process(_delta: float) -> void:
 		chunk_samples.append(float(stats.chunks_simulated))
 		cell_samples.append(float(stats.cells_updated))
 		stream_samples.append(float(stats.stream_ms))
+		particle_samples.append(float(stats.particle_ms))
+		particles_material_samples.append(float(stats.particles_material))
+		particles_visual_samples.append(float(stats.particles_visual))
 		if float(stats.gen_ms) > 0.0:
 			gen_samples.append(float(stats.gen_ms))
 		if int(stats.view_missing) > 0:
@@ -139,6 +157,11 @@ func _paint_workload(centre: Vector2i) -> void:
 		var oil := centre + OIL_OFFSET
 		world.fill_circle(oil, OIL_RADIUS, &"oil")
 		world.fill_circle(oil, FIRE_RADIUS, &"fire")
+	if frame % EXPLODE_PERIOD == 0:
+		var blast := centre + EXPLODE_OFFSET
+		world.fill_circle(blast, EXPLODE_RADIUS, &"sand")
+		world.explode(blast, EXPLODE_RADIUS, EXPLODE_POWER)
+		world.spawn_visual_particles(Color.YELLOW, Vector2(blast), Vector2(0, -200), SPARK_COUNT, PI, SPARK_LIFETIME)
 
 
 func _finish() -> void:
@@ -151,6 +174,8 @@ func _finish() -> void:
 	var stream_p99 := _p99(stream_samples)
 	var frame_p99 := _p99(frame_samples)
 	var cells_mean := _mean(cell_samples)
+	var particle_mean := _mean(particle_samples)
+	var particles_mean := _mean(particles_material_samples)
 	var result := {
 		"machine": OS.get_processor_name(),
 		"os": OS.get_name(),
@@ -170,19 +195,28 @@ func _finish() -> void:
 		"gen_ms_mean": _mean(gen_samples),
 		"chunks_generated": int(final_stats.chunks_generated),
 		"view_missing_frames": view_missing_frames,
+		"particle_ms_mean": particle_mean,
+		"particle_ms_p99": _p99(particle_samples),
+		"particles_material_mean": particles_mean,
+		"particles_visual_mean": _mean(particles_visual_samples),
+		"particles_dropped": int(final_stats.particles_dropped),
 		"budget_pass": sim_mean <= SIM_BUDGET_MS
 			and stream_mean <= STREAM_BUDGET_MS
 			and stream_p99 <= STREAM_P99_BUDGET_MS
 			and frame_p99 <= FRAME_P99_BUDGET_MS
 			and view_missing_frames == 0
-			and cells_mean >= CELLS_BUDGET,
+			and cells_mean >= CELLS_BUDGET
+			and particle_mean <= PARTICLE_BUDGET_MS
+			and particles_mean >= PARTICLES_BUDGET,
 	}
 	var written := _write_json(result)
-	print("bench world: %d frames (+%d warm-up) | sim %.2f ms mean / %.2f p99 | frame %.2f / %.2f ms | stream %.2f / %.2f ms | gen %.2f ms | chunks %d | cells %.0f | view-missing %d frames | budget %s | %s" % [
+	print("bench world: %d frames (+%d warm-up) | sim %.2f ms mean / %.2f p99 | frame %.2f / %.2f ms | stream %.2f / %.2f ms | gen %.2f ms | chunks %d | cells %.0f | view-missing %d frames | particles %.0f / visual %.0f, %.3f ms mean / %.3f p99, dropped %d | budget %s | %s" % [
 		result.frames, WARMUP_FRAMES, result.sim_ms_mean, result.sim_ms_p99,
 		result.frame_ms_mean, result.frame_ms_p99, result.stream_ms_mean,
 		result.stream_ms_p99, result.gen_ms_mean, result.chunks_generated,
 		result.cells_updated_mean, result.view_missing_frames,
+		result.particles_material_mean, result.particles_visual_mean, result.particle_ms_mean,
+		result.particle_ms_p99, result.particles_dropped,
 		"pass" if result.budget_pass else "FAIL", out_path if written else "JSON NOT WRITTEN"])
 	get_tree().quit(0 if written else 1)
 

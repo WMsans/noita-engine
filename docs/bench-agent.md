@@ -4,15 +4,17 @@ Everything below runs from the repository root with `scons` and Godot 4.7.x on `
 commands are the same on both platforms; `./build.sh` picks `macos`/`linux` and `arm64`/`x86_64`
 from `uname` and passes them to `scons` explicitly. Copy-pasteable.
 
-Checkpoints: `bench/results/macos-m1-plan1.json` and `macos-m1-plan2.json` are done on the
-Apple M1 machine. The Linux Iris Xe machine owes `linux-irisxe-plan1.json` and
-`linux-irisxe-plan2.json`.
+Checkpoints: `bench/results/macos-m1-plan1.json`, `macos-m1-plan2.json` and
+`macos-m1-plan3.json` are done on the Apple M1 machine. The Linux Iris Xe machine owes
+`linux-irisxe-plan1.json` and `linux-irisxe-plan3.json`. Plan 3's `bench_world` run replaces
+the Plan 2 one: same scene, same camera path and workload plus explosions, and Plan 2's gates
+plus two particle gates.
 
 ## 1. Get the branch
 
 ```bash
 git fetch origin
-git checkout plan2-worldgen-streaming
+git checkout noita-engine
 git pull --ff-only
 git submodule update --init --recursive
 ```
@@ -56,8 +58,8 @@ also redirects the XDG dirs into `build/` so a sandboxed machine cannot crash Go
 ```
 ==> Build OK: ... libnoita_engine.<platform>.template_debug.<arch>.<ext>
 ==> Build OK: ... libnoita_engine.<platform>.template_release.<arch>.<ext>
-[doctest] test cases:     69 |     69 passed | 0 failed | 0 skipped
-[doctest] assertions: 202122 | 202122 passed | 0 failed |
+[doctest] test cases:     95 |     95 passed | 0 failed | 0 skipped
+[doctest] assertions: 203024 | 203024 passed | 0 failed |
 [doctest] Status: SUCCESS!
 
 ==> Running Godot-side tests (headless)...
@@ -81,12 +83,13 @@ godot --path . res://bench/bench.tscn -- --frames=1800 --out=bench/results/macos
 godot --path . res://bench/bench.tscn -- --frames=1800 --out=bench/results/linux-irisxe-plan1.json
 ```
 
-Plan 2 (generated world: camera flies the surface/dive/cavern-run/return polyline at 10 cells
-per frame while chunks stream in, sleep and get discarded):
+Plan 3 (generated world: camera flies the surface/dive/cavern-run/return polyline at 10 cells
+per frame while chunks stream in, sleep and get discarded; every 20 frames a radius-24 sand
+disc is blown up with a burst of visual sparks):
 
 ```bash
-godot --path . res://bench/bench_world.tscn -- --frames=1800 --out=bench/results/macos-m1-plan2.json
-godot --path . res://bench/bench_world.tscn -- --frames=1800 --out=bench/results/linux-irisxe-plan2.json
+godot --path . res://bench/bench_world.tscn -- --frames=1800 --out=bench/results/macos-m1-plan3.json
+godot --path . res://bench/bench_world.tscn -- --frames=1800 --out=bench/results/linux-irisxe-plan3.json
 ```
 
 Pick the `--out` that matches the machine. Defaults: `--frames=1800`; `--out=user://bench.json`
@@ -105,10 +108,10 @@ bench: 1680 frames (+120 warm-up) | sim 3.53 ms mean / 5.09 p99 | frame 8.35 / 1
 That line is the committed artifact, so a fresh run is compared against it; a re-run on an
 otherwise idle M1 lands within noise (sim p99 5.14, frame p99 10.56, upload 1.04).
 
-Plan 2:
+Plan 3 (Plan 2's committed line, without explosions, was sim 4.39 / 7.22, frame 9.51 / 12.33):
 
 ```
-bench world: 1680 frames (+120 warm-up) | sim 4.39 ms mean / 7.22 p99 | frame 9.51 / 12.33 ms | stream 0.07 / 0.36 ms | gen 0.68 ms | chunks 6099 | cells 325127 | view-missing 0 frames | budget pass | bench/results/...
+bench world: 1680 frames (+120 warm-up) | sim 4.56 ms mean / 7.49 p99 | frame 8.83 / 10.76 ms | stream 0.08 / 0.40 ms | gen 0.86 ms | chunks 6099 | cells 328339 | view-missing 0 frames | particles 233 / visual 41, 0.018 ms mean / 0.068 p99, dropped 250 | budget pass | bench/results/...
 ```
 
 `frames` in the JSON is the number of sampled frames, i.e. `--frames` minus the 120 warm-up
@@ -117,17 +120,21 @@ the nearest-rank 99th percentile, not the maximum. `gen_ms_mean` is the mean ove
 that generated anything, `chunks_generated` is cumulative, `chunks_simulated_mean` is how many
 chunks were awake per frame, and `view_missing_frames` counts frames with a hole in the view.
 `worker_threads` is the node's configured value; `-1` means auto (`JobPool::default_workers()`:
-`min(4, hardware_concurrency - 1)`).
+`min(4, hardware_concurrency - 1)`). `particle_ms_*` is the particle step per tick,
+`particles_material_mean` / `particles_visual_mean` the particles in flight per frame, and
+`particles_dropped` the cumulative material particles that found nowhere to land.
 
 Budgets (`bench.gd` and `bench_world.gd`; do not relax them to make a run pass):
 
-| gate | Plan 1 | Plan 2 |
+| gate | Plan 1 | Plan 3 (`bench_world`) |
 |---|---|---|
 | `sim_ms_mean` | ≤ 6.0 | ≤ 6.0 |
 | `stream_ms_mean` / `stream_ms_p99` | — | ≤ 1.0 / ≤ 3.0 |
 | `frame_ms_p99` | — | ≤ 16.6 |
 | `cells_updated_mean` | — | ≥ 54192 |
 | `view_missing_frames` | — | 0 |
+| `particle_ms_mean` | — | ≤ 1.0 |
+| `particles_material_mean` | — | ≥ 200 |
 
 If `budget_pass` is `false`: re-run twice to rule out a cold or throttled machine, then record
 the numbers and report back before touching the simulator or the workload.
@@ -135,15 +142,15 @@ the numbers and report back before touching the simulator or the workload.
 ## 5. Commit
 
 ```bash
-git add bench/results/<machine>-plan1.json bench/results/<machine>-plan2.json
+git add bench/results/<machine>-plan1.json bench/results/<machine>-plan3.json
 git commit -m "bench: <machine> results"
 git push
 ```
 
 Commit the result JSON files only — never edit a budget or the workload to turn a red run green.
 The checkpoint is done when both files are committed with `budget_pass: true`. On the Linux
-machine that is `linux-irisxe-plan1.json` **and** `linux-irisxe-plan2.json`; Plan 2 is complete
-only then.
+machine that is `linux-irisxe-plan1.json` **and** `linux-irisxe-plan3.json`; Plans 2 and 3 are
+complete only then.
 
 ## If anything fails, report back
 
@@ -155,10 +162,11 @@ only then.
   summary line, and which library was actually loaded:
   - macOS: `DYLD_PRINT_LIBRARIES=1 godot --path . res://bench/bench.tscn -- --frames=1800 ... 2>&1 | grep noita`
   - Linux: `LD_DEBUG=libs godot --path . res://bench/bench.tscn -- --frames=1800 ... 2>&1 | grep noita`
-- **Plan 2 gate diagnosis:** append the Plan 2 summary line, and say whether the failure is
+- **`bench_world` gate diagnosis:** append the `bench world:` summary line, and say whether the failure is
   `sim_ms_mean` (generated content churning — check for liquid that never settles),
   a stream gate (check `generator_threads` and `max_inserts_per_frame`), or
-  `view_missing_frames > 0` (a real streaming hole).
+  `view_missing_frames > 0` (a real streaming hole), or a particle gate (`particle_ms_mean`:
+  profile `ParticlePool::step`; `particles_material_mean` under 200: say so, don't shrink it).
 - **Environment:** `sw_vers`, `sysctl -n machdep.cpu.brand_string`, `sysctl -n hw.ncpu` on
   macOS; `lsb_release -a`, `lscpu` (or `grep 'model name' /proc/cpuinfo`), `nproc` on Linux.
 
@@ -168,7 +176,7 @@ Executed on 2026-10-25 on the Apple M1 machine (Apple M1, 8 cores, macOS 26.4.1,
 The branch was already checked out here and is not pushed, so step 1's `git fetch` /
 `git pull --ff-only` was **not** run — that part is for whoever runs this doc next.
 `./build.sh --release --test --verify` passed: both libraries OK,
-`69 | 69 passed`, `202122 | 202122` assertions, `Status: SUCCESS!`,
+`95 | 95 passed`, `203024 | 203024` assertions, `Status: SUCCESS!`,
 `OK: ALL GODOT TESTS PASSED.`
 
 Plan 1 — `bench/results/macos-m1-plan1.json`: `budget_pass: true`, `sim_ms_mean` 3.53 ms
@@ -186,6 +194,12 @@ fail) to 4.39 ms. `forest` (0.08) and `desert` (0.05) were left alone. If a late
 raises liquid again, this bench will fail first and by a wide margin — the generated liquid is
 what dominates the per-tick cost, and it never comes to rest on the cave floors.
 
+Plan 3 — `bench/results/macos-m1-plan3.json`: `budget_pass: true`, `sim_ms_mean` 4.56 ms
+(Plan 2: 4.39; the landed ejecta settle), `sim_ms_p99` 7.49 ms, `frame_ms_p99` 10.76 ms,
+`stream_ms_mean` 0.08 / p99 0.40 ms, `cells_updated_mean` 328339, `view_missing_frames` 0,
+`particle_ms_mean` 0.018 ms (budget 1.0), p99 0.068 ms, `particles_material_mean` 233 (floor
+200), `particles_visual_mean` 41, `particles_dropped` 250 over about 75 000 thrown cells.
+
 The Linux Iris Xe numbers are still an open hand-off: `bench/results/linux-irisxe-plan1.json`
-and `linux-irisxe-plan2.json` do not exist yet. Its 20 hardware threads and its GPU are the two
+and `linux-irisxe-plan3.json` do not exist yet. Its 20 hardware threads and its GPU are the two
 things to watch — the stream gates first, then `sim_ms_mean`.

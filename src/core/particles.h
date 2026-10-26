@@ -40,7 +40,7 @@ class ParticlePool {
 public:
 	ParticlePool(WorldGrid& grid, int capacity);  // capacity counts both kinds
 
-	// True if pooled. A full pool writes the cell back at floor(x, y) when that is air, else
+	// True if pooled. A full pool writes the cell back at floor(x, y) when that is free, else
 	// counts it dropped. Non-finite input becomes 0 and speeds clamp to MAX_PARTICLE_SPEED.
 	bool emit(float x, float y, float vx, float vy, const Cell& cell);
 	bool emit_visual(VisualParticle p);  // true if pooled; life 0 is rejected
@@ -53,7 +53,6 @@ public:
 private:
 	bool full() const { return material_.size() + visual_.size() >= (size_t)capacity_; }
 	bool passable(int x, int y) const;
-	bool is_air(int x, int y) const;
 	bool advance(float& x, float& y, float vx, float vy) const;
 	bool land(const Particle& p);
 	bool update(Particle& p);

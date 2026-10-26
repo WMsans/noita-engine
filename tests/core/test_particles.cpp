@@ -302,3 +302,37 @@ TEST_CASE("explode across the origin") {
 	CHECK(simtest::mat_at(grid, 0, 7) == MAT_AIR);
 	CHECK(simtest::mat_at(grid, 9, 0) == table.id_of("sand"));
 }
+
+TEST_CASE("a particle blocked inside gas lands in the gas") {
+	MaterialTable table = simtest::movement_table();
+	const MatId sand = table.id_of("sand");
+	WorldGrid grid(table, 1);
+	arena(grid, table);
+	simtest::paint(grid, {{0, 60, ARENA, 100, table.id_of("steam")}, {0, 100, ARENA, ARENA, table.id_of("rock")}});
+	ParticlePool pool(grid, 100);
+
+	REQUIRE(pool.emit(60.5f, 10.5f, 0, 0, sand_cell(table)));
+	step_n(pool, 120);
+
+	CHECK(pool.stats().dropped == 0);
+	CHECK(simtest::mat_at(grid, 60, 99) == sand);
+}
+
+TEST_CASE("ejecta of a blast inside rock all land in the crater") {
+	MaterialTable table = simtest::movement_table();
+	const MatId sand = table.id_of("sand");
+	WorldGrid grid(table, 1);
+	arena(grid, table);
+	simtest::paint(grid, {{0, 0, ARENA, ARENA, table.id_of("rock")}});
+	for (int dy = -14; dy <= 14; ++dy)
+		for (int dx = -14; dx <= 14; ++dx)
+			if (dx * dx + dy * dy <= 14 * 14) REQUIRE(grid.set(64 + dx, 64 + dy, sand));
+	ParticlePool pool(grid, DEFAULT_PARTICLE_CAPACITY);
+
+	const ExplodeResult r = explode(grid, pool, 64, 64, 14, 400.0f / 60.0f, 1);
+	step_n(pool, 120);
+
+	CHECK(pool.material().empty());
+	CHECK(pool.stats().dropped == 0);
+	CHECK(simtest::count_mat(grid, sand) == r.thrown);
+}

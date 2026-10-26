@@ -43,7 +43,7 @@ bool ParticlePool::emit(float x, float y, float vx, float vy, const Cell& cell) 
 	x = finite(x);
 	y = finite(y);
 	if (full()) {
-		if (!is_air(cell_of(x), cell_of(y)) || !grid.put(cell_of(x), cell_of(y), cell)) ++stats_.dropped;
+		if (!passable(cell_of(x), cell_of(y)) || !grid.put(cell_of(x), cell_of(y), cell)) ++stats_.dropped;
 		return false;
 	}
 	material_.push_back({x, y, clamp_speed(vx), clamp_speed(vy), cell});
@@ -61,17 +61,14 @@ bool ParticlePool::emit_visual(VisualParticle p) {
 	return true;
 }
 
-// Loaded, not a body pixel, and air or gas.
+// Loaded, not a body pixel, and air or gas. Also where a particle may land: a gas cell it
+// lands in is overwritten (gas is short-lived, and a particle stopped inside smoke would
+// otherwise find nowhere to land).
 bool ParticlePool::passable(int x, int y) const {
 	Cell c{};
 	if (!grid.get(x, y, c) || (c.flags & FLAG_BODY)) return false;
 	const MatClass cls = grid.materials().get(c.mat).cls;
 	return cls == MatClass::Empty || cls == MatClass::Gas;
-}
-
-bool ParticlePool::is_air(int x, int y) const {
-	Cell c{};
-	return grid.get(x, y, c) && c.mat == MAT_AIR && !(c.flags & FLAG_BODY);
 }
 
 // Moves in sub-steps of at most one cell per axis, so nothing is jumped. A sub-step whose
@@ -89,10 +86,12 @@ bool ParticlePool::advance(float& x, float& y, float vx, float vy) const {
 	return true;
 }
 
-// First air among: the current cell, LAND_SEARCH cells back along the path, then straight up.
+// First passable cell among: the current cell, LAND_SEARCH cells back along the path, straight
+// up, then square rings out to LAND_SEARCH. The rings matter where ejecta pile up against a
+// crater wall and fill every cell on each other's path.
 bool ParticlePool::land(const Particle& p) {
 	const int cx = cell_of(p.x), cy = cell_of(p.y);
-	auto try_put = [&](int x, int y) { return is_air(x, y) && grid.put(x, y, p.cell); };
+	auto try_put = [&](int x, int y) { return passable(x, y) && grid.put(x, y, p.cell); };
 	if (try_put(cx, cy)) return true;
 	const float speed = std::max(std::fabs(p.vx), std::fabs(p.vy));
 	if (speed > 0) {
@@ -102,6 +101,10 @@ bool ParticlePool::land(const Particle& p) {
 	}
 	for (int k = 1; k <= LAND_SEARCH; ++k)
 		if (try_put(cx, cy - k)) return true;
+	for (int r = 1; r <= LAND_SEARCH; ++r)
+		for (int dy = -r; dy <= r; ++dy)
+			for (int dx = -r; dx <= r; dx += (dy == -r || dy == r) ? 1 : 2 * r)
+				if (try_put(cx + dx, cy + dy)) return true;
 	return false;
 }
 
