@@ -153,7 +153,7 @@ func test_stats_keys() -> bool:
 	var world: PixelWorld = await _make_world()
 	var stats: Dictionary = world.get_stats()
 	world.free()
-	var keys: Array[String] = ["sim_ms", "upload_ms", "chunks_loaded", "chunks_simulated", "cells_updated", "tick", "chunks_active", "gen_pending", "gen_ms", "chunks_generated", "stream_ms", "view_missing"]
+	var keys: Array[String] = ["sim_ms", "upload_ms", "chunks_loaded", "chunks_simulated", "cells_updated", "tick", "chunks_active", "gen_pending", "gen_ms", "chunks_generated", "stream_ms", "view_missing", "particles_material", "particles_visual", "particles_dropped", "particle_ms"]
 	for key: String in keys:
 		if not stats.has(key):
 			printerr("  get_stats() is missing '%s'; keys are %s" % [key, stats.keys()])
@@ -165,6 +165,84 @@ func test_stats_keys() -> bool:
 			return false
 	if stats["chunks_active"] != stats["chunks_loaded"]:
 		printerr("  arena path has chunks_active %s, chunks_loaded %s" % [stats["chunks_active"], stats["chunks_loaded"]])
+		return false
+	return true
+
+
+# --- particles, explode, raycast (Plan 3) ---------------------------------------------------
+
+func _count_material(world: PixelWorld, rect: Rect2i, material: StringName) -> int:
+	var n := 0
+	for y: int in range(rect.position.y, rect.end.y):
+		for x: int in range(rect.position.x, rect.end.x):
+			if world.get_material_at(Vector2i(x, y)) == material:
+				n += 1
+	return n
+
+
+func test_particles_land() -> bool:
+	var world: PixelWorld = await _make_world()
+	var strip := Rect2i(-60, -100, 110, 356)  # under the spawn points, down to the arena floor
+	var before := _count_material(world, strip, &"sand")
+	# Five per spot is what fits: a particle landing on its siblings searches at most 4 cells up.
+	for i: int in 10:
+		var pooled: int = world.spawn_particles(&"sand", Vector2(-50 + 10 * i, -100), Vector2.ZERO, 5, 0.0)
+		if pooled != 5:
+			printerr("  spawn_particles returned %d, expected 5" % pooled)
+			world.free()
+			return false
+	world.step(300)
+	var stats: Dictionary = world.get_stats()
+	var after := _count_material(world, strip, &"sand")
+	world.free()
+	if stats.particles_material != 0 or stats.particles_dropped != 0 or after - before != 50:
+		printerr("  in flight %d, dropped %d, sand gained %d (expected 0, 0, 50)" % [stats.particles_material, stats.particles_dropped, after - before])
+		return false
+	return true
+
+
+func test_visual_particles_expire() -> bool:
+	var world: PixelWorld = await _make_world()
+	var pooled: int = world.spawn_visual_particles(Color.RED, Vector2.ZERO, Vector2(0, -60), 20, PI, 0.5)
+	world.step(29)
+	var alive: int = world.get_stats().particles_visual
+	world.step(1)
+	var after: int = world.get_stats().particles_visual
+	world.free()
+	if pooled != 20 or alive != 20 or after != 0:
+		printerr("  pooled %d, alive after 29 ticks %d, after 30 %d (expected 20, 20, 0)" % [pooled, alive, after])
+		return false
+	return true
+
+
+func test_explode_and_raycast() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.fill_rect(Rect2i(-20, -20, 40, 40), &"sand")
+	var removed: int = world.explode(Vector2i(0, 0), 8, 300.0)
+	var centre: StringName = world.get_material_at(Vector2i(0, 0))
+	var hit: Dictionary = world.raycast(Vector2(-30.5, 0.5), Vector2(0.5, 0.5), PixelWorld.RAY_POWDER)
+	world.free()
+	if removed <= 0 or centre != &"air":
+		printerr("  explode removed %d, centre is '%s'" % [removed, centre])
+		return false
+	if hit.is_empty() or hit.position != Vector2i(-20, 0) or hit.normal != Vector2i(-1, 0) or hit.material != &"sand":
+		printerr("  raycast returned %s, expected sand at (-20, 0) with normal (-1, 0)" % hit)
+		return false
+	return true
+
+
+func test_particle_api_rejects_bad_input() -> bool:
+	var world: PixelWorld = await _make_world()
+	# The error the unknown material pushes is the expected behaviour, not a test failure.
+	var unknown: int = world.spawn_particles(&"nope", Vector2.ZERO, Vector2.ZERO, 5, 0.0)
+	var negative: int = world.spawn_particles(&"sand", Vector2.ZERO, Vector2.ZERO, -5, 0.0)
+	var wild: int = world.spawn_particles(&"sand", Vector2.ZERO, Vector2(INF, NAN), 5, 0.0)
+	world.step(1)
+	var no_blast: int = world.explode(Vector2i(0, 0), 0, 100.0)
+	var no_mask: Dictionary = world.raycast(Vector2(0, 0), Vector2(0, 1000), 0)
+	world.free()
+	if unknown != 0 or negative != 0 or wild <= 0 or no_blast != 0 or not no_mask.is_empty():
+		printerr("  unknown %d, negative %d, wild %d, radius-0 explode %d, mask-0 raycast %s" % [unknown, negative, wild, no_blast, no_mask])
 		return false
 	return true
 

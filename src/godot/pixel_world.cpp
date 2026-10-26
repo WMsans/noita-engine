@@ -10,6 +10,8 @@
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
+#include "core/rng.h"
+
 namespace godot {
 
 namespace {
@@ -20,6 +22,12 @@ Color color_from_rgba32(uint32_t p_rgba) {
 }
 
 uint8_t to_byte(float p_value) { return (uint8_t)(CLAMP(p_value, 0.0f, 1.0f) * 255.0f); }
+
+// Hash salts for spawn jitter.
+constexpr uint32_t SALT_SPREAD = 201;
+constexpr uint32_t SALT_SCALE = 202;
+constexpr float TICKS_PER_SECOND = 60.0f;
+constexpr int FLOATS_PER_PARTICLE = 12;
 
 } // namespace
 
@@ -32,6 +40,14 @@ void PixelWorld::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("is_chunk_loaded", "chunk"), &PixelWorld::is_chunk_loaded);
 	ClassDB::bind_method(D_METHOD("is_area_ready", "rect"), &PixelWorld::is_area_ready);
 	ClassDB::bind_method(D_METHOD("get_stats"), &PixelWorld::get_stats);
+	ClassDB::bind_method(D_METHOD("spawn_particles", "material", "position", "velocity", "count", "spread"), &PixelWorld::spawn_particles);
+	ClassDB::bind_method(D_METHOD("spawn_visual_particles", "color", "position", "velocity", "count", "spread", "lifetime", "gravity_scale", "collides"), &PixelWorld::spawn_visual_particles, DEFVAL(1.0f), DEFVAL(true));
+	ClassDB::bind_method(D_METHOD("explode", "position", "radius", "power"), &PixelWorld::explode);
+	ClassDB::bind_method(D_METHOD("raycast", "from", "to", "mask"), &PixelWorld::raycast, DEFVAL(RAY_SOLID | RAY_POWDER));
+	BIND_CONSTANT(RAY_SOLID);
+	BIND_CONSTANT(RAY_POWDER);
+	BIND_CONSTANT(RAY_LIQUID);
+	BIND_CONSTANT(RAY_GAS);
 
 	ClassDB::bind_method(D_METHOD("set_material_set", "value"), &PixelWorld::set_material_set);
 	ClassDB::bind_method(D_METHOD("get_material_set"), &PixelWorld::get_material_set);
@@ -59,6 +75,8 @@ void PixelWorld::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_arena"), &PixelWorld::get_arena);
 	ClassDB::bind_method(D_METHOD("set_simulating", "value"), &PixelWorld::set_simulating);
 	ClassDB::bind_method(D_METHOD("get_simulating"), &PixelWorld::get_simulating);
+	ClassDB::bind_method(D_METHOD("set_max_particles", "value"), &PixelWorld::set_max_particles);
+	ClassDB::bind_method(D_METHOD("get_max_particles"), &PixelWorld::get_max_particles);
 
 	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "material_set", PROPERTY_HINT_RESOURCE_TYPE, "PixelMaterialSet"), "set_material_set", "get_material_set");
 	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "generator", PROPERTY_HINT_RESOURCE_TYPE, "PixelWorldGenerator"), "set_generator", "get_generator");
@@ -73,6 +91,7 @@ void PixelWorld::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::VECTOR2I, "load_radius"), "set_load_radius", "get_load_radius");
 	ADD_PROPERTY(PropertyInfo(Variant::RECT2I, "arena"), "set_arena", "get_arena");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "simulating"), "set_simulating", "get_simulating");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "max_particles"), "set_max_particles", "get_max_particles");
 }
 
 void PixelWorld::_ready() {
@@ -115,6 +134,8 @@ void PixelWorld::_ready() {
 	pool = std::make_unique<JobPool>(worker_threads == -1 ? JobPool::default_workers() : worker_threads);
 	grid = std::make_unique<WorldGrid>(table, (uint32_t)world_seed);
 	sim = std::make_unique<Simulator>(*grid, pool.get());
+	particles = std::make_unique<ParticlePool>(*grid, max_particles);
+	create_particle_view();
 
 	pixels.resize(CHUNK * CHUNK * 4);
 	upload_image = Image::create_from_data(CHUNK, CHUNK, false, Image::FORMAT_RGBA8, pixels);
@@ -151,11 +172,17 @@ void PixelWorld::_process(double) {
 		stream_chunks();
 	}
 	upload_dirty_chunks();
+	draw_particles();
 	view_missing = streamer ? count_view_missing() : 0;
 }
 
 void PixelWorld::_physics_process(double) {
-	if (simulating && sim) sim->tick();
+	if (simulating && sim) tick_world();
+}
+
+void PixelWorld::tick_world() {
+	sim->tick();
+	particles->step();
 }
 
 void PixelWorld::_notification(int p_what) {
@@ -167,6 +194,63 @@ void PixelWorld::_notification(int p_what) {
 		if (kv.second.canvas_item.is_valid()) rs->free_rid(kv.second.canvas_item);
 	}
 	views.clear();
+	if (particle_canvas_item.is_valid()) rs->free_rid(particle_canvas_item);
+	if (particle_multimesh.is_valid()) rs->free_rid(particle_multimesh);
+	particle_canvas_item = RID();
+	particle_multimesh = RID();
+}
+
+void PixelWorld::create_particle_view() {
+	if (max_particles <= 0) return;
+	RenderingServer *rs = RenderingServer::get_singleton();
+	particle_quad.instantiate();  // 1x1, centred on the instance origin
+	particle_multimesh = rs->multimesh_create();
+	rs->multimesh_set_mesh(particle_multimesh, particle_quad->get_rid());
+	rs->multimesh_allocate_data(particle_multimesh, max_particles, RenderingServer::MULTIMESH_TRANSFORM_2D, true);
+	rs->multimesh_set_visible_instances(particle_multimesh, 0);
+	particle_canvas_item = rs->canvas_item_create();
+	rs->canvas_item_set_parent(particle_canvas_item, get_canvas_item());
+	rs->canvas_item_set_z_index(particle_canvas_item, 1);  // above chunk views made later
+	rs->canvas_item_add_multimesh(particle_canvas_item, particle_multimesh);
+	particle_buffer.resize((int64_t)max_particles * FLOATS_PER_PARTICLE);
+}
+
+// Writes every particle into the MultiMesh buffer, snapped to the pixel grid. The buffer must
+// be sent whole; visible_instances limits what draws.
+void PixelWorld::draw_particles() {
+	if (!particle_multimesh.is_valid()) return;
+	const std::vector<Particle> &material = particles->material();
+	const std::vector<VisualParticle> &visual = particles->visual();
+	const int count = (int)(material.size() + visual.size());
+	if (count == 0 && drawn_particles == 0) return;
+
+	float *out = particle_buffer.ptrw();
+	auto write = [&](float p_x, float p_y, const Color &p_color) {
+		out[0] = 1.0f;
+		out[1] = 0.0f;
+		out[2] = 0.0f;
+		out[3] = std::floor(p_x) + 0.5f;
+		out[4] = 0.0f;
+		out[5] = 1.0f;
+		out[6] = 0.0f;
+		out[7] = std::floor(p_y) + 0.5f;
+		out[8] = p_color.r;
+		out[9] = p_color.g;
+		out[10] = p_color.b;
+		out[11] = p_color.a;
+		out += FLOATS_PER_PARTICLE;
+	};
+	for (const Particle &p : material) write(p.x, p.y, cell_color(p.cell));
+	for (const VisualParticle &p : visual) {
+		Color color = color_from_rgba32(p.rgba);
+		color.a *= (float)p.life / (float)(p.lifetime > 0 ? p.lifetime : 1);
+		write(p.x, p.y, color);
+	}
+
+	RenderingServer *rs = RenderingServer::get_singleton();
+	rs->multimesh_set_buffer(particle_multimesh, particle_buffer);
+	rs->multimesh_set_visible_instances(particle_multimesh, count);
+	drawn_particles = count;
 }
 
 MatId PixelWorld::material_id(const StringName &p_material) const {
@@ -319,29 +403,31 @@ void PixelWorld::upload_dirty_chunks() {
 	upload_ms = (double)std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count() / 1000.0;
 }
 
+// Shared by chunk pixels and material particles. Material ids are data-derived, so this
+// bounds them itself instead of trusting them: an id past the palette draws nothing rather
+// than reading past its end.
+Color PixelWorld::cell_color(const Cell &p_cell) const {
+	if (p_cell.mat == MAT_AIR || p_cell.mat >= palette.size()) return Color(0, 0, 0, 0);
+	const PaletteEntry &entry = palette[p_cell.mat];
+	const float scale = 1.0f + entry.shade_amount * ((float)p_cell.shade / 255.0f - 0.5f);
+	Color color(entry.color.r * scale, entry.color.g * scale, entry.color.b * scale, entry.color.a);
+	if (p_cell.flags & FLAG_BURNING) {  // half-way towards a glowing orange
+		color.r = Math::lerp(color.r, 1.0f, 0.5f);
+		color.g = Math::lerp(color.g, 0.5f, 0.5f);
+		color.b = Math::lerp(color.b, 0.1f, 0.5f);
+	}
+	return color;
+}
+
 void PixelWorld::write_chunk_image(const Chunk &chunk, uint8_t *out) const {
 	for (int ly = 0; ly < CHUNK; ++ly)
 		for (int lx = 0; lx < CHUNK; ++lx) {
-			const Cell &cell = chunk.cells[(size_t)ly * CHUNK + lx];
+			const Color color = cell_color(chunk.cells[(size_t)ly * CHUNK + lx]);
 			uint8_t *px = out + ((size_t)ly * CHUNK + lx) * 4;
-			// Material ids are data-derived, so this loop bounds them itself instead of trusting
-			// them: an id past the palette draws nothing rather than reading past its end.
-			if (cell.mat == MAT_AIR || cell.mat >= palette.size()) {
-				px[0] = px[1] = px[2] = px[3] = 0;
-				continue;
-			}
-			const PaletteEntry &entry = palette[cell.mat];
-			const float scale = 1.0f + entry.shade_amount * ((float)cell.shade / 255.0f - 0.5f);
-			float r = entry.color.r * scale, g = entry.color.g * scale, b = entry.color.b * scale;
-			if (cell.flags & FLAG_BURNING) {  // half-way towards a glowing orange
-				r = Math::lerp(r, 1.0f, 0.5f);
-				g = Math::lerp(g, 0.5f, 0.5f);
-				b = Math::lerp(b, 0.1f, 0.5f);
-			}
-			px[0] = to_byte(r);
-			px[1] = to_byte(g);
-			px[2] = to_byte(b);
-			px[3] = to_byte(entry.color.a);
+			px[0] = to_byte(color.r);
+			px[1] = to_byte(color.g);
+			px[2] = to_byte(color.b);
+			px[3] = to_byte(color.a);
 		}
 }
 
@@ -406,7 +492,73 @@ int PixelWorld::fill_circle(const Vector2i &p_center, int p_radius, const String
 
 void PixelWorld::step(int p_ticks) {
 	if (!sim) return;
-	for (int i = 0; i < p_ticks; ++i) sim->tick();
+	for (int i = 0; i < p_ticks; ++i) tick_world();
+}
+
+// `p_velocity` rotated by a uniform angle in [-spread/2, spread/2] and scaled by [0.75, 1.25],
+// in cells per tick. Hashed from the tick and index, so the same inputs repeat.
+Vector2 PixelWorld::jittered(const Vector2 &p_velocity, float p_spread, int p_index, int p_count) const {
+	const uint32_t tick = sim->tick_count();
+	const float angle = (hash_unit(hash5((uint32_t)world_seed, tick, p_index, p_count, SALT_SPREAD)) - 0.5f) * p_spread;
+	const float scale = 0.75f + 0.5f * hash_unit(hash5((uint32_t)world_seed, tick, p_index, p_count, SALT_SCALE));
+	return p_velocity.rotated(angle) * (scale / TICKS_PER_SECOND);
+}
+
+int PixelWorld::spawn_particles(const StringName &p_material, const Vector2 &p_position, const Vector2 &p_velocity,
+                                int p_count, float p_spread) {
+	if (!particles || p_count <= 0) return 0;
+	const MatId id = material_id(p_material);
+	if (id == NO_MAT) return 0;
+	const Cell cell = spawn_cell(id, table, (uint32_t)world_seed, (int)std::floor(p_position.x),
+	                             (int)std::floor(p_position.y));
+	const int count = std::min(p_count, max_particles);  // the rest could never pool
+	int pooled = 0;
+	for (int i = 0; i < count; ++i) {
+		const Vector2 v = jittered(p_velocity, p_spread, i, count);
+		if (particles->emit(p_position.x, p_position.y, v.x, v.y, cell)) ++pooled;
+	}
+	return pooled;
+}
+
+int PixelWorld::spawn_visual_particles(const Color &p_color, const Vector2 &p_position, const Vector2 &p_velocity,
+                                       int p_count, float p_spread, float p_lifetime, float p_gravity_scale,
+                                       bool p_collides) {
+	if (!particles || p_count <= 0) return 0;
+	const float ticks = std::isfinite(p_lifetime) ? std::round(p_lifetime * TICKS_PER_SECOND) : 1.0f;
+	VisualParticle p;
+	p.x = p_position.x;
+	p.y = p_position.y;
+	p.rgba = p_color.to_rgba32();
+	p.lifetime = p.life = (uint16_t)CLAMP(ticks, 1.0f, 65535.0f);
+	p.gravity_scale = p_gravity_scale;
+	p.collides = p_collides;
+	const int count = std::min(p_count, max_particles);
+	int pooled = 0;
+	for (int i = 0; i < count; ++i) {
+		const Vector2 v = jittered(p_velocity, p_spread, i, count);
+		p.vx = v.x;
+		p.vy = v.y;
+		if (particles->emit_visual(p)) ++pooled;
+	}
+	return pooled;
+}
+
+int PixelWorld::explode(const Vector2i &p_position, int p_radius, float p_power) {
+	if (!particles) return 0;
+	return ::explode(*grid, *particles, p_position.x, p_position.y, p_radius, p_power / TICKS_PER_SECOND,
+	                 sim->tick_count())
+	    .removed;
+}
+
+Dictionary PixelWorld::raycast(const Vector2 &p_from, const Vector2 &p_to, int p_mask) const {
+	Dictionary out;
+	if (!grid) return out;
+	const RayHit hit = ::raycast(*grid, p_from.x, p_from.y, p_to.x, p_to.y, (uint32_t)p_mask);
+	if (!hit.hit) return out;
+	out["position"] = Vector2i(hit.x, hit.y);
+	out["material"] = hit.unloaded ? StringName() : StringName(table.name_of(hit.mat).c_str());
+	out["normal"] = Vector2i(hit.nx, hit.ny);
+	return out;
 }
 
 bool PixelWorld::is_chunk_loaded(const Vector2i &p_chunk) const {
@@ -449,6 +601,10 @@ Dictionary PixelWorld::get_stats() const {
 	stats["chunks_generated"] = streamer ? chunks_generated : (int64_t)0;
 	stats["stream_ms"] = streamer ? insert_evict_ms + first_upload_ms : 0.0;
 	stats["view_missing"] = streamer ? view_missing : 0;
+	stats["particles_material"] = particles ? (int64_t)particles->material().size() : (int64_t)0;
+	stats["particles_visual"] = particles ? (int64_t)particles->visual().size() : (int64_t)0;
+	stats["particles_dropped"] = particles ? particles->stats().dropped : (int64_t)0;
+	stats["particle_ms"] = particles ? particles->stats().particle_ms : 0.0;
 	return stats;
 }
 

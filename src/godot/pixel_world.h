@@ -6,11 +6,13 @@
 
 #include <godot_cpp/classes/image.hpp>
 #include <godot_cpp/classes/node2d.hpp>
+#include <godot_cpp/classes/quad_mesh.hpp>
 #include <godot_cpp/classes/ref.hpp>
 #include <godot_cpp/variant/color.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
 #include <godot_cpp/variant/node_path.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
+#include <godot_cpp/variant/packed_float32_array.hpp>
 #include <godot_cpp/variant/rect2i.hpp>
 #include <godot_cpp/variant/string_name.hpp>
 #include <godot_cpp/variant/vector2i.hpp>
@@ -18,6 +20,8 @@
 #include "core/chunk_streamer.h"
 #include "core/generator.h"
 #include "core/job_pool.h"
+#include "core/particles.h"
+#include "core/raycast.h"
 #include "core/simulator.h"
 #include "core/terrain.h"
 #include "core/world_grid.h"
@@ -57,8 +61,9 @@ class PixelWorld : public Node2D {
 	Vector2i load_radius = Vector2i(6, 4);
 	Rect2i arena = Rect2i(-512, -256, 1024, 512);
 	bool simulating = true;
+	int max_particles = DEFAULT_PARTICLE_CAPACITY;
 	// material_set, generator, world_seed, worker_threads, generator_threads,
-	// max_inserts_per_frame and arena are read once in _ready (set them before adding the node
+	// max_inserts_per_frame, max_particles and arena are read once in _ready (set them before adding the node
 	// to the tree); load_radius, follow_target, simulating, active_radius, loaded_margin and
 	// discard_hysteresis are live.
 
@@ -66,6 +71,7 @@ class PixelWorld : public Node2D {
 	std::unique_ptr<JobPool> pool;
 	std::unique_ptr<WorldGrid> grid;
 	std::unique_ptr<Simulator> sim;
+	std::unique_ptr<ParticlePool> particles;  // after `grid`, so it is destroyed first
 	std::unique_ptr<BoxGenerator> arena_generator;  // holds a reference to `table`
 	std::unique_ptr<TerrainGenerator> generator;    // ditto; null on the arena path
 	// Declared last so it is destroyed first: its workers join before the generator and the
@@ -75,6 +81,12 @@ class PixelWorld : public Node2D {
 	std::unordered_map<int64_t, ChunkView> views;
 	std::vector<PaletteEntry> palette;
 	PackedByteArray pixels;
+	// Every particle is one instance of a 1x1 quad in a MultiMesh on its own canvas item.
+	Ref<QuadMesh> particle_quad;
+	RID particle_multimesh;
+	RID particle_canvas_item;
+	PackedFloat32Array particle_buffer;  // 12 floats per instance: 2D transform, then colour
+	int drawn_particles = 0;
 	Ref<Image> upload_image;
 	double upload_ms = 0.0;
 	double first_upload_ms = 0.0;  // texture creation this frame, part of `stream_ms`
@@ -84,6 +96,11 @@ class PixelWorld : public Node2D {
 	int view_missing = 0;
 
 	MatId material_id(const StringName &p_material) const;
+	Color cell_color(const Cell &p_cell) const;
+	void tick_world();
+	void create_particle_view();
+	void draw_particles();
+	Vector2 jittered(const Vector2 &p_velocity, float p_spread, int p_index, int p_count) const;
 	Vector2i target_cell() const;
 	void stream_chunks();
 	void stream_generated_chunks();
@@ -143,6 +160,9 @@ public:
 	void set_simulating(bool p_value) { simulating = p_value; }
 	bool get_simulating() const { return simulating; }
 
+	void set_max_particles(int p_value) { max_particles = p_value; }
+	int get_max_particles() const { return max_particles; }
+
 	bool set_cell(const Vector2i &p_pos, const StringName &p_material);
 	StringName get_material_at(const Vector2i &p_pos) const;
 	bool is_area_ready(const Rect2i &p_rect) const;
@@ -153,6 +173,15 @@ public:
 	void step(int p_ticks);
 	bool is_chunk_loaded(const Vector2i &p_chunk) const;
 	Dictionary get_stats() const;
+
+	// Velocities and power are in cells per second; spread is the full cone angle in radians.
+	int spawn_particles(const StringName &p_material, const Vector2 &p_position, const Vector2 &p_velocity,
+	                    int p_count, float p_spread);
+	int spawn_visual_particles(const Color &p_color, const Vector2 &p_position, const Vector2 &p_velocity,
+	                           int p_count, float p_spread, float p_lifetime, float p_gravity_scale = 1.0f,
+	                           bool p_collides = true);
+	int explode(const Vector2i &p_position, int p_radius, float p_power);
+	Dictionary raycast(const Vector2 &p_from, const Vector2 &p_to, int p_mask = RAY_SOLID | RAY_POWDER) const;
 };
 
 } // namespace godot
