@@ -8,6 +8,7 @@
 script = ExtResource("1_demo")
 
 [node name="PixelWorld" type="PixelWorld" parent="."]
+lighting_enabled = false
 material_set = ExtResource("2_set")
 generator = ExtResource("3_gen")
 follow_target = NodePath("../Camera2D")

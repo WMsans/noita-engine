@@ -148,7 +148,7 @@ echo
 for lib in "${built[@]}"; do
 	echo "==> Build OK: $(ls -lh "$lib" | awk '{print $5}') $(basename "$lib")"
 done
-echo "    Registered native classes: PixelWorld, PixelMaterial, PixelMaterialSet, PixelReaction, PixelBiome, PixelRoom, PixelRoomPalette, PixelWorldGenerator, PixelRigidBody, PixelCharacter, PixelRevoluteJoint, PixelWheelJoint"
+echo "    Registered native classes: PixelWorld, PixelLight, PixelMaterial, PixelMaterialSet, PixelReaction, PixelBiome, PixelRoom, PixelRoomPalette, PixelWorldGenerator, PixelRigidBody, PixelCharacter, PixelRevoluteJoint, PixelWheelJoint"
 echo "    The editor always loads the template_debug library. Open the project in"
 echo "    Godot (or restart the editor) — 'Could not find type PixelWorld' parse"
 echo "    errors disappear once the library is loaded."

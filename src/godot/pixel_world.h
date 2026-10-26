@@ -20,6 +20,7 @@
 #include "core/chunk_streamer.h"
 #include "core/generator.h"
 #include "core/job_pool.h"
+#include "core/light_input.h"
 #include "core/particles.h"
 #include "core/physics.h"
 #include "core/raycast.h"
@@ -62,6 +63,19 @@ class PixelWorld : public Node2D {
 	Vector2i active_radius = Vector2i(8, 5);
 	int loaded_margin = 3;
 	int discard_hysteresis = 2;
+	// Lighting settings: all live, read every lit frame.
+	bool lighting_enabled = true;
+	float ambient = 0.05f;
+	float light_exposure = 1.0f;
+	int light_margin = 240;
+	Color backdrop_color = Color(0.07f, 0.05f, 0.04f);
+	Color fire_glow_color = Color(1.0f, 0.6f, 0.2f);
+	float fire_glow_energy = 1.5f;
+	Color marker_light_color = Color(1.0f, 0.75f, 0.4f);
+	float marker_light_energy = 1.5f;
+	float marker_light_radius = 48.0f;
+	float bloom_threshold = 1.0f;
+	float bloom_strength = 0.6f;
 	NodePath follow_target;
 	Vector2i load_radius = Vector2i(6, 4);
 	Rect2i arena = Rect2i(-512, -256, 1024, 512);
@@ -95,6 +109,19 @@ class PixelWorld : public Node2D {
 	RID particle_canvas_item;
 	PackedFloat32Array particle_buffer;  // 12 floats per instance: 2D transform, then colour
 	int drawn_particles = 0;
+	LightPalette light_palette;  // rebuilt when a fire-glow setting changes
+	// This frame's lit area and its RGBA8 inputs (r,g,b emission, a opacity), for the renderer.
+	LightArea light_area_now;
+	PackedByteArray light_texels;
+	bool light_ran_this_frame = false;
+	double light_cpu_ms = 0.0;
+	double light_gpu_ms = 0.0;  // filled from the GPU timestamps once the light pass exists
+	int light_spots = 0;
+	RID backdrop_canvas_item;
+	LightArea backdrop_area;
+	Color backdrop_painted_color;
+	bool backdrop_painted = false;
+	bool backdrop_visible = false;
 	Ref<Image> upload_image;
 	double upload_ms = 0.0;
 	double first_upload_ms = 0.0;  // texture creation this frame, part of `stream_ms`
@@ -119,6 +146,12 @@ class PixelWorld : public Node2D {
 	void drop_view(ChunkCoord coord);
 	void evict(ChunkCoord coord);
 	int count_view_missing() const;
+	bool visible_rect(Rect2 &r_rect) const;
+	void rebuild_light_palette();
+	void build_light_frame();
+	void update_light_backdrop(const LightArea &p_area);
+	void hide_light_backdrop();
+	void reset_light_stats();
 
 protected:
 	static void _bind_methods();
@@ -175,6 +208,48 @@ public:
 	void set_body_gravity(float p_value) { body_gravity = p_value; }
 	float get_body_gravity() const { return body_gravity; }
 
+	void set_lighting_enabled(bool p_value) { lighting_enabled = p_value; }
+	bool get_lighting_enabled() const { return lighting_enabled; }
+
+	void set_ambient(float p_value) { ambient = p_value; }
+	float get_ambient() const { return ambient; }
+
+	void set_light_exposure(float p_value) { light_exposure = p_value; }
+	float get_light_exposure() const { return light_exposure; }
+
+	void set_light_margin(int p_value) { light_margin = p_value; }
+	int get_light_margin() const { return light_margin; }
+
+	void set_backdrop_color(const Color &p_value) { backdrop_color = p_value; }
+	Color get_backdrop_color() const { return backdrop_color; }
+
+	void set_fire_glow_color(const Color &p_value) {
+		fire_glow_color = p_value;
+		rebuild_light_palette();
+	}
+	Color get_fire_glow_color() const { return fire_glow_color; }
+
+	void set_fire_glow_energy(float p_value) {
+		fire_glow_energy = p_value;
+		rebuild_light_palette();
+	}
+	float get_fire_glow_energy() const { return fire_glow_energy; }
+
+	void set_marker_light_color(const Color &p_value) { marker_light_color = p_value; }
+	Color get_marker_light_color() const { return marker_light_color; }
+
+	void set_marker_light_energy(float p_value) { marker_light_energy = p_value; }
+	float get_marker_light_energy() const { return marker_light_energy; }
+
+	void set_marker_light_radius(float p_value) { marker_light_radius = p_value; }
+	float get_marker_light_radius() const { return marker_light_radius; }
+
+	void set_bloom_threshold(float p_value) { bloom_threshold = p_value; }
+	float get_bloom_threshold() const { return bloom_threshold; }
+
+	void set_bloom_strength(float p_value) { bloom_strength = p_value; }
+	float get_bloom_strength() const { return bloom_strength; }
+
 	static constexpr int RAY_BODIES = 16;  // with the core's RAY_SOLID..RAY_GAS
 
 	// For PixelRigidBody and the joints (not bound): null until _ready has run.
@@ -194,6 +269,11 @@ public:
 	void step(int p_ticks);
 	bool is_chunk_loaded(const Vector2i &p_chunk) const;
 	Dictionary get_stats() const;
+
+	// C++ only, for the light pass: the area and RGBA8 texels built this frame.
+	const LightArea &get_light_area_now() const { return light_area_now; }
+	const PackedByteArray &get_light_texels() const { return light_texels; }
+	bool get_light_ran_this_frame() const { return light_ran_this_frame; }
 
 	// Velocities and power are in cells per second; spread is the full cone angle in radians.
 	int spawn_particles(const StringName &p_material, const Vector2 &p_position, const Vector2 &p_velocity,

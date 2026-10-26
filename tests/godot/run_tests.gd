@@ -153,7 +153,7 @@ func test_stats_keys() -> bool:
 	var world: PixelWorld = await _make_world()
 	var stats: Dictionary = world.get_stats()
 	world.free()
-	var keys: Array[String] = ["sim_ms", "upload_ms", "chunks_loaded", "chunks_simulated", "cells_updated", "tick", "chunks_active", "gen_pending", "gen_ms", "chunks_generated", "stream_ms", "view_missing", "particles_material", "particles_visual", "particles_dropped", "particle_ms"]
+	var keys: Array[String] = ["sim_ms", "upload_ms", "chunks_loaded", "chunks_simulated", "cells_updated", "tick", "chunks_active", "gen_pending", "gen_ms", "chunks_generated", "stream_ms", "view_missing", "particles_material", "particles_visual", "particles_dropped", "particle_ms", "light_cpu_ms", "light_gpu_ms", "light_spots"]
 	for key: String in keys:
 		if not stats.has(key):
 			printerr("  get_stats() is missing '%s'; keys are %s" % [key, stats.keys()])
@@ -923,3 +923,149 @@ func test_rgb8_room_image_accepted() -> bool:
 	if error != "":
 		printerr("  validate() said: '" + error + "'")
 	return error == ""
+
+
+# --- lighting (Plan 6) ------------------------------------------------------------------------
+
+func _colour_close(a: Color, b: Color) -> bool:
+	return is_equal_approx(a.r, b.r) and is_equal_approx(a.g, b.g) and is_equal_approx(a.b, b.b) and is_equal_approx(a.a, b.a)
+
+
+func _value_matches(a: Variant, b: Variant) -> bool:
+	if a is Color and b is Color:
+		return _colour_close(a, b)
+	if (a is float or a is int) and (b is float or b is int):
+		return is_equal_approx(float(a), float(b))
+	return a == b
+
+
+func test_lighting_settings_defaults() -> bool:
+	var world: PixelWorld = PixelWorld.new()
+	var light: PixelLight = PixelLight.new()
+	var defaults := {
+		"lighting_enabled": true,
+		"ambient": 0.05,
+		"light_exposure": 1.0,
+		"light_margin": 240,
+		"backdrop_color": Color(0.07, 0.05, 0.04),
+		"fire_glow_color": Color(1, 0.6, 0.2),
+		"fire_glow_energy": 1.5,
+		"marker_light_color": Color(1, 0.75, 0.4),
+		"marker_light_energy": 1.5,
+		"marker_light_radius": 48.0,
+		"bloom_threshold": 1.0,
+		"bloom_strength": 0.6,
+	}
+	var written := {
+		"lighting_enabled": false,
+		"ambient": 0.2,
+		"light_exposure": 2.0,
+		"light_margin": 64,
+		"backdrop_color": Color(0.1, 0.2, 0.3),
+		"fire_glow_color": Color(0.2, 0.3, 0.4),
+		"fire_glow_energy": 2.5,
+		"marker_light_color": Color(0.3, 0.4, 0.5),
+		"marker_light_energy": 2.0,
+		"marker_light_radius": 24.0,
+		"bloom_threshold": 2.0,
+		"bloom_strength": 0.9,
+	}
+	var light_defaults := {"color": Color(1, 0.75, 0.4), "energy": 1.5, "radius": 48.0, "flicker": 0.0, "enabled": true}
+	var light_written := {"color": Color(0.4, 0.5, 0.6), "energy": 3.0, "radius": 12.0, "flicker": 0.5, "enabled": false}
+	var problem := ""
+	for key in defaults:
+		if not _value_matches(world.get(key), defaults[key]):
+			problem = "PixelWorld.%s reads %s, expected %s" % [key, world.get(key), defaults[key]]
+	for key in light_defaults:
+		if problem == "" and not _value_matches(light.get(key), light_defaults[key]):
+			problem = "PixelLight.%s reads %s, expected %s" % [key, light.get(key), light_defaults[key]]
+	for key in written:
+		world.set(key, written[key])
+		if problem == "" and not _value_matches(world.get(key), written[key]):
+			problem = "PixelWorld.%s reads %s after writing %s" % [key, world.get(key), written[key]]
+	for key in light_written:
+		light.set(key, light_written[key])
+		if problem == "" and not _value_matches(light.get(key), light_written[key]):
+			problem = "PixelLight.%s reads %s after writing %s" % [key, light.get(key), light_written[key]]
+	world.free()
+	light.free()
+	if problem != "":
+		printerr("  " + problem)
+		return false
+	return true
+
+
+# Review Focus 1: lighting on with a PixelLight present under --headless builds no inputs and
+# prints no errors.
+func test_lighting_headless_noop() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.lighting_enabled = true
+	var light: PixelLight = PixelLight.new()
+	light.energy = 3.0
+	world.add_child(light)
+	for i: int in 5:
+		await process_frame
+	var stats: Dictionary = world.get_stats()
+	world.free()  # frees the light with it
+	var bad: PackedStringArray = []
+	for key: String in ["light_cpu_ms", "light_gpu_ms", "light_spots"]:
+		if not stats.has(key) or stats[key] != 0:
+			bad.append("%s=%s" % [key, stats.get(key)])
+	if not bad.is_empty():
+		printerr("  headless lighting stats: " + ", ".join(bad))
+		return false
+	return true
+
+
+# Review Focus 5: toggling lighting off and back on stays cheap under --headless.
+func test_lighting_toggle_stats() -> bool:
+	var world: PixelWorld = await _make_world()
+	var light: PixelLight = PixelLight.new()
+	world.add_child(light)
+	await process_frame
+	var bad: PackedStringArray = []
+	for on: bool in [false, true, false, true]:
+		world.lighting_enabled = on
+		await process_frame
+		var stats: Dictionary = world.get_stats()
+		for key: String in ["light_cpu_ms", "light_gpu_ms", "light_spots"]:
+			if stats[key] != 0:
+				bad.append("%s=%s with lighting_enabled=%s" % [key, stats[key], on])
+	world.free()
+	if not bad.is_empty():
+		printerr("  " + ", ".join(bad))
+		return false
+	return true
+
+
+func test_pixel_light_free_order() -> bool:
+	var world: PixelWorld = await _make_world()
+	var light: PixelLight = PixelLight.new()
+	root.add_child(light)  # a sibling, so it can outlive the world
+	await process_frame
+	light.free()
+	await process_frame
+	world.free()
+
+	var later: PixelWorld = await _make_world()
+	var survivor: PixelLight = PixelLight.new()
+	root.add_child(survivor)
+	await process_frame
+	later.free()
+	await process_frame
+	survivor.free()
+	await process_frame
+	return true
+
+
+func test_existing_scenes_opt_out() -> bool:
+	var scenes: Array[String] = ["res://demo/world_demo.tscn", "res://demo/paint_demo.tscn", "res://demo/bodies_demo.tscn", "res://demo/creatures_demo.tscn", "res://bench/bench.tscn"]
+	for path: String in scenes:
+		var scene: Node = load(path).instantiate()
+		var world: PixelWorld = scene.get_node_or_null("PixelWorld")
+		if world == null or world.lighting_enabled:
+			printerr("  %s: PixelWorld lighting_enabled is %s" % [path, "missing" if world == null else world.lighting_enabled])
+			scene.free()
+			return false
+		scene.free()
+	return true

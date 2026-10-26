@@ -6,12 +6,16 @@
 
 #include <godot_cpp/classes/image.hpp>
 #include <godot_cpp/classes/rendering_server.hpp>
+#include <godot_cpp/classes/scene_tree.hpp>
+#include <godot_cpp/classes/time.hpp>
 #include <godot_cpp/classes/viewport.hpp>
 #include <godot_cpp/core/class_db.hpp>
+#include <godot_cpp/variant/typed_array.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
 #include "core/rng.h"
 #include "pixel_character.h"
+#include "pixel_light.h"
 #include "pixel_rigid_body.h"
 
 namespace godot {
@@ -100,6 +104,44 @@ void PixelWorld::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "simulating"), "set_simulating", "get_simulating");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "max_particles"), "set_max_particles", "get_max_particles");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "body_gravity"), "set_body_gravity", "get_body_gravity");
+
+	ClassDB::bind_method(D_METHOD("set_lighting_enabled", "value"), &PixelWorld::set_lighting_enabled);
+	ClassDB::bind_method(D_METHOD("get_lighting_enabled"), &PixelWorld::get_lighting_enabled);
+	ClassDB::bind_method(D_METHOD("set_ambient", "value"), &PixelWorld::set_ambient);
+	ClassDB::bind_method(D_METHOD("get_ambient"), &PixelWorld::get_ambient);
+	ClassDB::bind_method(D_METHOD("set_light_exposure", "value"), &PixelWorld::set_light_exposure);
+	ClassDB::bind_method(D_METHOD("get_light_exposure"), &PixelWorld::get_light_exposure);
+	ClassDB::bind_method(D_METHOD("set_light_margin", "value"), &PixelWorld::set_light_margin);
+	ClassDB::bind_method(D_METHOD("get_light_margin"), &PixelWorld::get_light_margin);
+	ClassDB::bind_method(D_METHOD("set_backdrop_color", "value"), &PixelWorld::set_backdrop_color);
+	ClassDB::bind_method(D_METHOD("get_backdrop_color"), &PixelWorld::get_backdrop_color);
+	ClassDB::bind_method(D_METHOD("set_fire_glow_color", "value"), &PixelWorld::set_fire_glow_color);
+	ClassDB::bind_method(D_METHOD("get_fire_glow_color"), &PixelWorld::get_fire_glow_color);
+	ClassDB::bind_method(D_METHOD("set_fire_glow_energy", "value"), &PixelWorld::set_fire_glow_energy);
+	ClassDB::bind_method(D_METHOD("get_fire_glow_energy"), &PixelWorld::get_fire_glow_energy);
+	ClassDB::bind_method(D_METHOD("set_marker_light_color", "value"), &PixelWorld::set_marker_light_color);
+	ClassDB::bind_method(D_METHOD("get_marker_light_color"), &PixelWorld::get_marker_light_color);
+	ClassDB::bind_method(D_METHOD("set_marker_light_energy", "value"), &PixelWorld::set_marker_light_energy);
+	ClassDB::bind_method(D_METHOD("get_marker_light_energy"), &PixelWorld::get_marker_light_energy);
+	ClassDB::bind_method(D_METHOD("set_marker_light_radius", "value"), &PixelWorld::set_marker_light_radius);
+	ClassDB::bind_method(D_METHOD("get_marker_light_radius"), &PixelWorld::get_marker_light_radius);
+	ClassDB::bind_method(D_METHOD("set_bloom_threshold", "value"), &PixelWorld::set_bloom_threshold);
+	ClassDB::bind_method(D_METHOD("get_bloom_threshold"), &PixelWorld::get_bloom_threshold);
+	ClassDB::bind_method(D_METHOD("set_bloom_strength", "value"), &PixelWorld::set_bloom_strength);
+	ClassDB::bind_method(D_METHOD("get_bloom_strength"), &PixelWorld::get_bloom_strength);
+
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "lighting_enabled"), "set_lighting_enabled", "get_lighting_enabled");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ambient", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_ambient", "get_ambient");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "light_exposure", PROPERTY_HINT_RANGE, "0,8,0.01,or_greater"), "set_light_exposure", "get_light_exposure");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "light_margin", PROPERTY_HINT_RANGE, "0,4096,1"), "set_light_margin", "get_light_margin");
+	ADD_PROPERTY(PropertyInfo(Variant::COLOR, "backdrop_color"), "set_backdrop_color", "get_backdrop_color");
+	ADD_PROPERTY(PropertyInfo(Variant::COLOR, "fire_glow_color"), "set_fire_glow_color", "get_fire_glow_color");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "fire_glow_energy", PROPERTY_HINT_RANGE, "0,16,0.01,or_greater"), "set_fire_glow_energy", "get_fire_glow_energy");
+	ADD_PROPERTY(PropertyInfo(Variant::COLOR, "marker_light_color"), "set_marker_light_color", "get_marker_light_color");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "marker_light_energy", PROPERTY_HINT_RANGE, "0,16,0.01,or_greater"), "set_marker_light_energy", "get_marker_light_energy");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "marker_light_radius", PROPERTY_HINT_RANGE, "1,1024,0.5,or_greater"), "set_marker_light_radius", "get_marker_light_radius");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "bloom_threshold", PROPERTY_HINT_RANGE, "0,16,0.01,or_greater"), "set_bloom_threshold", "get_bloom_threshold");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "bloom_strength", PROPERTY_HINT_RANGE, "0,4,0.01,or_greater"), "set_bloom_strength", "get_bloom_strength");
 }
 
 void PixelWorld::_ready() {
@@ -137,6 +179,7 @@ void PixelWorld::_ready() {
 		palette[i].color = color_from_rgba32(material.color_rgba);
 		palette[i].shade_amount = material.shade_amount;
 	}
+	rebuild_light_palette();
 
 	// The pool must outlive the simulator, which is why the node owns both.
 	pool = std::make_unique<JobPool>(worker_threads == -1 ? JobPool::default_workers() : worker_threads);
@@ -185,6 +228,7 @@ void PixelWorld::_process(double) {
 	upload_dirty_chunks();
 	draw_particles();
 	view_missing = streamer ? count_view_missing() : 0;
+	build_light_frame();
 }
 
 void PixelWorld::_physics_process(double) {
@@ -287,8 +331,10 @@ void PixelWorld::_notification(int p_what) {
 	views.clear();
 	if (particle_canvas_item.is_valid()) rs->free_rid(particle_canvas_item);
 	if (particle_multimesh.is_valid()) rs->free_rid(particle_multimesh);
+	if (backdrop_canvas_item.is_valid()) rs->free_rid(backdrop_canvas_item);
 	particle_canvas_item = RID();
 	particle_multimesh = RID();
+	backdrop_canvas_item = RID();
 }
 
 void PixelWorld::create_particle_view() {
@@ -445,13 +491,19 @@ void PixelWorld::evict(ChunkCoord coord) {
 	if (it != loaded.end()) loaded.erase(it);
 }
 
-int PixelWorld::count_view_missing() const {
+// Viewport pixels -> canvas -> this node's space, so the visible rect is in world cells.
+bool PixelWorld::visible_rect(Rect2 &r_rect) const {
 	const Viewport *viewport = get_viewport();
-	if (!viewport) return 0;
-	// Viewport pixels -> canvas -> this node's space, so the visible rect is in world cells.
+	if (!viewport) return false;
 	const Transform2D view_to_local =
 	    get_global_transform().affine_inverse() * get_canvas_transform().affine_inverse();
-	const Rect2 visible = view_to_local.xform(viewport->get_visible_rect());
+	r_rect = view_to_local.xform(viewport->get_visible_rect());
+	return true;
+}
+
+int PixelWorld::count_view_missing() const {
+	Rect2 visible;
+	if (!visible_rect(visible)) return 0;
 	const int left = (int)std::floor(visible.position.x);
 	const int top = (int)std::floor(visible.position.y);
 	const int right = (int)std::ceil(visible.position.x + visible.size.x) - 1;
@@ -463,6 +515,103 @@ int PixelWorld::count_view_missing() const {
 		for (int x = c0.x; x <= c1.x; ++x)
 			if (!grid->find({x, y})) ++missing;
 	return missing;
+}
+
+void PixelWorld::rebuild_light_palette() {
+	if (table.size() == 0) return;  // the table is compiled in _ready, which rebuilds it
+	light_palette = LightPalette::build(table, fire_glow_color.r, fire_glow_color.g,
+	                                    fire_glow_color.b, fire_glow_energy);
+}
+
+void PixelWorld::reset_light_stats() {
+	light_cpu_ms = 0.0;
+	light_gpu_ms = 0.0;
+	light_spots = 0;
+	light_ran_this_frame = false;
+}
+
+// One RGBA8 texel per lit-area cell from the grid the physics frame just ticked, then the
+// game lights and room markers on top. --headless has no RenderingDevice: lighting is then a
+// no-op with zeroed stats, not an error.
+void PixelWorld::build_light_frame() {
+	RenderingServer *rs = RenderingServer::get_singleton();
+	Rect2 visible;
+	if (!lighting_enabled || !rs || !rs->get_rendering_device() || !visible_rect(visible)) {
+		reset_light_stats();
+		hide_light_backdrop();
+		return;
+	}
+	const LightArea area = light_area(visible.position.x, visible.position.y, visible.size.x,
+	                                  visible.size.y, light_margin, LIGHT_SNAP);
+	if (area.w <= 0 || area.h <= 0) {
+		reset_light_stats();
+		hide_light_backdrop();
+		return;
+	}
+
+	const auto start = std::chrono::steady_clock::now();
+	light_area_now = area;
+	light_texels.resize((int64_t)area.w * area.h * 4);
+	LightTexel *texels = reinterpret_cast<LightTexel *>(light_texels.ptrw());
+	build_light_inputs(*grid, light_palette, area, texels, pool.get());
+
+	std::vector<LightSpot> spots;
+	const double time = (double)Time::get_singleton()->get_ticks_msec() / 1000.0;
+	const TypedArray<Node> lights = get_tree()->get_nodes_in_group("pixel_light");
+	for (int i = 0; i < lights.size(); ++i) {
+		const PixelLight *light = Object::cast_to<PixelLight>(lights[i]);
+		if (!light || !light->get_enabled()) continue;
+		const Vector2 at = to_local(light->get_global_position());
+		const Color color = light->get_color();
+		spots.push_back(LightSpot{at.x, at.y, color.r, color.g, color.b,
+		                          light->current_energy(time), light->get_radius()});
+	}
+	const LightSpot marker{0.0f, 0.0f, marker_light_color.r, marker_light_color.g,
+	                       marker_light_color.b, marker_light_energy, marker_light_radius};
+	collect_marker_lights(*grid, area, marker, spots);
+	add_light_spots(area, spots, texels);
+
+	light_spots = (int)spots.size();
+	light_cpu_ms =
+	    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+	light_ran_this_frame = true;
+	update_light_backdrop(area);
+}
+
+// The air between the chunks needs something to light: one rect behind everything, redrawn
+// only when the lit area or its colour changes.
+void PixelWorld::update_light_backdrop(const LightArea &p_area) {
+	RenderingServer *rs = RenderingServer::get_singleton();
+	if (!rs) return;
+	if (!backdrop_canvas_item.is_valid()) {
+		backdrop_canvas_item = rs->canvas_item_create();
+		rs->canvas_item_set_parent(backdrop_canvas_item, get_canvas_item());
+		rs->canvas_item_set_z_index(backdrop_canvas_item, -4096);
+		rs->canvas_item_set_z_as_relative_to_parent(backdrop_canvas_item, false);
+		backdrop_painted = false;
+	}
+	if (!backdrop_painted || p_area.x0 != backdrop_area.x0 || p_area.y0 != backdrop_area.y0 ||
+	    p_area.w != backdrop_area.w || p_area.h != backdrop_area.h ||
+	    backdrop_color != backdrop_painted_color) {
+		rs->canvas_item_clear(backdrop_canvas_item);
+		rs->canvas_item_add_rect(backdrop_canvas_item,
+		                         Rect2((float)p_area.x0, (float)p_area.y0, (float)p_area.w, (float)p_area.h),
+		                         backdrop_color);
+		backdrop_area = p_area;
+		backdrop_painted_color = backdrop_color;
+		backdrop_painted = true;
+	}
+	if (!backdrop_visible) {
+		rs->canvas_item_set_visible(backdrop_canvas_item, true);
+		backdrop_visible = true;
+	}
+}
+
+void PixelWorld::hide_light_backdrop() {
+	if (!backdrop_visible) return;
+	RenderingServer *rs = RenderingServer::get_singleton();
+	if (rs && backdrop_canvas_item.is_valid()) rs->canvas_item_set_visible(backdrop_canvas_item, false);
+	backdrop_visible = false;
 }
 
 void PixelWorld::upload_dirty_chunks() {
@@ -736,6 +885,9 @@ Dictionary PixelWorld::get_stats() const {
 	stats["stamp_ms"] = physics_stats.stamp_ms;
 	stats["creatures"] = physics_stats.creatures;
 	stats["creature_ms"] = physics_stats.creature_ms;
+	stats["light_cpu_ms"] = light_cpu_ms;
+	stats["light_gpu_ms"] = light_gpu_ms;
+	stats["light_spots"] = light_spots;
 	return stats;
 }
 
