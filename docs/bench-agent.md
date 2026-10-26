@@ -4,11 +4,12 @@ Everything below runs from the repository root with `scons` and Godot 4.7.x on `
 commands are the same on both platforms; `./build.sh` picks `macos`/`linux` and `arm64`/`x86_64`
 from `uname` and passes them to `scons` explicitly. Copy-pasteable.
 
-Checkpoints: `bench/results/macos-m1-plan1.json` through `macos-m1-plan5.json` are done on
-the Apple M1 machine. The Linux Iris Xe machine owes `linux-irisxe-plan1.json` and
-`linux-irisxe-plan5.json`. Each plan's `bench_world` run replaces the one before: same scene,
-same camera path, the earlier workload plus the new one (Plan 3 explosions, Plan 4 bodies,
-Plan 5 creatures), and the earlier gates plus the new ones.
+Checkpoints: `bench/results/macos-m1-plan1.json` through `macos-m1-plan6.json` are done on
+the Apple M1 machine (Plan 6 is red on the frame gate; see the status section). The Linux Iris Xe
+machine owes `linux-irisxe-plan1.json` and `linux-irisxe-plan6.json`. Each plan's `bench_world`
+run replaces the one before: same scene, same camera path, the earlier workload plus the new one
+(Plan 3 explosions, Plan 4 bodies, Plan 5 creatures, Plan 6 lighting), and the earlier gates plus
+the new ones.
 
 ## 1. Get the branch
 
@@ -82,16 +83,24 @@ godot --path . res://bench/bench.tscn -- --frames=1800 --out=bench/results/macos
 godot --path . res://bench/bench.tscn -- --frames=1800 --out=bench/results/linux-irisxe-plan1.json
 ```
 
-Plan 5 (generated world: camera flies the surface/dive/cavern-run/return polyline at 10 cells
-per frame while chunks stream in, sleep and get discarded; every 20 frames a radius-24 sand
-disc is blown up with a burst of visual sparks; every 10 frames 10 crates and boulders and 8
-wandering creatures drop above the camera, and anything more than 600 cells away is freed,
-about 53 bodies and 43 creatures alive):
+Plan 6 (generated world, the earlier workload plus lighting): the camera flies the
+surface/dive/cavern-run/return polyline at 10 cells per frame while chunks stream in, sleep and
+get discarded; every 20 frames a radius-24 sand disc is blown up with a burst of visual sparks;
+every 10 frames 10 crates and boulders and 8 wandering creatures drop above the camera, and
+anything more than 600 cells away is freed; every 60 frames a 40×6 lava pool is painted at
+camera offset (−200, 60); and a `PixelLight` of radius 48 with flicker 0.3 is a child of the
+camera. About 53 bodies and 43 creatures are alive per frame, and the frame builds its light
+inputs, spots and GPU cascades every frame from the first one.
 
 ```bash
-godot --path . res://bench/bench_world.tscn -- --frames=1800 --out=bench/results/macos-m1-plan5.json
-godot --path . res://bench/bench_world.tscn -- --frames=1800 --out=bench/results/linux-irisxe-plan5.json
+godot --path . res://bench/bench_world.tscn -- --frames=1800 --out=bench/results/macos-m1-plan6.json
+godot --path . res://bench/bench_world.tscn -- --frames=1800 --out=bench/results/linux-irisxe-plan6.json
 ```
+
+Plan 6 **needs a real GPU**: lighting is the point of the run. Do not pass `--headless`; there is
+no `RenderingDevice` then, lighting is a silent no-op with zeroed stats, and the
+`light_spots_mean ≥ 1` gate is what catches that. Leave the window size alone (resizing changes
+the lit area, which is the view plus `light_margin`).
 
 Pick the `--out` that matches the machine. Defaults: `--frames=1800`; `--out=user://bench.json`
 for Plan 1 and `--out=user://bench_world.json` for Plan 2 (`bench/bench.gd` and
@@ -109,11 +118,16 @@ bench: 1680 frames (+120 warm-up) | sim 3.53 ms mean / 5.09 p99 | frame 8.35 / 1
 That line is the committed artifact, so a fresh run is compared against it; a re-run on an
 otherwise idle M1 lands within noise (sim p99 5.14, frame p99 10.56, upload 1.04).
 
-Plan 5 (Plan 4's committed line, without creatures, was sim 4.40 / 7.31, frame 9.70 / 14.48):
+Plan 6 on this M1 (the committed `bench/results/macos-m1-plan6.json`; **red** on the frame gate,
+see the status section — do not copy it as a target):
 
 ```
-bench world: 1680 frames (+120 warm-up) | sim 4.40 ms mean / 7.37 p99 | frame 9.98 / 15.13 ms | stream 0.08 / 0.31 ms | gen 0.68 ms | chunks 6099 | cells 343782 | view-missing 0 frames | particles 314 / visual 43, 0.032 ms mean / 0.075 p99, dropped 1640 | bodies 53 (awake 42), physics 0.15 + shapes 0.80 + stamp 0.42 = 1.37 ms mean / 2.56 p99, 3.8 builds | creatures 43, 0.155 ms mean / 0.225 p99 | budget pass | bench/results/...
+bench world: 1680 frames (+120 warm-up) | sim 4.45 ms mean / 7.39 p99 | frame 11.26 / 20.75 ms | stream 0.08 / 0.39 ms | gen 0.66 ms | chunks 6099 | cells 345095 | view-missing 0 frames | particles 313 / visual 42, 0.032 ms mean / 0.075 p99, dropped 1682 | bodies 54 (awake 42), physics 0.16 + shapes 0.82 + stamp 0.41 = 1.38 ms mean / 2.63 p99, 3.8 builds | creatures 43, 0.159 ms mean / 0.230 p99 | light 0.48 ms cpu mean / 0.66 p99 | light 0.000 ms gpu mean / 0.000 p99 (timestamps stubbed), spots 5.3 | budget FAIL | bench/results/...
 ```
+
+For reference, the same scene with `lighting_enabled = false` reproduces Plan 5's committed run
+(frame 9.98 / 15.01), so the lighting pass is the whole difference: about +1.3 ms of frame time on
+average and +6 ms at p99 on this machine.
 
 `frames` in the JSON is the number of sampled frames, i.e. `--frames` minus the 120 warm-up
 frames. `frame`/`sim`/`upload`/`stream` `*_ms_mean` and `*_p99` are over those samples; p99 is
@@ -128,10 +142,15 @@ chunks were awake per frame, and `view_missing_frames` counts frames with a hole
 `physics_ms_*` (Box2D step), `shape_ms_*` (terrain shape builds), `stamp_ms_*` (stamp +
 unstamp) and their sum `body_ms_*`; `shape_builds_mean` is chunk shape rebuilds per tick.
 `creatures_mean` is creatures alive per frame and `creature_ms_*` the creature grid pass.
+`light_cpu_ms_*` is the light-input build for one frame (grid walk into the RGBA8 texels, marker
+and spot collection, spot discs) — the plan's 1 ms CPU budget; `light_gpu_ms_*` is the light +
+bloom compute pass from RenderingDevice timestamps; `light_spots_mean` is how many lights the
+frame used (the camera torch plus room markers); `light_gpu_ms_supported` says whether the driver
+reported any GPU time at all.
 
 Budgets (`bench.gd` and `bench_world.gd`; do not relax them to make a run pass):
 
-| gate | Plan 1 | Plan 5 (`bench_world`) |
+| gate | Plan 1 | Plan 6 (`bench_world`) |
 |---|---|---|
 | `sim_ms_mean` | ≤ 6.0 | ≤ 6.0 |
 | `stream_ms_mean` / `stream_ms_p99` | — | ≤ 1.0 / ≤ 3.0 |
@@ -144,6 +163,18 @@ Budgets (`bench.gd` and `bench_world.gd`; do not relax them to make a run pass):
 | `bodies_mean` | — | ≥ 40 |
 | `creature_ms_mean` | — | ≤ 1.0 |
 | `creatures_mean` | — | ≥ 30 |
+| `light_cpu_ms_mean` | — | ≤ 1.0 |
+| `light_gpu_ms_mean` | — | ≤ 3.0 (light + bloom) |
+| `light_gpu_ms_mean > 0` | — | lighting really ran |
+| `light_spots_mean` | — | ≥ 1 |
+
+**macOS/Metal cannot report GPU time.** Godot 4.7.2's Metal driver stubs RenderingDevice
+timestamp queries (`timestamp_query_pool_get_results` just zeroes the buffer), so
+`light_gpu_ms_*` is always 0 there. The bench probes the samples: if not one is above zero it
+records `light_gpu_ms_supported: false` and skips **only** the `light_gpu_ms_mean > 0` clause. The
+`≤ 3.0` budget, the CPU budget and `light_spots_mean ≥ 1` still have to pass, and a driver that
+does report timestamps must report a non-zero mean. On Metal the only GPU signal left is
+`frame_ms_p99`.
 
 If `budget_pass` is `false`: re-run twice to rule out a cold or throttled machine, then record
 the numbers and report back before touching the simulator or the workload.
@@ -151,14 +182,14 @@ the numbers and report back before touching the simulator or the workload.
 ## 5. Commit
 
 ```bash
-git add bench/results/<machine>-plan1.json bench/results/<machine>-plan5.json
+git add bench/results/<machine>-plan1.json bench/results/<machine>-plan6.json
 git commit -m "bench: <machine> results"
 git push
 ```
 
 Commit the result JSON files only — never edit a budget or the workload to turn a red run green.
 The checkpoint is done when both files are committed with `budget_pass: true`. On the Linux
-machine that is `linux-irisxe-plan1.json` **and** `linux-irisxe-plan5.json`; Plans 2 to 5 are
+machine that is `linux-irisxe-plan1.json` **and** `linux-irisxe-plan6.json`; Plans 2 to 6 are
 complete only then.
 
 ## If anything fails, report back
@@ -176,7 +207,10 @@ complete only then.
   a stream gate (check `generator_threads` and `max_inserts_per_frame`), or
   `view_missing_frames > 0` (a real streaming hole), or a particle gate (`particle_ms_mean`:
   profile `ParticlePool::step`; `particles_material_mean` under 200: say so, don't shrink it), or
-  `body_ms_mean` (say which of physics / shapes / stamp dominates), or a creature gate.
+  `body_ms_mean` (say which of physics / shapes / stamp dominates), or a creature gate, or a
+  light gate (`light_cpu_ms_mean`: profile `build_light_inputs` + the spot discs; `frame_ms_p99`
+  with `lighting_enabled = false` says whether the light pass is what pushed it over;
+  `light_spots_mean` under 1 means lighting never ran — keep the `--headless` out of it).
 - **Environment:** `sw_vers`, `sysctl -n machdep.cpu.brand_string`, `sysctl -n hw.ncpu` on
   macOS; `lsb_release -a`, `lscpu` (or `grep 'model name' /proc/cpuinfo`), `nproc` on Linux.
 
@@ -186,8 +220,8 @@ Executed on 2026-10-25 on the Apple M1 machine (Apple M1, 8 cores, macOS 26.4.1,
 The branch was already checked out here and is not pushed, so step 1's `git fetch` /
 `git pull --ff-only` was **not** run — that part is for whoever runs this doc next.
 `./build.sh --release --test --verify` passed: both libraries OK,
-`152 | 152 passed`, `Status: SUCCESS!`,
-`OK: ALL GODOT TESTS PASSED.`
+`161 | 161 passed`, `Status: SUCCESS!`,
+`OK: ALL GODOT TESTS PASSED.` (Plan 6 re-ran it; Plans 1–5 saw 152 core cases.)
 
 Plan 1 — `bench/results/macos-m1-plan1.json`: `budget_pass: true`, `sim_ms_mean` 3.53 ms
 (budget 6.0), `sim_ms_p99` 5.09 ms, `frame_ms_mean` 8.35 ms, `upload_ms_mean` 1.02 ms,
@@ -220,8 +254,34 @@ rebuilds are rate-limited to one per chunk every 4 ticks, which is what brings s
 Plan 5 — `bench/results/macos-m1-plan5.json`: `budget_pass: true`, `sim_ms_mean` 4.40 ms,
 `frame_ms_p99` 15.13 ms (budget 16.6: the tightest margin now), `creatures_mean` 43,
 `creature_ms_mean` 0.155 ms (budget 1.0), p99 0.225 ms, `body_ms_mean` 1.37 ms,
-`particles_dropped` 1640 (creatures knocking sand out of piles add particles; not gated).
+`particles_dropped` 1640 (creatures knocking sand out of piles add particles; not gated). That
+run predates the lighting pass.
+
+Plan 6 — `bench/results/macos-m1-plan6.json`: **`budget_pass: false`** on this M1, and it is the
+one guardrail this plan did not clear. Every gate passes except `frame_ms_p99`: 20.75 ms against
+the 16.6 ms budget (three runs: 20.75, 21.16, 20.88). The lighting gates themselves pass —
+`light_cpu_ms_mean` 0.48 ms (budget 1.0, p99 0.66), `light_spots_mean` 5.3 (floor 1), and
+`light_gpu_ms_supported: false` because Metal cannot report GPU time, so the only GPU signal is
+the frame time. `sim_ms_mean` 4.45, `stream_ms_mean` 0.08, `frame_ms_mean` 11.26, `cells_updated_mean`
+345095, `view_missing_frames` 0, `body_ms_mean` 1.38, `creature_ms_mean` 0.159.
+
+The light pass is the whole difference: the same scene with `lighting_enabled = false` reproduces
+Plan 5 (frame 9.98 / 15.01), and the pass alone — bench workload, torch and lava removed — gives
+frame 11.22 / 20.95. It scales with the lit area, which is the view plus `light_margin` 240
+(992×768 at the default window): `light_margin = 0` (480×256) gives 10.31 / 16.61, `light_margin =
+120` gives 10.68 / 18.25. So the pass costs about 1.3 ms of frame time on average (inside the
+plan's 3 ms light + bloom GPU budget) but adds ~6 ms at p99, and Plan 5's baseline was already at
+15.1 ms of the 16.6 ms budget. Plan 5's numbers were measured before the light pass existed, so
+this is new GPU work, not a regression in the simulator.
+
+The plan's fallbacks for a GPU budget miss (half resolution, per-dirty-chunk inputs, then a
+GPU-side input pass) each need the user's go-ahead and none is implemented. Note that the first
+two fallbacks cut the CPU input cost (already 0.48 ms of the 1 ms budget) and half resolution is
+the one that would touch this failure: at a quarter of the texels (`light_margin = 0`) the p99
+lands at 16.6 ms, right on the budget.
 
 The Linux Iris Xe numbers are still an open hand-off: `bench/results/linux-irisxe-plan1.json`
-and `linux-irisxe-plan5.json` do not exist yet. Its 20 hardware threads and its GPU are the two
-things to watch — the stream gates first, then `sim_ms_mean`.
+and `linux-irisxe-plan6.json` do not exist yet. Its 20 hardware threads and its GPU are the two
+things to watch — the stream gates first, then whether its Vulkan driver reports
+`light_gpu_ms` at all (it should, so the `> 0` clause applies there) and what `frame_ms_p99`
+does with lighting on.

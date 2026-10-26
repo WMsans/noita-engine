@@ -15,6 +15,11 @@ generator = ExtResource("3_gen")
 world_seed = 1337
 follow_target = NodePath("../Camera2D")
 simulating = false
+lighting_enabled = true
 
 [node name="Camera2D" type="Camera2D" parent="."]
 position = Vector2(0, -40)
+
+[node name="Torch" type="PixelLight" parent="Camera2D"]
+radius = 48.0
+flicker = 0.3

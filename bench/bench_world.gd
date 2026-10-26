@@ -24,6 +24,11 @@ const BODY_BUDGET_MS := 2.0  # Box2D step + terrain shapes + stamping
 const BODIES_BUDGET := 40.0  # bodies alive on average, so a bench without bodies cannot pass
 const CREATURE_BUDGET_MS := 1.0
 const CREATURES_BUDGET := 30.0  # creatures alive on average
+# Lighting: the light-input build (grid walk + light copy) per frame, the GPU light + bloom
+# pass, and the spots that prove the pass ran on real lights.
+const LIGHT_CPU_BUDGET_MS := 1.0
+const LIGHT_GPU_BUDGET_MS := 3.0
+const LIGHT_SPOTS_BUDGET := 1.0
 # 50% of Plan 1's M1 figure (108383.9), the plan's floor for this bench: the generated world
 # must keep at least half an arena frame of work moving, so a gutted streaming demo cannot pass
 # by doing less work. The committed M1 run reports 3x this (325127).
@@ -74,6 +79,11 @@ const CREATURE_MAX := 48
 const WANDER_SPEED := 60.0
 const HOP_PERIOD := 90
 const HOP_SPEED := 180.0
+# Lighting: a lava pool every LAVA_PERIOD frames at a camera offset, plus the torch that is a
+# child of the camera in the scene. The lava lights its chunk's cells and the torch is a spot.
+const LAVA_PERIOD := 60
+const LAVA_SIZE := Vector2i(40, 6)
+const LAVA_OFFSET := Vector2i(-200, 60)
 
 @onready var world: PixelWorld = $PixelWorld
 @onready var camera: Camera2D = $Camera2D
@@ -105,6 +115,9 @@ var shape_build_samples: Array[float] = []
 var body_cost_samples: Array[float] = []
 var creature_samples: Array[float] = []
 var creature_ms_samples: Array[float] = []
+var light_cpu_samples: Array[float] = []
+var light_gpu_samples: Array[float] = []
+var light_spots_samples: Array[float] = []
 var creatures: Array[PixelCharacter] = []
 var bodies: Array[PixelRigidBody] = []
 var crate_texture: ImageTexture
@@ -152,6 +165,9 @@ func _process(_delta: float) -> void:
 		body_cost_samples.append(float(stats.physics_ms) + float(stats.shape_ms) + float(stats.stamp_ms))
 		creature_samples.append(float(stats.creatures))
 		creature_ms_samples.append(float(stats.creature_ms))
+		light_cpu_samples.append(float(stats.light_cpu_ms))
+		light_gpu_samples.append(float(stats.light_gpu_ms))
+		light_spots_samples.append(float(stats.light_spots))
 		if float(stats.gen_ms) > 0.0:
 			gen_samples.append(float(stats.gen_ms))
 		if int(stats.view_missing) > 0:
@@ -205,6 +221,8 @@ func _paint_workload(centre: Vector2i) -> void:
 		world.fill_circle(blast, EXPLODE_RADIUS, &"sand")
 		world.explode(blast, EXPLODE_RADIUS, EXPLODE_POWER)
 		world.spawn_visual_particles(Color.YELLOW, Vector2(blast), Vector2(0, -200), SPARK_COUNT, PI, SPARK_LIFETIME)
+	if frame % LAVA_PERIOD == 0:
+		world.fill_rect(Rect2i(centre + LAVA_OFFSET, LAVA_SIZE), &"lava")
 	_cycle_bodies(centre)
 	_cycle_creatures(centre)
 
@@ -285,6 +303,18 @@ func _finish() -> void:
 	var bodies_mean := _mean(body_samples)
 	var creatures_mean := _mean(creature_samples)
 	var creature_ms_mean := _mean(creature_ms_samples)
+	var light_cpu_mean := _mean(light_cpu_samples)
+	var light_gpu_mean := _mean(light_gpu_samples)
+	var light_spots_mean := _mean(light_spots_samples)
+	# macOS/Metal stubs RenderingDevice timestamp queries (the driver zeroes the results), so a
+	# driver that reports no GPU time at all is recorded as unsupported and only the "GPU time is
+	# above zero" clause is skipped. The <= 3 ms budget, the CPU budget and the spot count are
+	# kept as the proof that lighting ran.
+	var light_gpu_supported := false
+	for sample: float in light_gpu_samples:
+		if sample > 0.0:
+			light_gpu_supported = true
+			break
 	var result := {
 		"machine": OS.get_processor_name(),
 		"os": OS.get_name(),
@@ -323,6 +353,12 @@ func _finish() -> void:
 		"creatures_mean": creatures_mean,
 		"creature_ms_mean": creature_ms_mean,
 		"creature_ms_p99": _p99(creature_ms_samples),
+		"light_cpu_ms_mean": light_cpu_mean,
+		"light_cpu_ms_p99": _p99(light_cpu_samples),
+		"light_gpu_ms_mean": light_gpu_mean,
+		"light_gpu_ms_p99": _p99(light_gpu_samples),
+		"light_gpu_ms_supported": light_gpu_supported,
+		"light_spots_mean": light_spots_mean,
 		"budget_pass": sim_mean <= SIM_BUDGET_MS
 			and stream_mean <= STREAM_BUDGET_MS
 			and stream_p99 <= STREAM_P99_BUDGET_MS
@@ -334,10 +370,14 @@ func _finish() -> void:
 			and body_cost_mean <= BODY_BUDGET_MS
 			and bodies_mean >= BODIES_BUDGET
 			and creature_ms_mean <= CREATURE_BUDGET_MS
-			and creatures_mean >= CREATURES_BUDGET,
+			and creatures_mean >= CREATURES_BUDGET
+			and light_cpu_mean <= LIGHT_CPU_BUDGET_MS
+			and light_gpu_mean <= LIGHT_GPU_BUDGET_MS
+			and (not light_gpu_supported or light_gpu_mean > 0.0)
+			and light_spots_mean >= LIGHT_SPOTS_BUDGET,
 	}
 	var written := _write_json(result)
-	print("bench world: %d frames (+%d warm-up) | sim %.2f ms mean / %.2f p99 | frame %.2f / %.2f ms | stream %.2f / %.2f ms | gen %.2f ms | chunks %d | cells %.0f | view-missing %d frames | particles %.0f / visual %.0f, %.3f ms mean / %.3f p99, dropped %d | bodies %.0f (awake %.0f), physics %.2f + shapes %.2f + stamp %.2f = %.2f ms mean / %.2f p99, %.1f builds | creatures %.0f, %.3f ms mean / %.3f p99 | budget %s | %s" % [
+	print("bench world: %d frames (+%d warm-up) | sim %.2f ms mean / %.2f p99 | frame %.2f / %.2f ms | stream %.2f / %.2f ms | gen %.2f ms | chunks %d | cells %.0f | view-missing %d frames | particles %.0f / visual %.0f, %.3f ms mean / %.3f p99, dropped %d | bodies %.0f (awake %.0f), physics %.2f + shapes %.2f + stamp %.2f = %.2f ms mean / %.2f p99, %.1f builds | creatures %.0f, %.3f ms mean / %.3f p99 | light %.2f ms cpu mean / %.2f p99 | light %.3f ms gpu mean / %.3f p99 (timestamps %s), spots %.1f | budget %s | %s" % [
 		result.frames, WARMUP_FRAMES, result.sim_ms_mean, result.sim_ms_p99,
 		result.frame_ms_mean, result.frame_ms_p99, result.stream_ms_mean,
 		result.stream_ms_p99, result.gen_ms_mean, result.chunks_generated,
@@ -347,6 +387,9 @@ func _finish() -> void:
 		result.bodies_mean, result.bodies_awake_mean, result.physics_ms_mean, result.shape_ms_mean,
 		result.stamp_ms_mean, result.body_ms_mean, result.body_ms_p99, result.shape_builds_mean,
 		result.creatures_mean, result.creature_ms_mean, result.creature_ms_p99,
+		result.light_cpu_ms_mean, result.light_cpu_ms_p99,
+		result.light_gpu_ms_mean, result.light_gpu_ms_p99,
+		"reported" if result.light_gpu_ms_supported else "stubbed", result.light_spots_mean,
 		"pass" if result.budget_pass else "FAIL", out_path if written else "JSON NOT WRITTEN"])
 	get_tree().quit(0 if written else 1)
 
