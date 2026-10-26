@@ -1,7 +1,7 @@
 # Wall Surface Light — Design
 
 Date: 2026-10-26
-Status: draft
+Status: approved
 Parent spec: `docs/superpowers/specs/2026-10-26-lighting-design.md`. This adds one pass to its
 light pipeline; everything else there stands.
 
