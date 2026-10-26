@@ -30,8 +30,10 @@ constexpr uint32_t SALT_ROOM_PICK = 0x5Du;
 constexpr uint32_t SALT_ROOM_X = 0x5Eu;
 constexpr uint32_t SALT_ROOM_Y = 0x5Fu;
 
-// Sentinel in a room's resolved pixel table: the palette said keep the generated cell.
+// Sentinels in a room's resolved pixel table: the palette said keep the generated cell, or
+// stamp a light marker (air plus an entry in Chunk::light_markers).
 constexpr MatId MAT_KEEP = 0xFFFE;
+constexpr MatId MAT_LIGHT_MARKER = 0xFFFD;
 
 // Feature sizes the config has no field for: a band edge wobbles over ~500 cells, the
 // region warp over ~1000.
@@ -119,6 +121,8 @@ std::unique_ptr<TerrainGenerator> TerrainGenerator::compile(const TerrainConfig&
 			}
 		} else if (entry.kind == PaletteKind::Keep) {
 			mat = MAT_KEEP;
+		} else if (entry.kind == PaletteKind::MarkerLight) {
+			mat = MAT_LIGHT_MARKER;
 		}
 		palette.emplace(entry.rgba, mat);  // a duplicate colour keeps its first entry
 	}
@@ -531,6 +535,7 @@ std::optional<RoomPlacement> TerrainGenerator::room_in_cell(int px, int py) cons
 
 void TerrainGenerator::generate(ChunkCoord coord, Chunk& out, uint32_t seed) const {
 	(void)seed;  // every field was seeded by compile(); a different seed needs a new generator
+	out.light_markers.clear();
 	const int base_x = coord.x * CHUNK;
 	const int base_y = coord.y * CHUNK;
 	// room_cell_size is a multiple of CHUNK, so a chunk lies in exactly one placement cell.
@@ -579,6 +584,10 @@ void TerrainGenerator::generate(ChunkCoord coord, Chunk& out, uint32_t seed) con
 					const MatId stamped = (*room_cells)[(size_t)ry * room_def->width + rx];
 					if (stamped != MAT_KEEP) mat = stamped;
 				}
+			}
+			if (mat == MAT_LIGHT_MARKER) {
+				mat = MAT_AIR;
+				out.light_markers.push_back((uint16_t)(ly * CHUNK + lx));
 			}
 			out.at(lx, ly) = spawn_cell(mat, table_, seed_, wx, wy);
 		}

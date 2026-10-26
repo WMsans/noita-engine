@@ -3,6 +3,8 @@
 #include <atomic>
 #include <cassert>
 #include <cstddef>
+#include <cstdint>
+#include <vector>
 
 #include "cell.h"
 #include "coords.h"
@@ -32,6 +34,8 @@ struct Chunk {
 	std::atomic_flag next_lock = ATOMIC_FLAG_INIT;  // guards `next`; other chunks' workers write it
 	std::atomic<bool> render_dirty{true};
 	std::atomic<bool> shape_dirty{true};  // set with render_dirty; PhysicsWorld clears it
+	// Local indices (ly * CHUNK + lx) of the @light room markers stamped in this chunk.
+	std::vector<uint16_t> light_markers;
 
 	Cell& at(int lx, int ly) {
 		assert(lx >= 0 && lx < CHUNK && ly >= 0 && ly < CHUNK);  // debug only

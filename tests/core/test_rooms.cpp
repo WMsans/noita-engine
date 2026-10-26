@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -111,6 +112,15 @@ void check_cell_stamp(int px, int py) {
 				++material;
 			} else if (c == C_LIGHT) {
 				CHECK_MESSAGE(a.at(wx, wy) == MAT_AIR, "marker air at " << wx << "," << wy);
+				const ChunkCoord cc = chunk_of(wx, wy);
+				const uint16_t local =
+				    (uint16_t)((wy - cc.y * CHUNK) * CHUNK + (wx - cc.x * CHUNK));
+				const std::vector<uint16_t>& ma = a.chunk(cc).light_markers;
+				const std::vector<uint16_t>& mb = b.chunk(cc).light_markers;
+				CHECK_MESSAGE(std::find(ma.begin(), ma.end(), local) != ma.end(),
+				              "marker light in raster at " << wx << "," << wy);
+				CHECK_MESSAGE(std::find(mb.begin(), mb.end(), local) != mb.end(),
+				              "marker light in reverse at " << wx << "," << wy);
 				++markers;
 			} else if (c == C_AIR) {
 				CHECK_MESSAGE(a.at(wx, wy) == MAT_AIR, "room air at " << wx << "," << wy);
@@ -121,6 +131,9 @@ void check_cell_stamp(int px, int py) {
 				if (clean.at(wx, wy) != MAT_AIR) ++kept_on_ground;
 			}
 		}
+	int total_markers = 0;
+	for (const ChunkCoord& c : raster) total_markers += (int)a.chunk(c).light_markers.size();
+	CHECK(total_markers == 1);
 	CHECK(material > 0);
 	CHECK(markers == 1);
 	CHECK(kept == 100);

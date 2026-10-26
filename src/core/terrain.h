@@ -110,7 +110,7 @@ private:
 	const MaterialTable& table_;  // must outlive the generator
 	const uint32_t seed_;
 	const TerrainConfig config_;
-	// Each room's pixels resolved through the palette: a MatId, or MAT_KEEP for keep.
+	// Each room's pixels resolved through the palette: a MatId, MAT_KEEP or MAT_LIGHT_MARKER.
 	std::vector<std::vector<MatId>> room_pixels_;  // parallel to config_.rooms
 	std::vector<Band> bands_;
 	std::vector<int> region_offset_;  // per band, from a hash of the seed
