@@ -116,7 +116,7 @@ public:
 
 	const std::vector<BodyHit>& hits() const { return hits_; }
 	std::vector<int> take_left_world();  // handles whose chunk unloaded since the last call
-	// Closest enabled body along the segment.
+	// Closest enabled body or creature along the segment.
 	bool raycast(float x0, float y0, float x1, float y1, int& handle, float& hx, float& hy, float& nx,
 	             float& ny) const;
 	const PhysicsStats& stats() const { return stats_; }

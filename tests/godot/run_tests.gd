@@ -464,6 +464,112 @@ func test_wheel_joint_motor() -> bool:
 	return true
 
 
+# --- creatures (Plan 5) ----------------------------------------------------------------------
+
+func _make_character(at: Vector2) -> PixelCharacter:
+	var character := PixelCharacter.new()
+	character.position = at
+	root.add_child(character)
+	return character
+
+
+func test_character_walks_and_lands() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	var character := _make_character(Vector2(0, 200))
+	await _register()
+	world.step(60)
+	var landed_y := character.position.y
+	var on_floor := character.is_on_floor()
+	for i: int in 30:
+		character.velocity = Vector2(100, character.velocity.y)
+		world.step(1)
+	var walked := character.position.x
+	var creatures: int = world.get_stats().creatures
+	world.free()
+	character.free()
+	if absf(landed_y - 248.0) > 1.0 or not on_floor or walked < 40.0 or creatures != 1:
+		printerr("  landed at y %.2f (248), on floor %s, walked to x %.1f (>= 40), %d creatures" % [landed_y, on_floor, walked, creatures])
+		return false
+	return true
+
+
+func test_character_jumps_and_hits_ceiling() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	world.fill_rect(Rect2i(-20, 215, 40, 5), &"rock")
+	var character := _make_character(Vector2(0, 240))
+	await _register()
+	world.step(30)
+	character.velocity = Vector2(0, -400)
+	var ceiling := false
+	for i: int in 10:
+		world.step(1)
+		ceiling = ceiling or character.is_on_ceiling()
+	var y := character.position.y
+	world.free()
+	character.free()
+	if not ceiling or y < 228.0:
+		printerr("  hit the ceiling: %s, y %.2f (expected >= 228, under the rock)" % [ceiling, y])
+		return false
+	return true
+
+
+func test_character_swims() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	world.fill_rect(Rect2i(-60, 200, 120, 56), &"water")
+	var character := _make_character(Vector2(0, 150))
+	await _register()
+	world.step(60)
+	var ok := character.is_in_liquid() and character.get_liquid_material() == &"water" and character.get_submerged_fraction() > 0.5
+	var report := "in liquid %s, material %s, submerged %.2f" % [character.is_in_liquid(), character.get_liquid_material(), character.get_submerged_fraction()]
+	world.free()
+	character.free()
+	if not ok:
+		printerr("  " + report)
+	return ok
+
+
+func test_character_free_order() -> bool:
+	var world: PixelWorld = await _make_world()
+	var first := _make_character(Vector2(0, 200))
+	await _register()
+	world.step(5)
+	first.free()
+	world.step(5)
+	var second := _make_character(Vector2(20, 200))
+	await _register()
+	world.free()
+	await _register()
+	second.velocity = Vector2(10, 0)
+	second.apply_impulse(Vector2(1, 0))
+	var still := second.is_on_floor()
+	second.free()
+	return not still
+
+
+func test_character_pushes_body() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	var crate := _make_body(12, 12, &"wood", Vector2(30, 244))
+	var character := _make_character(Vector2(0, 248))
+	await _register()
+	world.step(20)
+	var start := crate.position.x
+	for i: int in 60:
+		character.velocity = Vector2(100, character.velocity.y)
+		world.step(1)
+	var moved := crate.position.x - start
+	world.free()
+	crate.free()
+	character.free()
+	if moved < 5.0:
+		printerr("  the crate moved %.1f cells, expected >= 5" % moved)
+		return false
+	return true
+
+
 # --- generated world (Plan 2) --------------------------------------------------------------
 
 # `target` must already be in the tree; the world's _ready blocks once to fill the active zone.

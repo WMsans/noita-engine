@@ -11,6 +11,7 @@
 #include <godot_cpp/variant/utility_functions.hpp>
 
 #include "core/rng.h"
+#include "pixel_character.h"
 #include "pixel_rigid_body.h"
 
 namespace godot {
@@ -144,6 +145,7 @@ void PixelWorld::_ready() {
 	particles = std::make_unique<ParticlePool>(*grid, max_particles);
 	create_particle_view();
 	physics = std::make_unique<PhysicsWorld>(*grid, body_gravity);
+	physics->set_particle_pool(particles.get());
 	add_to_group("pixel_world");
 
 	pixels.resize(CHUNK * CHUNK * 4);
@@ -206,12 +208,12 @@ void PixelWorld::tick_world() {
 // looked up by ObjectID each time: a signal handler may free any of them.
 void PixelWorld::sync_bodies() {
 	const Transform2D to_global = get_global_transform();
-	auto node_of = [&](int p_handle) -> PixelRigidBody * {
+	auto node_of = [&](int p_handle) -> PixelPhysicsNode * {
 		if (p_handle < 0 || (size_t)p_handle >= body_nodes.size() || !physics->has_body(p_handle)) return nullptr;
-		return Object::cast_to<PixelRigidBody>(ObjectDB::get_instance(body_nodes[(size_t)p_handle]));
+		return Object::cast_to<PixelPhysicsNode>(ObjectDB::get_instance(body_nodes[(size_t)p_handle]));
 	};
 	for (size_t h = 0; h < body_nodes.size(); ++h) {
-		PixelRigidBody *node = node_of((int)h);
+		PixelPhysicsNode *node = node_of((int)h);
 		if (!node) continue;
 		const b2BodyId id = physics->body_id((int)h);
 		if (!b2Body_IsEnabled(id)) continue;
@@ -222,14 +224,14 @@ void PixelWorld::sync_bodies() {
 	for (const BodyHit &hit : hits) {
 		const Vector2 point = to_global.xform(Vector2(hit.x, hit.y));
 		const Vector2 normal = to_global.basis_xform(Vector2(hit.nx, hit.ny)).normalized();
-		PixelRigidBody *a = node_of(hit.a);
-		PixelRigidBody *b = node_of(hit.b);
+		PixelPhysicsNode *a = node_of(hit.a);
+		PixelPhysicsNode *b = node_of(hit.b);
 		if (a) a->emit_signal("hit", b ? Variant(b) : Variant(), point, normal, hit.speed);
 		a = node_of(hit.a);
 		if (b && node_of(hit.b)) b->emit_signal("hit", a ? Variant(a) : Variant(), point, -normal, hit.speed);
 	}
 	for (int h : physics->take_left_world())
-		if (PixelRigidBody *node = node_of(h)) node->emit_signal("left_world");
+		if (PixelPhysicsNode *node = node_of(h)) node->emit_signal("left_world");
 }
 
 int PixelWorld::register_body(PixelRigidBody *p_body) {
@@ -250,6 +252,19 @@ int PixelWorld::register_body(PixelRigidBody *p_body) {
 	return handle;
 }
 
+int PixelWorld::register_character(PixelCharacter *p_character) {
+	if (!physics) return -1;
+	const CreatureDef def = p_character->build_def(get_global_transform().affine_inverse());
+	if (def.w <= 0 || def.h <= 0) {
+		UtilityFunctions::push_error("PixelCharacter " + String(p_character->get_path()) + ": hitbox_size must be positive");
+		return -1;
+	}
+	const int handle = physics->add_creature(def);
+	if (body_nodes.size() <= (size_t)handle) body_nodes.resize((size_t)handle + 1);
+	body_nodes[(size_t)handle] = p_character->get_instance_id();
+	return handle;
+}
+
 void PixelWorld::unregister_body(int p_handle) {
 	if (!physics) return;
 	physics->remove_body(p_handle);
@@ -260,7 +275,7 @@ void PixelWorld::_notification(int p_what) {
 	if (p_what != NOTIFICATION_PREDELETE) return;
 	// Bodies and joints may outlive the world: they must forget their Box2D ids first.
 	for (const ObjectID &id : body_nodes)
-		if (PixelRigidBody *node = Object::cast_to<PixelRigidBody>(ObjectDB::get_instance(id))) node->detach();
+		if (PixelPhysicsNode *node = Object::cast_to<PixelPhysicsNode>(ObjectDB::get_instance(id))) node->detach();
 	body_nodes.clear();
 	physics.reset();
 	RenderingServer *rs = RenderingServer::get_singleton();
@@ -719,6 +734,8 @@ Dictionary PixelWorld::get_stats() const {
 	stats["physics_ms"] = physics_stats.physics_ms;
 	stats["shape_ms"] = physics_stats.shape_ms;
 	stats["stamp_ms"] = physics_stats.stamp_ms;
+	stats["creatures"] = physics_stats.creatures;
+	stats["creature_ms"] = physics_stats.creature_ms;
 	return stats;
 }
 

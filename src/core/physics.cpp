@@ -575,7 +575,7 @@ std::vector<int> PhysicsWorld::take_left_world() {
 bool PhysicsWorld::raycast(float x0, float y0, float x1, float y1, int& handle, float& hx, float& hy,
                            float& nx, float& ny) const {
 	b2QueryFilter filter = b2DefaultQueryFilter();
-	filter.maskBits = CAT_BODY;
+	filter.maskBits = CAT_BODY | CAT_CREATURE;
 	const b2RayResult r = b2World_CastRayClosest(world, {x0, y0}, {x1 - x0, y1 - y0}, filter);
 	if (!r.hit) return false;
 	handle = handle_of(b2Shape_GetBody(r.shapeId));

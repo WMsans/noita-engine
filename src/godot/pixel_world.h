@@ -31,6 +31,8 @@
 
 namespace godot {
 
+class PixelCharacter;
+class PixelPhysicsNode;
 class PixelRigidBody;
 
 // Hosts one box world: streams chunks around the follow target, ticks the simulator once per
@@ -178,7 +180,9 @@ public:
 	// For PixelRigidBody and the joints (not bound): null until _ready has run.
 	PhysicsWorld *get_physics() const { return physics.get(); }
 	int register_body(PixelRigidBody *p_body);  // handle, or -1 after reporting why
-	void unregister_body(int p_handle);
+	int register_character(PixelCharacter *p_character);
+	void unregister_body(int p_handle);  // bodies and characters alike
+	StringName material_name(MatId p_id) const { return StringName(table.name_of(p_id).c_str()); }
 
 	bool set_cell(const Vector2i &p_pos, const StringName &p_material);
 	StringName get_material_at(const Vector2i &p_pos) const;

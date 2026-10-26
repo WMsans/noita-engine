@@ -1,7 +1,7 @@
 extends Node2D
 
 # Rigid-body demo on the generated world. Left / right drive the car (Space brakes), C drops
-# a crate and B a boulder at the mouse, S drops a sand pile and W a water blob, middle mouse
+# a crate and B a boulder at the mouse, S drops a sand pile and Q a water blob, middle mouse
 # explodes. The camera follows the car.
 
 const MOTOR_SPEED := 12.0  # rad/s
@@ -36,7 +36,7 @@ func _process(_delta: float) -> void:
 		joint.enable_motor = braking or drive != 0.0
 		joint.motor_speed = drive
 	var stats: Dictionary = world.get_stats()
-	info.text = "[Left/Right] drive  [Space] brake  [C] crate  [B] boulder  [S] sand  [W] water  [MMB] explode\nbodies %d awake %d   terrain bodies %d   shape builds %d\nphysics %.2f ms   shapes %.2f ms   stamp %.2f ms   sim %.2f ms   particles %d" % [
+	info.text = "[Left/Right] drive  [Space] brake  [C] crate  [B] boulder  [S] sand  [Q] water  [MMB] explode\nbodies %d awake %d   terrain bodies %d   shape builds %d\nphysics %.2f ms   shapes %.2f ms   stamp %.2f ms   sim %.2f ms   particles %d" % [
 		stats.bodies, stats.bodies_awake, stats.terrain_bodies, stats.shape_builds,
 		stats.physics_ms, stats.shape_ms, stats.stamp_ms, stats.sim_ms, stats.particles_material]
 
@@ -55,7 +55,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			add_body(texture_disc(14, Color(0.45, 0.45, 0.48)), &"rock", get_global_mouse_position(), PixelRigidBody.SHAPE_CIRCLE)
 		KEY_S:
 			world.fill_circle(_mouse_cell(), 10, &"sand")
-		KEY_W:
+		KEY_Q:
 			world.fill_circle(_mouse_cell(), 10, &"water")
 
 

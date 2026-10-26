@@ -1,7 +1,6 @@
 #include "pixel_rigid_body.h"
 
 #include <godot_cpp/classes/image.hpp>
-#include <godot_cpp/classes/scene_tree.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
@@ -22,8 +21,6 @@ void PixelRigidBody::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_friction"), &PixelRigidBody::get_friction);
 	ClassDB::bind_method(D_METHOD("set_restitution", "value"), &PixelRigidBody::set_restitution);
 	ClassDB::bind_method(D_METHOD("get_restitution"), &PixelRigidBody::get_restitution);
-	ClassDB::bind_method(D_METHOD("set_world", "value"), &PixelRigidBody::set_world);
-	ClassDB::bind_method(D_METHOD("get_world"), &PixelRigidBody::get_world_path);
 	ClassDB::bind_method(D_METHOD("set_linear_velocity", "value"), &PixelRigidBody::set_linear_velocity);
 	ClassDB::bind_method(D_METHOD("get_linear_velocity"), &PixelRigidBody::get_linear_velocity);
 	ClassDB::bind_method(D_METHOD("set_angular_velocity", "value"), &PixelRigidBody::set_angular_velocity);
@@ -41,56 +38,15 @@ void PixelRigidBody::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "shape", PROPERTY_HINT_ENUM, "Hull,Circle,Boxes"), "set_shape", "get_shape");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "friction"), "set_friction", "get_friction");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "restitution"), "set_restitution", "get_restitution");
-	ADD_PROPERTY(PropertyInfo(Variant::NODE_PATH, "world"), "set_world", "get_world");
 	ADD_PROPERTY(PropertyInfo(Variant::VECTOR2, "linear_velocity", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_NONE), "set_linear_velocity", "get_linear_velocity");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "angular_velocity", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_NONE), "set_angular_velocity", "get_angular_velocity");
-
-	ADD_SIGNAL(MethodInfo("hit", PropertyInfo(Variant::OBJECT, "other"), PropertyInfo(Variant::VECTOR2, "point"),
-	                      PropertyInfo(Variant::VECTOR2, "normal"), PropertyInfo(Variant::FLOAT, "speed")));
-	ADD_SIGNAL(MethodInfo("left_world"));
 
 	BIND_ENUM_CONSTANT(SHAPE_HULL);
 	BIND_ENUM_CONSTANT(SHAPE_CIRCLE);
 	BIND_ENUM_CONSTANT(SHAPE_BOXES);
 }
 
-void PixelRigidBody::_notification(int p_what) {
-	if (p_what != NOTIFICATION_EXIT_TREE) return;
-	PixelWorld *world = get_world();
-	if (world && handle >= 0) world->unregister_body(handle);
-	handle = -1;
-	world_id = ObjectID();
-}
-
-void PixelRigidBody::_ready() { set_physics_process(true); }
-
-PixelWorld *PixelRigidBody::find_world() const {
-	if (!world_path.is_empty()) return Object::cast_to<PixelWorld>(get_node_or_null(world_path));
-	SceneTree *tree = get_tree();
-	return tree ? Object::cast_to<PixelWorld>(tree->get_first_node_in_group("pixel_world")) : nullptr;
-}
-
-PixelWorld *PixelRigidBody::get_world() const {
-	return world_id.is_valid() ? Object::cast_to<PixelWorld>(ObjectDB::get_instance(world_id)) : nullptr;
-}
-
-void PixelRigidBody::detach() {
-	handle = -1;
-	world_id = ObjectID();
-}
-
-// Joins the world on the first physics frame, after every _ready (the world's included) ran.
-void PixelRigidBody::_physics_process(double) {
-	if (handle >= 0 || refused) return;
-	PixelWorld *world = find_world();
-	if (!world || !world->get_physics()) return;  // no world yet, or it has not started
-	handle = world->register_body(this);
-	if (handle < 0) {
-		refused = true;
-		return;
-	}
-	world_id = world->get_instance_id();
-}
+int PixelRigidBody::join(PixelWorld &p_world) { return p_world.register_body(this); }
 
 void PixelRigidBody::_draw() {
 	if (texture.is_valid()) draw_texture(texture, -texture->get_size() * 0.5f);
@@ -156,12 +112,6 @@ bool PixelRigidBody::build_def(const MaterialTable &p_table, const Transform2D &
 	r_def.friction = friction;
 	r_def.restitution = restitution;
 	return true;
-}
-
-b2BodyId PixelRigidBody::body() const {
-	PixelWorld *world = get_world();
-	if (!world || handle < 0 || !world->get_physics()) return b2_nullBodyId;
-	return world->get_physics()->body_id(handle);
 }
 
 // Godot positions are global; Box2D works in the world node's space.
