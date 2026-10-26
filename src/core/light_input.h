@@ -39,7 +39,7 @@ struct LightSpot {
 	float x, y, r, g, b, energy, radius;
 };
 
-int spot_source_radius(float radius);  // clamp(lround(radius / 8), 1, 6)
+int spot_source_radius(float radius);  // clamp(lround(radius / 6), 1, 8)
 
 // Adds colour·energy (packed) to rgb of every texel within the source radius of the spot,
 // saturating at 255; opacity untouched. Clipped to the area; non-finite spots skipped.

@@ -197,9 +197,9 @@ TEST_CASE("spots at the edge or nonsense are safe") {
 	LightTexel* const out = buf.data() + 64;
 	for (size_t i = 0; i < n; ++i) out[i] = LightTexel{0, 0, 0, 0};
 
-	CHECK(spot_source_radius(16.0f) == 2);
+	CHECK(spot_source_radius(16.0f) == 3);
 	CHECK(spot_source_radius(0.0f) == 1);
-	CHECK(spot_source_radius(1e6f) == 6);
+	CHECK(spot_source_radius(1e6f) == 8);
 	CHECK(spot_source_radius(-4.0f) == 1);
 
 	// Half outside: only the part inside the area is lit.
@@ -213,10 +213,10 @@ TEST_CASE("spots at the edge or nonsense are safe") {
 	add_light_spots(area, {LightSpot{20.5f, (float)area.y0 - 100.0f, 1, 1, 1, 2.0f, 16.0f}}, out);
 	CHECK(std::memcmp(out, snapshot.data(), n * sizeof(LightTexel)) == 0);
 
-	// A radius of 10^6 clamps to a source disc of 6 cells.
+	// A radius of 10^6 clamps to a source disc of 8 cells.
 	add_light_spots(area, {LightSpot{32.5f, 16.5f, 1, 1, 1, 2.0f, 1e6f}}, out);
 	CHECK(out[(size_t)16 * area.w + 32].r > 0);
-	CHECK(out[(size_t)16 * area.w + 20].r == 0);  // 12 cells away, outside the 6 cell disc
+	CHECK(out[(size_t)16 * area.w + 20].r == 0);  // 12 cells away, outside the 8 cell disc
 
 	// Non-finite positions write nothing.
 	snapshot.assign(out, out + n);

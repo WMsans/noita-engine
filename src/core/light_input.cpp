@@ -104,12 +104,12 @@ void build_light_inputs(const WorldGrid& grid, const LightPalette& palette,
 }
 
 // ponytail: radius -> source disc is a tuning knob, not physics. In 2D radiance cascades a
-// bigger source reaches farther; retune at the Task 5 checkpoint against "a torch at the
-// default radius lights a small cave room".
+// bigger source reaches farther; tuned at the Task 5 checkpoint against "a torch at the default
+// radius (48) lights a cave room about 40 cells across".
 int spot_source_radius(float radius) {
-	float r = radius / 8.0f;
+	float r = radius / 6.0f;
 	if (!(r >= 1.0f)) r = 1.0f;  // also catches NaN
-	if (r > 6.0f) r = 6.0f;
+	if (r > 8.0f) r = 8.0f;
 	return (int)std::lround(r);
 }
 
