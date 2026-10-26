@@ -16,7 +16,8 @@
 #   ./build.sh --tsan         build the core tests with ThreadSanitizer (implies --test)
 #   ./build.sh --verify       also run the Godot-side tests headless
 #                             (tests/godot/run_tests.gd) and check that no
-#                             "Could not find type" parse errors are reported
+#                             "Could not find type" parse errors or unexpected
+#                             error output is reported
 #   ./build.sh --clean        remove build artifacts before building
 #   ./build.sh -j N           override job count (default: nproc)
 #
@@ -209,6 +210,18 @@ if [ "$RUN_VERIFY" -eq 1 ]; then
 	if [ $status -ne 0 ] || ! printf '%s\n' "$out" | grep -q 'ALL GODOT TESTS PASSED'; then
 		echo "$out"
 		echo "build.sh: Godot tests failed (godot exited with status $status)" >&2
+		exit 1
+	fi
+	# The API-rejection tests below intentionally push_error; every other error line
+	# (in particular one from a --headless code path that should be a silent no-op)
+	# must fail the run. Keep this list in sync with run_tests.gd: the tests that
+	# provoke errors are test_unknown_material, test_material_write_rejects_unknown,
+	# test_particle_api_rejects_bad_input/_unbounded_input and test_body_bad_definitions.
+	allowed_errors='^ERROR: PixelWorld: unknown material .|^ERROR: PixelWorld\.explode: radius 1000 is over the limit of 256$|^ERROR: PixelWorld\.spawn(_visual)?_particles: position is not finite$|^ERROR: PixelRigidBody .*: (has no texture|texture has no opaque pixels|pixel .* colour .* is not a material in the palette|pixel_material .* is not a material)$'
+	unexpected="$(printf '%s\n' "$out" | grep -E '(^| )ERROR' | grep -vE "$allowed_errors" || true)"
+	if [ -n "$unexpected" ]; then
+		printf '%s\n' "$unexpected" >&2
+		echo "build.sh: unexpected error output from the Godot tests — see errors above" >&2
 		exit 1
 	fi
 	echo "    OK: ALL GODOT TESTS PASSED."
