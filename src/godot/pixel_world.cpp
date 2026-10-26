@@ -117,6 +117,8 @@ void PixelWorld::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_light_exposure"), &PixelWorld::get_light_exposure);
 	ClassDB::bind_method(D_METHOD("set_light_margin", "value"), &PixelWorld::set_light_margin);
 	ClassDB::bind_method(D_METHOD("get_light_margin"), &PixelWorld::get_light_margin);
+	ClassDB::bind_method(D_METHOD("set_light_resolution", "value"), &PixelWorld::set_light_resolution);
+	ClassDB::bind_method(D_METHOD("get_light_resolution"), &PixelWorld::get_light_resolution);
 	ClassDB::bind_method(D_METHOD("set_backdrop_color", "value"), &PixelWorld::set_backdrop_color);
 	ClassDB::bind_method(D_METHOD("get_backdrop_color"), &PixelWorld::get_backdrop_color);
 	ClassDB::bind_method(D_METHOD("set_fire_glow_color", "value"), &PixelWorld::set_fire_glow_color);
@@ -138,6 +140,7 @@ void PixelWorld::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ambient", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_ambient", "get_ambient");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "light_exposure", PROPERTY_HINT_RANGE, "0,8,0.01,or_greater"), "set_light_exposure", "get_light_exposure");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "light_margin", PROPERTY_HINT_RANGE, "0,4096,1"), "set_light_margin", "get_light_margin");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "light_resolution", PROPERTY_HINT_RANGE, "1,4,1"), "set_light_resolution", "get_light_resolution");
 	ADD_PROPERTY(PropertyInfo(Variant::COLOR, "backdrop_color"), "set_backdrop_color", "get_backdrop_color");
 	ADD_PROPERTY(PropertyInfo(Variant::COLOR, "fire_glow_color"), "set_fire_glow_color", "get_fire_glow_color");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "fire_glow_energy", PROPERTY_HINT_RANGE, "0,16,0.01,or_greater"), "set_fire_glow_energy", "get_fire_glow_energy");
@@ -542,9 +545,9 @@ void PixelWorld::reset_light_stats() {
 	light_ran_this_frame = false;
 }
 
-// One RGBA8 texel per lit-area cell from the grid the physics frame just ticked, then the
-// game lights and room markers on top. --headless has no RenderingDevice: lighting is then a
-// no-op with zeroed stats, not an error.
+// One RGBA8 texel per lit-area cell (per light_resolution x light_resolution cells above 1) from
+// the grid the physics frame just ticked, then the game lights and room markers on top. --headless
+// has no RenderingDevice: lighting is then a no-op with zeroed stats, not an error.
 void PixelWorld::build_light_frame() {
 	RenderingServer *rs = RenderingServer::get_singleton();
 	Rect2 visible;
@@ -562,17 +565,20 @@ void PixelWorld::build_light_frame() {
 	const int vis_h = 2 * LIGHT_SNAP * (int)std::ceil(visible.size.y / (2.0f * LIGHT_SNAP));
 	const float vis_x = std::floor((visible.position.x + visible.size.x * 0.5f) / snap) * snap - vis_w * 0.5f;
 	const float vis_y = std::floor((visible.position.y + visible.size.y * 0.5f) / snap) * snap - vis_h * 0.5f;
-	const LightArea area =
-	    light_area(vis_x, vis_y, (float)vis_w, (float)vis_h, light_margin, LIGHT_SNAP);
+	LightArea area = light_area(vis_x, vis_y, (float)vis_w, (float)vis_h, light_margin, LIGHT_SNAP);
+	// The cap stays in cells: the input buffer is cells x 4 bytes at scale 1 and smaller above it.
 	if (!light_area_fits(area)) {
 		reset_light_stats();
 		hide_light_backdrop();
 		hide_light_overlay();
 		return;
 	}
+	area.scale = light_resolution;
 
 	light_area_now = area;
-	const int64_t bytes = (int64_t)area.w * area.h * 4;
+	const int texel_w = light_texel_w(area);
+	const int texel_h = light_texel_h(area);
+	const int64_t bytes = (int64_t)texel_w * texel_h * 4;
 	light_texels.resize(bytes);
 	if (light_texels.size() != bytes) {  // resize failed: never write through a null pointer
 		reset_light_stats();
@@ -708,9 +714,12 @@ void PixelWorld::update_light_overlay(const LightArea &p_area) {
 		}
 	}
 
-	// Read the rendered area before the generation: the area is published last, so a generation
-	// read after it sees the textures that area was rendered into (no stale texture is wrapped).
-	const bool rendered = light_renderer->has_rendered_area(p_area.w, p_area.h);
+	// Read the rendered texel size before the generation: the area is published last, so a
+	// generation read after it sees the textures that texel size was rendered into (no stale
+	// texture is wrapped).
+	const int texel_w = light_texel_w(p_area);
+	const int texel_h = light_texel_h(p_area);
+	const bool rendered = light_renderer->has_rendered_area(texel_w, texel_h);
 	const int generation = light_renderer->texture_generation();
 	const bool new_textures = generation != light_texture_generation;
 	if (new_textures) {
@@ -722,12 +731,13 @@ void PixelWorld::update_light_overlay(const LightArea &p_area) {
 	}
 
 	// The rects map the lit area in world cells onto the textures: the world-local rect times the
-	// canvas transform is exactly one texel per cell.
+	// canvas transform is one texel per light texel (light_resolution cells), so the overlay itself
+	// is what scales the coarser texture back up.
 	const auto rebuild_rects = [&]() {
 		const Rect2 rect((float)p_area.x0, (float)p_area.y0, (float)p_area.w, (float)p_area.h);
-		const Rect2 light_region(0.0f, 0.0f, (float)p_area.w, (float)p_area.h);
+		const Rect2 light_region(0.0f, 0.0f, (float)texel_w, (float)texel_h);
 		// The bloom texture is the light output at a quarter resolution.
-		const Rect2 bloom_region(0.0f, 0.0f, (float)((p_area.w + 3) / 4), (float)((p_area.h + 3) / 4));
+		const Rect2 bloom_region(0.0f, 0.0f, (float)((texel_w + 3) / 4), (float)((texel_h + 3) / 4));
 		rs->canvas_item_clear(light_canvas_item);
 		rs->canvas_item_add_texture_rect_region(light_canvas_item, rect, light_texture->get_rid(), light_region);
 		rs->canvas_item_clear(bloom_canvas_item);
@@ -743,7 +753,8 @@ void PixelWorld::update_light_overlay(const LightArea &p_area) {
 		return;
 	}
 	if (new_textures || p_area.x0 != light_overlay_area.x0 || p_area.y0 != light_overlay_area.y0 ||
-	    p_area.w != light_overlay_area.w || p_area.h != light_overlay_area.h) {
+	    p_area.w != light_overlay_area.w || p_area.h != light_overlay_area.h ||
+	    p_area.scale != light_overlay_area.scale) {
 		light_overlay_area = p_area;
 		rebuild_rects();
 	}

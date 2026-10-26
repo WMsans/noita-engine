@@ -60,15 +60,16 @@ class LightRenderer {
 public:
 	// Compiles the shaders and creates the sampler. False + error turns lighting off.
 	bool init(RenderingDevice *p_rd, String &r_error);
-	// (Re)creates the textures when the area outgrows them, uploads the texels, runs the
-	// cascades top-down, the light output and the bloom passes, and captures GPU timestamps.
+	// (Re)creates the textures when the texel size outgrows them, uploads the texels, runs the
+	// cascades top-down, the light output and the bloom passes, and captures GPU timestamps. The
+	// area is in world cells; everything the renderer sizes works in its texel dims.
 	void render(const PackedByteArray &p_texels, const LightArea &p_area, float p_bloom_threshold);
 	// For Texture2DRD on the main thread, after texture_generation() reports a new value.
 	RID light_rd() const { return light_texture; }
 	RID bloom_rd() const { return bloom_texture; }
 	// Bumped whenever light_rd()/bloom_rd() change, so the overlay can re-point and skip a frame.
 	int texture_generation() const { return generation.load(std::memory_order_acquire); }
-	// True once a render has completed for exactly this area size, so the overlay never stretches
+	// True once a render has completed for exactly this texel size, so the overlay never stretches
 	// a texture that was rendered for a different one.
 	bool has_rendered_area(int p_w, int p_h) const {
 		return p_w > 0 && rendered_w.load(std::memory_order_acquire) == p_w &&

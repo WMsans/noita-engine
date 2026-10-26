@@ -264,3 +264,124 @@ TEST_CASE("marker lights come from chunks in the area") {
 	collect_marker_lights(grid, {-512, -512, 64, 64}, defaults, out);
 	CHECK(out.empty());
 }
+
+TEST_CASE("half resolution packs 2x2 blocks") {
+	LightTable lt;
+	WorldGrid grid(lt.table, 1);
+	Chunk& chunk = *grid.insert(empty_chunk({0, 0}));
+	chunk.at(0, 0).mat = lt.lava;  // one lava cell in the first block
+	for (int y = 0; y < 2; ++y)
+		for (int x = 2; x < 4; ++x) chunk.at(x, y).mat = lt.rock;  // the second block solid
+
+	LightArea area{0, 0, 4, 4};  // world cells
+	area.scale = 2;              // world cells per texel
+	REQUIRE(light_texel_w(area) == 2);
+	REQUIRE(light_texel_h(area) == 2);
+	// Slack after the texels: a build that still writes one texel per cell must not corrupt this
+	// test's own buffer while it is failing.
+	std::vector<LightTexel> buf((size_t)light_texel_w(area) * light_texel_h(area) + 64, CLEAR);
+	const LightTexel *out = buf.data();
+	build_light_inputs(grid, fire_palette(lt.table), area, buf.data(), nullptr);
+
+	// Per-channel max emission keeps a lone lava cell glowing; opacity is the block mean.
+	const LightTexel lava{128, 57, 13, 19};
+	CHECK(std::memcmp(&out[0], &lava, sizeof(LightTexel)) == 0);
+	const LightTexel rock{0, 0, 0, 255};
+	CHECK(std::memcmp(&out[1], &rock, sizeof(LightTexel)) == 0);
+	CHECK(std::memcmp(&out[2], &CLEAR, sizeof(LightTexel)) == 0);  // block of air
+	CHECK(std::memcmp(&out[3], &CLEAR, sizeof(LightTexel)) == 0);
+}
+
+TEST_CASE("half resolution opacity is the block mean") {
+	LightTable lt;
+	WorldGrid grid(lt.table, 1);
+	Chunk& chunk = *grid.insert(empty_chunk({0, 0}));
+	chunk.at(0, 0).mat = lt.rock;
+	chunk.at(1, 0).mat = lt.rock;  // two rock cells, two air cells in one block
+
+	LightArea area{0, 0, 2, 2};
+	area.scale = 2;
+	std::vector<LightTexel> buf((size_t)light_texel_w(area) * light_texel_h(area) + 64, CLEAR);
+	build_light_inputs(grid, fire_palette(lt.table), area, buf.data(), nullptr);
+	const LightTexel half{0, 0, 0, 128};  // (255 + 255 + 0 + 0) / 4
+	CHECK(std::memcmp(&buf[0], &half, sizeof(LightTexel)) == 0);
+}
+
+TEST_CASE("half resolution spots land in texel space") {
+	LightArea area{0, 0, 32, 32};  // world cells
+	area.scale = 2;                // 16x16 texels
+	const int tw = light_texel_w(area);
+	const int th = light_texel_h(area);
+	REQUIRE(tw == 16);
+	REQUIRE(th == 16);
+	const LightTexel SENTINEL{17, 34, 51, 68};
+	// Slack on both sides: a build that still writes one texel per cell must not corrupt this
+	// test's own buffer while it is failing.
+	std::vector<LightTexel> buf((size_t)area.w * area.h + 2048, SENTINEL);
+	LightTexel* const out = buf.data() + 1024;
+	for (size_t i = 0; i < (size_t)tw * th; ++i) out[i] = LightTexel{0, 0, 0, 0};
+
+	// A one-texel source disc lights texel (8, 8) and its four neighbours: world (16, 16) is
+	// texel (8, 8), so the mapping is in texels, not cells.
+	add_light_spots(area, {LightSpot{16.0f, 16.0f, 1.0f, 1.0f, 1.0f, 2.0f, 6.0f}}, out);
+	for (int ty = 0; ty < th; ++ty)
+		for (int tx = 0; tx < tw; ++tx) {
+			const bool inside = (tx == 8 && ty == 8) || std::abs(tx - 8) + std::abs(ty - 8) == 1;
+			if ((out[(size_t)ty * tw + tx].r > 0) != inside) {
+				CAPTURE(tx);
+				CAPTURE(ty);
+				CHECK(false);
+			}
+		}
+
+	// The source radius is divided by the scale: radius 48 is 8 cells, so 4 texels here.
+	std::fill(out, out + (size_t)tw * th, LightTexel{0, 0, 0, 0});
+	add_light_spots(area, {LightSpot{16.0f, 16.0f, 1.0f, 1.0f, 1.0f, 2.0f, 48.0f}}, out);
+	CHECK(out[(size_t)8 * tw + 12].r > 0);   // 4 texels away
+	CHECK(out[(size_t)8 * tw + 13].r == 0);  // 5 texels away
+
+	// Half outside: only the texels inside the area are written.
+	std::fill(out, out + (size_t)tw * th, LightTexel{0, 0, 0, 0});
+	add_light_spots(area, {LightSpot{-1.0f, 16.0f, 1.0f, 1.0f, 1.0f, 2.0f, 6.0f}}, out);
+	CHECK(out[(size_t)8 * tw + 0].r > 0);
+	CHECK(out[(size_t)8 * tw + 1].r == 0);
+
+	// Nonsense writes nothing, and neither bounds of the buffer are touched.
+	std::vector<LightTexel> snapshot(out, out + (size_t)tw * th);
+	const float nan = std::numeric_limits<float>::quiet_NaN();
+	const float inf = std::numeric_limits<float>::infinity();
+	add_light_spots(area, {LightSpot{nan, 16.0f, 1, 1, 1, 2.0f, 6.0f}}, out);
+	add_light_spots(area, {LightSpot{16.0f, inf, 1, 1, 1, 2.0f, 6.0f}}, out);
+	add_light_spots(area, {LightSpot{(float)area.x0 + area.w + 100.0f, 16.0f, 1, 1, 1, 2.0f, 6.0f}}, out);
+	add_light_spots(area, {LightSpot{16.0f, (float)area.y0 - 100.0f, 1, 1, 1, 2.0f, 6.0f}}, out);
+	CHECK(std::memcmp(out, snapshot.data(), snapshot.size() * sizeof(LightTexel)) == 0);
+	for (size_t i = 0; i < 64; ++i) {
+		CHECK(std::memcmp(&buf[i], &SENTINEL, sizeof(LightTexel)) == 0);
+		CHECK(std::memcmp(&buf[(size_t)tw * th + 1024 + i], &SENTINEL, sizeof(LightTexel)) == 0);
+	}
+}
+
+TEST_CASE("texel size rounds up and scale 1 is unchanged") {
+	LightArea odd{0, 0, 7, 5};
+	odd.scale = 2;
+	CHECK(light_texel_w(odd) == 4);
+	CHECK(light_texel_h(odd) == 3);
+	LightArea plain{0, 0, 7, 5};
+	CHECK(light_texel_w(plain) == 7);
+	CHECK(light_texel_h(plain) == 5);
+	CHECK(light_area(10.5f, -3.2f, 480, 270, 240, 32).scale == 1);
+
+	LightTable lt;
+	WorldGrid grid(lt.table, 1);
+	Chunk& chunk = *grid.insert(empty_chunk({0, 0}));
+	chunk.at(1, 0).mat = lt.rock;
+	chunk.at(2, 0).mat = lt.lava;
+	const LightArea area{0, 0, 3, 1};
+	const std::vector<LightTexel> out = build(grid, fire_palette(lt.table), area);
+	REQUIRE(out.size() == 3);
+	const LightTexel rock{0, 0, 0, 255};
+	const LightTexel lava{128, 57, 13, 77};
+	CHECK(std::memcmp(&out[0], &CLEAR, sizeof(LightTexel)) == 0);
+	CHECK(std::memcmp(&out[1], &rock, sizeof(LightTexel)) == 0);
+	CHECK(std::memcmp(&out[2], &lava, sizeof(LightTexel)) == 0);
+}

@@ -5,6 +5,7 @@ extends Node2D
 # writes frame/sim/stream/generation timings as JSON.
 #
 #   godot --path . res://bench/bench_world.tscn -- --frames=1800 --out=bench/results/world.json
+#   ... --light-resolution=2 runs the light pass at half resolution (default 1, full)
 #
 # Needs a real window (not --headless): the frame time is what the frame budget is about.
 # The scene sets `simulating = false`; one `step(1)` per frame keeps the tick count equal to
@@ -91,6 +92,7 @@ const LAVA_OFFSET := Vector2i(-200, 60)
 
 var total_frames := DEFAULT_FRAMES
 var out_path := "user://bench_world.json"
+var light_resolution := 1  # world cells per light texel; 1 is full resolution
 
 var frame := 0
 var last_usec := 0
@@ -130,6 +132,7 @@ func _ready() -> void:
 	_parse_args()
 	if refused:
 		return
+	world.light_resolution = light_resolution
 	for i in WAYPOINTS.size():
 		path_length += WAYPOINTS[i].distance_to(WAYPOINTS[(i + 1) % WAYPOINTS.size()])
 	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
@@ -191,6 +194,13 @@ func _parse_args() -> void:
 			total_frames = requested
 		elif arg.begins_with("--out="):
 			out_path = arg.trim_prefix("--out=")
+		elif arg.begins_with("--light-resolution="):
+			light_resolution = arg.trim_prefix("--light-resolution=").to_int()
+			if light_resolution < 1 or light_resolution > 4:
+				# The property clamps into 1..4; a bench that quietly ran something other than what
+				# was asked for would record a lie.
+				_refuse("%s is outside the supported 1..4 (cells per light texel)" % arg)
+				return
 
 
 # Walk the closed polyline at CELLS_PER_FRAME and return the camera cell.
@@ -329,6 +339,7 @@ func _finish() -> void:
 		"os": OS.get_name(),
 		"renderer": RenderingServer.get_video_adapter_name(),
 		"worker_threads": world.worker_threads,  # -1 = auto, JobPool::default_workers()
+		"light_resolution": world.light_resolution,
 		"frames": frame_samples.size(),
 		"frame_ms_mean": _mean(frame_samples),
 		"frame_ms_p99": frame_p99,

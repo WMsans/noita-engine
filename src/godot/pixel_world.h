@@ -70,6 +70,7 @@ class PixelWorld : public Node2D {
 	float ambient = 0.05f;
 	float light_exposure = 1.0f;
 	int light_margin = 240;
+	int light_resolution = 1;  // world cells per light texel: 1 = full, 2 = half, 4 = quarter
 	Color backdrop_color = Color(0.07f, 0.05f, 0.04f);
 	Color fire_glow_color = Color(1.0f, 0.6f, 0.2f);
 	float fire_glow_energy = 1.5f;
@@ -239,6 +240,10 @@ public:
 
 	void set_light_margin(int p_value) { light_margin = p_value; }
 	int get_light_margin() const { return light_margin; }
+
+	// Clamped into 1..4: a coarser setting is the only thing it can mean.
+	void set_light_resolution(int p_value) { light_resolution = p_value < 1 ? 1 : (p_value > 4 ? 4 : p_value); }
+	int get_light_resolution() const { return light_resolution; }
 
 	void set_backdrop_color(const Color &p_value) { backdrop_color = p_value; }
 	Color get_backdrop_color() const { return backdrop_color; }

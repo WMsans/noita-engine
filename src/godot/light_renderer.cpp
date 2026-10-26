@@ -40,7 +40,8 @@ int rays_for_level(int p_level) {
 // Cascade `level` covers [start, start + 4^level) cells; the intervals tile [0, 1365).
 // shortcut: 1365 cells is the whole reach, which covers the default 992x768 lit area's
 // diagonal (1254). Zoomed out further, light farther than that is cut off; more cascades
-// (LIGHT_CASCADES) if a game needs it.
+// (LIGHT_CASCADES) if a game needs it. Probes are spaced in texels, so at light_resolution 2 the
+// reach is 2x (2730 world cells) and at 4 it is 4x — coarser light, longer shadows.
 int interval_start(int p_level) { return p_level == 0 ? 0 : (pow4(p_level) - 1) / 3; }
 int interval_end(int p_level) { return interval_start(p_level) + pow4(p_level) - 1; }
 
@@ -260,9 +261,10 @@ bool LightRenderer::create_textures(int p_w, int p_h) {
 	return true;
 }
 
-// The input is one texel per lit-area cell and must be uploaded whole, so it is sized to the
-// area. The six cascade sets bind it, so they are rebuilt with it. Only called after
-// create_textures(), which freed the old input, its mips and every set that bound them.
+// The input is one texel per light texel of the lit area and must be uploaded whole, so it is
+// sized to the area's texel dims. The six cascade sets bind it, so they are rebuilt with it. Only
+// called after create_textures(), which freed the old input, its mips and every set that bound
+// them.
 bool LightRenderer::create_input_texture(int p_w, int p_h) {
 	if (rd == nullptr || p_w <= 0 || p_h <= 0) return false;
 
@@ -404,25 +406,28 @@ void LightRenderer::render(const PackedByteArray &p_texels, const LightArea &p_a
 	}
 	if (state_now.load(std::memory_order_acquire) != STATE_READY) return;
 	if (rd == nullptr || p_area.w <= 0 || p_area.h <= 0) return;
-	if ((int64_t)p_texels.size() < (int64_t)p_area.w * p_area.h * 4) return;
+	const int texel_w = light_texel_w(p_area);
+	const int texel_h = light_texel_h(p_area);
+	if ((int64_t)p_texels.size() < (int64_t)texel_w * texel_h * 4) return;
 
 	update_timestamps();
 	free_retired(false);
 
-	// The area size only changes when the view does (PixelWorld passes a view rect with a snapped
-	// size), so recreating everything here costs nothing while scrolling.
-	if (p_area.w != area_w || p_area.h != area_h) {
+	// The texel size only changes when the view, the margin or light_resolution does (PixelWorld
+	// passes a view rect with a snapped size), so recreating everything here costs nothing while
+	// scrolling.
+	if (texel_w != area_w || texel_h != area_h) {
 		// Publish "nothing rendered" before the old textures go: the overlay checks this from the
 		// main thread and must not draw the previous area's texture into this one.
 		rendered_w.store(0, std::memory_order_release);
 		rendered_h.store(0, std::memory_order_release);
-		if (!create_textures(p_area.w, p_area.h)) {
+		if (!create_textures(texel_w, texel_h)) {
 			UtilityFunctions::push_error("PixelWorld: the light pass could not create its textures");
 			state_now.store(STATE_FAILED, std::memory_order_release);
 			return;
 		}
-		area_w = p_area.w;
-		area_h = p_area.h;
+		area_w = texel_w;
+		area_h = texel_h;
 		bloom_w = (area_w + 3) / 4;
 		bloom_h = (area_h + 3) / 4;
 		if (!create_input_texture(area_w, area_h)) {

@@ -3,7 +3,7 @@ extends Node2D
 # Lighting demo: a 1024x512 rock arena with a torch-carrying player, a lava pool and a wood
 # pillar in a room on the right, and a 6-thick rock wall sealing the corridor between them.
 # A/D walk, W jumps (and swims up in liquid), E explodes at the mouse, F sets fire at the
-# mouse, L toggles lighting. The camera follows the player.
+# mouse, L toggles lighting, H toggles half-resolution light. The camera follows the player.
 
 const ARENA := Rect2i(-512, -256, 1024, 512)
 const WALK_SPEED := 80.0
@@ -70,8 +70,8 @@ func _process(_delta: float) -> void:
 		camera.position = player.global_position
 	var stats: Dictionary = world.get_stats()
 	var count: int = stats.chunks_loaded
-	info.text = "[A/D] walk  [W] jump  [E] explode  [F] fire  [L] lighting\nlights %d   light cpu %.2f ms   gpu %.2f ms\nchunks %d   sim %.2f ms" % [
-		stats.light_spots, stats.light_cpu_ms, stats.light_gpu_ms, count, stats.sim_ms]
+	info.text = "[A/D] walk  [W] jump  [E] explode  [F] fire  [L] lighting  [H] half-res\nlights %d   res %d   light cpu %.2f ms   gpu %.2f ms\nchunks %d   sim %.2f ms" % [
+		stats.light_spots, world.light_resolution, stats.light_cpu_ms, stats.light_gpu_ms, count, stats.sim_ms]
 
 
 func _physics_process(_delta: float) -> void:
@@ -101,6 +101,9 @@ func _unhandled_input(event: InputEvent) -> void:
 			world.fill_circle(_mouse_cell(), FIRE_RADIUS, &"fire")
 		KEY_L:
 			world.lighting_enabled = not world.lighting_enabled
+		KEY_H:
+			world.light_resolution = 2 if world.light_resolution == 1 else 1
+			print("light_resolution = %d" % world.light_resolution)
 
 
 func _mouse_cell() -> Vector2i:

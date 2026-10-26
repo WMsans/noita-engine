@@ -1058,6 +1058,34 @@ func test_pixel_light_free_order() -> bool:
 	return true
 
 
+# The half-resolution setting: world cells per light texel. 1 is full resolution (today's
+# behaviour), 2 is half. The setter clamps into 1..4, so an out-of-range write is corrected, not
+# rejected. A write while running recreates the light textures and must not error.
+func test_light_resolution_default_and_live() -> bool:
+	var world: PixelWorld = PixelWorld.new()
+	var bad: PackedStringArray = []
+	if world.light_resolution != 1:
+		bad.append("light_resolution reads %d by default, expected 1" % world.light_resolution)
+	var writes: Array = [[2, 2], [4, 4], [1, 1], [0, 1], [9, 4], [-3, 1]]
+	for pair: Array in writes:
+		world.light_resolution = pair[0]
+		if world.light_resolution != pair[1]:
+			bad.append("light_resolution = %d reads %d, expected %d (clamped to 1..4)" % [pair[0], world.light_resolution, pair[1]])
+	world.free()
+
+	var live: PixelWorld = await _make_world()
+	for value: int in [2, 1]:
+		live.light_resolution = value
+		await process_frame
+		if live.light_resolution != value:
+			bad.append("light_resolution = %d reads %d while running" % [value, live.light_resolution])
+	live.free()
+	if not bad.is_empty():
+		printerr("  " + ", ".join(bad))
+		return false
+	return true
+
+
 # Review: the light GPU gate must never silently drop on a driver that reports timestamps. Metal
 # stubs them, so only a macOS run reporting no GPU time at all may skip the "above zero" clause;
 # an all-zero series on any other driver means the pass never ran (a failed LightRenderer) and
