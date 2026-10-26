@@ -31,6 +31,7 @@ struct Chunk {
 	DirtyRect cur, next;  // cur = processed this tick; next = accumulated for the next one
 	std::atomic_flag next_lock = ATOMIC_FLAG_INIT;  // guards `next`; other chunks' workers write it
 	std::atomic<bool> render_dirty{true};
+	std::atomic<bool> shape_dirty{true};  // set with render_dirty; PhysicsWorld clears it
 
 	Cell& at(int lx, int ly) {
 		assert(lx >= 0 && lx < CHUNK && ly >= 0 && ly < CHUNK);  // debug only

@@ -1,0 +1,95 @@
+#pragma once
+#include <cstdint>
+#include <memory>
+#include <optional>
+#include <unordered_map>
+#include <vector>
+
+#include "box2d/box2d.h"
+#include "cell.h"
+#include "coords.h"
+#include "outline.h"
+
+class WorldGrid;
+
+enum class BodyShape { Hull, Circle, Boxes };
+
+// A body's pixels and spawn pose. Box2D works in cells (see PhysicsWorld), y down.
+struct BodyDef {
+	int w = 0, h = 0;
+	std::vector<MatId> pixels;  // w*h row-major, NO_MAT = transparent
+	BodyShape shape = BodyShape::Hull;
+	float friction = 0.6f, restitution = 0.1f;
+	float x = 0, y = 0, angle = 0;  // the image centre's world position, radians
+};
+
+struct BodyHit {
+	int a, b;  // body handles; b = -1 for terrain
+	float x, y, nx, ny, speed;  // point, normal from a to b, approach speed (cells/s)
+};
+
+struct PhysicsStats {
+	int bodies = 0, awake = 0, terrain_bodies = 0, shape_builds = 0;
+	double physics_ms = 0, shape_ms = 0, stamp_ms = 0;
+};
+
+constexpr uint64_t CAT_TERRAIN = 1;
+constexpr uint64_t CAT_BODY = 2;
+constexpr uint64_t CAT_CREATURE = 4;  // reserved for Plan 5
+constexpr int BODY_SHAPE_MARGIN = 16;  // cells around a body whose chunks keep terrain shapes
+constexpr float PHYSICS_DT = 1.0f / 60.0f;
+constexpr int PHYSICS_SUBSTEPS = 4;
+
+// One Box2D world in cell units (b2SetLengthUnitsPerMeter(10)), one static terrain body per
+// chunk near bodies, and the bodies themselves.
+// ponytail: synchronous shape builds; move to a worker if shape_ms > 1 ms
+class PhysicsWorld {
+public:
+	PhysicsWorld(WorldGrid& grid, float gravity);  // gravity in cells/s^2, +y
+	~PhysicsWorld();
+	PhysicsWorld(const PhysicsWorld&) = delete;
+	PhysicsWorld& operator=(const PhysicsWorld&) = delete;
+
+	int add_body(const BodyDef& def);  // handle >= 0, or -1 if it has no opaque pixels
+	void remove_body(int handle);      // also destroys its joints
+	bool has_body(int handle) const;
+	b2BodyId body_id(int handle) const;
+
+	// Bodies outside it are disabled; nullopt (the default) makes every loaded chunk active.
+	void set_active_rect(std::optional<ChunkRect> rect) { active_rect = rect; }
+	// Shapes for chunks near bodies that want to be enabled; drops shapes of unloaded chunks.
+	void update_terrain();
+	void step();  // zones, support forces, b2World_Step, hits
+
+	const std::vector<BodyHit>& hits() const { return hits_; }
+	std::vector<int> take_left_world();  // handles whose chunk unloaded since the last call
+	// Closest enabled body along the segment.
+	bool raycast(float x0, float y0, float x1, float y1, int& handle, float& hx, float& hy, float& nx,
+	             float& ny) const;
+	const PhysicsStats& stats() const { return stats_; }
+
+private:
+	struct Body {
+		b2BodyId id;
+		int w, h;
+		std::vector<MatId> pixels;
+		bool left = false;  // reported by take_left_world and not enabled since
+	};
+	struct Terrain {
+		b2BodyId id;
+		Mask mask;
+	};
+
+	bool wants_enabled(const Body& body) const;
+	void build_terrain(ChunkCoord coord, Mask&& mask);
+	void wake_bodies_in(ChunkCoord coord);
+
+	WorldGrid& grid;
+	b2WorldId world;
+	std::vector<std::unique_ptr<Body>> bodies;  // index = handle; null once removed
+	std::unordered_map<int64_t, Terrain> terrain;
+	std::optional<ChunkRect> active_rect;
+	std::vector<BodyHit> hits_;
+	std::vector<int> left_world;
+	PhysicsStats stats_{};
+};

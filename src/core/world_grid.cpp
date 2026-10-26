@@ -22,6 +22,7 @@ Chunk* WorldGrid::insert(std::unique_ptr<Chunk> chunk) {
 	chunk->next.include(0, 0);
 	chunk->next.include(CHUNK - 1, CHUNK - 1);
 	chunk->render_dirty.store(true);
+	chunk->shape_dirty.store(true);
 
 	Chunk* out = chunk.get();
 	chunks.emplace(chunk_key(coord), std::move(chunk));
@@ -87,6 +88,7 @@ void WorldGrid::mark_world(int wx, int wy) {
 			if (!chunk) continue;  // unloaded neighbours never wake
 			chunk->mark_next(floor_mod(x, CHUNK), floor_mod(y, CHUNK));
 			chunk->render_dirty.store(true);
+			chunk->shape_dirty.store(true);
 		}
 }
 
@@ -120,5 +122,6 @@ void Neighborhood::mark(int lx, int ly) {
 			if (!chunk) continue;  // unloaded neighbours never wake
 			chunk->mark_next(floor_mod(tx, CHUNK), floor_mod(ty, CHUNK));
 			chunk->render_dirty.store(true);
+			chunk->shape_dirty.store(true);
 		}
 }
