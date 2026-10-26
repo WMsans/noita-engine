@@ -28,6 +28,8 @@ constexpr uint32_t SALT_SPREAD = 201;
 constexpr uint32_t SALT_SCALE = 202;
 constexpr float TICKS_PER_SECOND = 60.0f;
 constexpr int FLOATS_PER_PARTICLE = 12;
+// Four chunks: past this a blast is a script bug, and the disc loop would stall the frame.
+constexpr int MAX_EXPLODE_RADIUS = 256;
 
 } // namespace
 
@@ -507,6 +509,10 @@ Vector2 PixelWorld::jittered(const Vector2 &p_velocity, float p_spread, int p_in
 int PixelWorld::spawn_particles(const StringName &p_material, const Vector2 &p_position, const Vector2 &p_velocity,
                                 int p_count, float p_spread) {
 	if (!particles || p_count <= 0) return 0;
+	if (!p_position.is_finite()) {
+		UtilityFunctions::push_error("PixelWorld.spawn_particles: position is not finite");
+		return 0;
+	}
 	const MatId id = material_id(p_material);
 	if (id == NO_MAT) return 0;
 	const Cell cell = spawn_cell(id, table, (uint32_t)world_seed, (int)std::floor(p_position.x),
@@ -524,6 +530,10 @@ int PixelWorld::spawn_visual_particles(const Color &p_color, const Vector2 &p_po
                                        int p_count, float p_spread, float p_lifetime, float p_gravity_scale,
                                        bool p_collides) {
 	if (!particles || p_count <= 0) return 0;
+	if (!p_position.is_finite()) {
+		UtilityFunctions::push_error("PixelWorld.spawn_visual_particles: position is not finite");
+		return 0;
+	}
 	const float ticks = std::isfinite(p_lifetime) ? std::round(p_lifetime * TICKS_PER_SECOND) : 1.0f;
 	VisualParticle p;
 	p.x = p_position.x;
@@ -545,6 +555,10 @@ int PixelWorld::spawn_visual_particles(const Color &p_color, const Vector2 &p_po
 
 int PixelWorld::explode(const Vector2i &p_position, int p_radius, float p_power) {
 	if (!particles) return 0;
+	if (p_radius > MAX_EXPLODE_RADIUS) {
+		UtilityFunctions::push_error(vformat("PixelWorld.explode: radius %d is over the limit of %d", p_radius, MAX_EXPLODE_RADIUS));
+		return 0;
+	}
 	return ::explode(*grid, *particles, p_position.x, p_position.y, p_radius, p_power / TICKS_PER_SECOND,
 	                 sim->tick_count())
 	    .removed;
@@ -552,7 +566,7 @@ int PixelWorld::explode(const Vector2i &p_position, int p_radius, float p_power)
 
 Dictionary PixelWorld::raycast(const Vector2 &p_from, const Vector2 &p_to, int p_mask) const {
 	Dictionary out;
-	if (!grid) return out;
+	if (!grid || !p_from.is_finite() || !p_to.is_finite()) return out;
 	const RayHit hit = ::raycast(*grid, p_from.x, p_from.y, p_to.x, p_to.y, (uint32_t)p_mask);
 	if (!hit.hit) return out;
 	out["position"] = Vector2i(hit.x, hit.y);

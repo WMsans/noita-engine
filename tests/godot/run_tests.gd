@@ -247,6 +247,20 @@ func test_particle_api_rejects_bad_input() -> bool:
 	return true
 
 
+func test_particle_api_rejects_unbounded_input() -> bool:
+	var world: PixelWorld = await _make_world()
+	# The errors these push are the expected behaviour, not test failures.
+	var huge_blast: int = world.explode(Vector2i(0, 0), 1000, 100.0)
+	var nan_spawn: int = world.spawn_particles(&"sand", Vector2(NAN, NAN), Vector2.ZERO, 5, 0.0)
+	var inf_sparks: int = world.spawn_visual_particles(Color.RED, Vector2(INF, 0), Vector2.ZERO, 5, 0.0, 1.0)
+	var nan_ray: Dictionary = world.raycast(Vector2(NAN, 0), Vector2(0, 100))
+	world.free()
+	if huge_blast != 0 or nan_spawn != 0 or inf_sparks != 0 or not nan_ray.is_empty():
+		printerr("  radius-1000 explode %d, NaN spawn %d, INF sparks %d, NaN raycast %s" % [huge_blast, nan_spawn, inf_sparks, nan_ray])
+		return false
+	return true
+
+
 # --- generated world (Plan 2) --------------------------------------------------------------
 
 # `target` must already be in the tree; the world's _ready blocks once to fill the active zone.
