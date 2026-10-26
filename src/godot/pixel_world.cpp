@@ -119,6 +119,8 @@ void PixelWorld::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_light_margin"), &PixelWorld::get_light_margin);
 	ClassDB::bind_method(D_METHOD("set_light_resolution", "value"), &PixelWorld::set_light_resolution);
 	ClassDB::bind_method(D_METHOD("get_light_resolution"), &PixelWorld::get_light_resolution);
+	ClassDB::bind_method(D_METHOD("set_light_surface_depth", "value"), &PixelWorld::set_light_surface_depth);
+	ClassDB::bind_method(D_METHOD("get_light_surface_depth"), &PixelWorld::get_light_surface_depth);
 	ClassDB::bind_method(D_METHOD("set_backdrop_color", "value"), &PixelWorld::set_backdrop_color);
 	ClassDB::bind_method(D_METHOD("get_backdrop_color"), &PixelWorld::get_backdrop_color);
 	ClassDB::bind_method(D_METHOD("set_fire_glow_color", "value"), &PixelWorld::set_fire_glow_color);
@@ -141,6 +143,7 @@ void PixelWorld::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "light_exposure", PROPERTY_HINT_RANGE, "0,8,0.01,or_greater"), "set_light_exposure", "get_light_exposure");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "light_margin", PROPERTY_HINT_RANGE, "0,4096,1"), "set_light_margin", "get_light_margin");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "light_resolution", PROPERTY_HINT_RANGE, "1,4,1"), "set_light_resolution", "get_light_resolution");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "light_surface_depth", PROPERTY_HINT_RANGE, "0,32,1"), "set_light_surface_depth", "get_light_surface_depth");
 	ADD_PROPERTY(PropertyInfo(Variant::COLOR, "backdrop_color"), "set_backdrop_color", "get_backdrop_color");
 	ADD_PROPERTY(PropertyInfo(Variant::COLOR, "fire_glow_color"), "set_fire_glow_color", "get_fire_glow_color");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "fire_glow_energy", PROPERTY_HINT_RANGE, "0,16,0.01,or_greater"), "set_fire_glow_energy", "get_fire_glow_energy");
@@ -359,7 +362,7 @@ void PixelWorld::_notification(int p_what) {
 	// that uses them; the job keeps the renderer alive until then.
 	if (light_renderer) {
 		rs->call_on_render_thread(
-		    Callable(memnew(LightRenderJob(light_renderer, PackedByteArray(), LightArea(), 0.0f, true))));
+		    Callable(memnew(LightRenderJob(light_renderer, PackedByteArray(), LightArea(), 0.0f, 0, true))));
 		light_renderer.reset();
 	}
 }
@@ -744,7 +747,8 @@ void PixelWorld::render_light_frame(const LightArea &p_area, const PackedByteArr
 	// The job stores the same copy-on-write buffer as light_texels: the next frame's ptrw() detaches
 	// (copies) it if the render thread has not consumed this one, so the two never share storage.
 	rs->call_on_render_thread(
-	    Callable(memnew(LightRenderJob(light_renderer, p_texels, p_area, bloom_threshold, false))));
+	    Callable(memnew(LightRenderJob(light_renderer, p_texels, p_area, bloom_threshold,
+	                                    light_surface_passes(light_surface_depth, p_area.scale), false))));
 	update_light_overlay(p_area);
 }
 

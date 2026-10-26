@@ -71,6 +71,7 @@ class PixelWorld : public Node2D {
 	float light_exposure = 1.0f;
 	int light_margin = 240;
 	int light_resolution = 1;  // world cells per light texel, 1..4: 1 = full, 2 = half, 4 = quarter
+	int light_surface_depth = 10;  // cells of light into solid surfaces, 0..LIGHT_SURFACE_MAX_DEPTH; 0 = off
 	Color backdrop_color = Color(0.07f, 0.05f, 0.04f);
 	Color fire_glow_color = Color(1.0f, 0.6f, 0.2f);
 	float fire_glow_energy = 1.5f;
@@ -254,6 +255,10 @@ public:
 	// Clamped into 1..4: a coarser setting is the only thing it can mean.
 	void set_light_resolution(int p_value) { light_resolution = p_value < 1 ? 1 : (p_value > 4 ? 4 : p_value); }
 	int get_light_resolution() const { return light_resolution; }
+	void set_light_surface_depth(int p_value) {
+		light_surface_depth = p_value < 0 ? 0 : (p_value > LIGHT_SURFACE_MAX_DEPTH ? LIGHT_SURFACE_MAX_DEPTH : p_value);
+	}
+	int get_light_surface_depth() const { return light_surface_depth; }
 
 	void set_backdrop_color(const Color &p_value) { backdrop_color = p_value; }
 	Color get_backdrop_color() const { return backdrop_color; }

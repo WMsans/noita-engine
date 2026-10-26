@@ -1,5 +1,6 @@
 #include "light_renderer.h"
 
+#include <cmath>
 #include <cstring>
 
 #include <godot_cpp/classes/rd_sampler_state.hpp>
@@ -77,7 +78,7 @@ void LightRenderJob::call(const Variant **p_arguments, int p_argcount, Variant &
 	if (free_only) {
 		renderer->free_all();
 	} else {
-		renderer->render(texels, area, bloom_threshold);
+		renderer->render(texels, area, bloom_threshold, surface_passes);
 	}
 }
 
@@ -121,6 +122,7 @@ bool LightRenderer::init(RenderingDevice *p_rd, String &r_error) {
 	if (!compile(LIGHT_MIP_COMPUTE, "LightMip", mip_shader, mip_pipeline) ||
 	    !compile(LIGHT_CASCADE_COMPUTE, "LightCascade", cascade_shader, cascade_pipeline) ||
 	    !compile(LIGHT_OUTPUT_COMPUTE, "LightOutput", output_shader, output_pipeline) ||
+	    !compile(LIGHT_SURFACE_COMPUTE, "LightSurface", surface_shader, surface_pipeline) ||
 	    !compile(BLOOM_DOWN_COMPUTE, "BloomDown", bloom_down_shader, bloom_down_pipeline) ||
 	    !compile(BLOOM_BLUR_COMPUTE, "BloomBlur", bloom_blur_shader, bloom_blur_pipeline)) {
 		state_now.store(STATE_FAILED, std::memory_order_release);
@@ -194,20 +196,23 @@ bool LightRenderer::create_textures(int p_w, int p_h) {
 	cascade_textures[0] = make(RenderingDevice::DATA_FORMAT_R16G16B16A16_SFLOAT, p_w * 2, p_h * 2, sampled_storage);
 	cascade_textures[1] = make(RenderingDevice::DATA_FORMAT_R16G16B16A16_SFLOAT, p_w * 2, p_h * 2, sampled_storage);
 	light_texture = make(RenderingDevice::DATA_FORMAT_R16G16B16A16_SFLOAT, p_w, p_h, sampled_storage);
+	surface_texture = make(RenderingDevice::DATA_FORMAT_R16G16B16A16_SFLOAT, p_w, p_h, sampled_storage);
 	const int bloom_tex_w = (p_w + 3) / 4;
 	const int bloom_tex_h = (p_h + 3) / 4;
 	bloom_textures[0] = make(RenderingDevice::DATA_FORMAT_R16G16B16A16_SFLOAT, bloom_tex_w, bloom_tex_h, sampled_storage);
 	bloom_textures[1] = make(RenderingDevice::DATA_FORMAT_R16G16B16A16_SFLOAT, bloom_tex_w, bloom_tex_h, sampled_storage);
 
 	const bool ok = cascade_textures[0].is_valid() && cascade_textures[1].is_valid() &&
-	                light_texture.is_valid() && bloom_textures[0].is_valid() && bloom_textures[1].is_valid();
+	                light_texture.is_valid() && surface_texture.is_valid() && bloom_textures[0].is_valid() &&
+	                bloom_textures[1].is_valid();
 	if (!ok) return false;
 
 	bloom_texture = bloom_textures[0];
 
 	const int final_parity = (LIGHT_CASCADES - 1) % 2;  // cascade 0 lands in this one
 
-	{
+	// The output lands wherever leaves the last surface pass writing light_texture.
+	for (int target = 0; target < 2; ++target) {
 		Ref<RDUniform> cascade_uniform;
 		cascade_uniform.instantiate();
 		cascade_uniform->set_uniform_type(RenderingDevice::UNIFORM_TYPE_IMAGE);
@@ -217,11 +222,11 @@ bool LightRenderer::create_textures(int p_w, int p_h) {
 		light_uniform.instantiate();
 		light_uniform->set_uniform_type(RenderingDevice::UNIFORM_TYPE_IMAGE);
 		light_uniform->set_binding(1);
-		light_uniform->add_id(light_texture);
+		light_uniform->add_id(target == 0 ? light_texture : surface_texture);
 		TypedArray<Ref<RDUniform>> uniforms;
 		uniforms.push_back(cascade_uniform);
 		uniforms.push_back(light_uniform);
-		output_set = rd->uniform_set_create(uniforms, output_shader, 0);
+		output_sets[target] = rd->uniform_set_create(uniforms, output_shader, 0);
 	}
 	{
 		Ref<RDUniform> light_uniform;
@@ -316,6 +321,32 @@ bool LightRenderer::create_input_texture(int p_w, int p_h) {
 		uniforms.push_back(upper_uniform);
 		cascade_sets[level] = rd->uniform_set_create(uniforms, cascade_shader, 0);
 	}
+
+	// The surface passes read the input's opacity, so they are built with it.
+	for (int dir = 0; dir < 2; ++dir) {
+		Ref<RDUniform> input_uniform;
+		input_uniform.instantiate();
+		input_uniform->set_uniform_type(RenderingDevice::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE);
+		input_uniform->set_binding(0);
+		input_uniform->add_id(sampler);
+		input_uniform->add_id(input_texture);
+		Ref<RDUniform> src_uniform;
+		src_uniform.instantiate();
+		src_uniform->set_uniform_type(RenderingDevice::UNIFORM_TYPE_IMAGE);
+		src_uniform->set_binding(1);
+		src_uniform->add_id(dir == 0 ? light_texture : surface_texture);
+		Ref<RDUniform> dst_uniform;
+		dst_uniform.instantiate();
+		dst_uniform->set_uniform_type(RenderingDevice::UNIFORM_TYPE_IMAGE);
+		dst_uniform->set_binding(2);
+		dst_uniform->add_id(dir == 0 ? surface_texture : light_texture);
+		TypedArray<Ref<RDUniform>> uniforms;
+		uniforms.push_back(input_uniform);
+		uniforms.push_back(src_uniform);
+		uniforms.push_back(dst_uniform);
+		surface_sets[dir] = rd->uniform_set_create(uniforms, surface_shader, 0);
+		if (!surface_sets[dir].is_valid()) return false;
+	}
 	return true;
 }
 
@@ -369,20 +400,24 @@ void LightRenderer::destroy_textures() {
 		if (set.is_valid()) rd->free_rid(set);
 	for (RID &set : mip_sets)
 		if (set.is_valid()) rd->free_rid(set);
-	if (output_set.is_valid()) rd->free_rid(output_set);
+	for (RID &set : output_sets)
+		if (set.is_valid()) rd->free_rid(set);
+	for (RID &set : surface_sets)
+		if (set.is_valid()) rd->free_rid(set);
 	if (bloom_down_set.is_valid()) rd->free_rid(bloom_down_set);
 	for (RID &set : bloom_blur_sets)
 		if (set.is_valid()) rd->free_rid(set);
 	for (RID &set : cascade_sets) set = RID();
 	for (RID &set : mip_sets) set = RID();
-	output_set = RID();
+	for (RID &set : output_sets) set = RID();
+	for (RID &set : surface_sets) set = RID();
 	bloom_down_set = RID();
 	for (RID &set : bloom_blur_sets) set = RID();
 
 	// light_texture and bloom_textures[0] are retired (or freed) by the caller.
 	for (RID *texture : { &input_texture, &mip_textures[2], &mip_textures[3], &mip_textures[4],
 	                      &mip_textures[5], &cascade_textures[0], &cascade_textures[1],
-	                      &bloom_textures[1] }) {
+	                      &surface_texture, &bloom_textures[1] }) {
 		if (texture->is_valid()) rd->free_rid(*texture);
 		*texture = RID();
 	}
@@ -394,7 +429,8 @@ void LightRenderer::destroy_textures() {
 	input_h = 0;
 }
 
-void LightRenderer::render(const PackedByteArray &p_texels, const LightArea &p_area, float p_bloom_threshold) {
+void LightRenderer::render(const PackedByteArray &p_texels, const LightArea &p_area, float p_bloom_threshold,
+                           int p_surface_passes) {
 	if (state_now.load(std::memory_order_acquire) == STATE_UNINITIALISED) {
 		// First frame: compile the shaders here, on the render thread, like every other call.
 		RenderingServer *rs = RenderingServer::get_singleton();
@@ -490,17 +526,37 @@ void LightRenderer::render(const PackedByteArray &p_texels, const LightArea &p_a
 		rd->compute_list_add_barrier(list);
 	}
 
-	// Light output: average the four directions of cascade 0.
+	// Light output: average the four directions of cascade 0. With an odd number of surface
+	// passes it lands in surface_texture, so the last pass writes light_texture either way.
+	const int passes = MAX(p_surface_passes, 0);
 	{
 		OutputParams params{};
 		params.area_x = area_w;
 		params.area_y = area_h;
 		const PackedByteArray bytes = push_bytes(params);
 		rd->compute_list_bind_compute_pipeline(list, output_pipeline);
-		rd->compute_list_bind_uniform_set(list, output_set, 0);
+		rd->compute_list_bind_uniform_set(list, output_sets[passes % 2], 0);
 		rd->compute_list_set_push_constant(list, bytes, (uint32_t)bytes.size());
 		rd->compute_list_dispatch(list, groups(area_w), groups(area_h), 1);
 		rd->compute_list_add_barrier(list);
+	}
+
+	// Light into solid surfaces, one cell deeper per pass, before bloom reads the light.
+	if (passes > 0) {
+		SurfaceParams params{};
+		params.size_x = area_w;
+		params.size_y = area_h;
+		params.falloff = light_surface_falloff(passes);
+		params.falloff_diag = std::pow(params.falloff, 1.41421356f);
+		const PackedByteArray bytes = push_bytes(params);
+		rd->compute_list_bind_compute_pipeline(list, surface_pipeline);
+		for (int i = 0; i < passes; ++i) {
+			// (passes - i) passes remain: an even count means the light is in light_texture now.
+			rd->compute_list_bind_uniform_set(list, surface_sets[(passes - i) % 2], 0);
+			rd->compute_list_set_push_constant(list, bytes, (uint32_t)bytes.size());
+			rd->compute_list_dispatch(list, groups(area_w), groups(area_h), 1);
+			rd->compute_list_add_barrier(list);
+		}
 	}
 
 	// Bloom: thresholded 1/4 downsample, then a separable Gaussian at quarter resolution.
@@ -567,8 +623,9 @@ void LightRenderer::free_all() {
 	destroy_textures();
 	free_retired(true);
 	// Pipelines before shaders: freeing a shader frees its dependent pipelines too.
-	for (RID *rid : { &mip_pipeline, &cascade_pipeline, &output_pipeline, &bloom_down_pipeline,
-	                  &bloom_blur_pipeline, &mip_shader, &cascade_shader, &output_shader,
+	for (RID *rid : { &mip_pipeline, &cascade_pipeline, &output_pipeline, &surface_pipeline,
+	                  &bloom_down_pipeline, &bloom_blur_pipeline, &mip_shader, &cascade_shader,
+	                  &output_shader, &surface_shader,
 	                  &bloom_down_shader, &bloom_blur_shader, &sampler }) {
 		if (rid->is_valid()) rd->free_rid(*rid);
 		*rid = RID();

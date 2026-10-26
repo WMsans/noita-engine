@@ -23,9 +23,9 @@ class LightRenderer;
 class LightRenderJob : public CallableCustom {
 public:
 	LightRenderJob(std::shared_ptr<LightRenderer> p_renderer, const PackedByteArray &p_texels,
-	               const LightArea &p_area, float p_bloom_threshold, bool p_free_only) :
+	               const LightArea &p_area, float p_bloom_threshold, int p_surface_passes, bool p_free_only) :
 			renderer(std::move(p_renderer)), texels(p_texels), area(p_area),
-			bloom_threshold(p_bloom_threshold), free_only(p_free_only) {}
+			bloom_threshold(p_bloom_threshold), surface_passes(p_surface_passes), free_only(p_free_only) {}
 
 	// The job owns everything it touches, so it is valid without an Object behind it
 	// (CallableCustom's default is_valid() looks get_object() up in ObjectDB).
@@ -46,6 +46,7 @@ private:
 	PackedByteArray texels;
 	LightArea area;
 	float bloom_threshold = 1.0f;
+	int surface_passes = 0;
 	bool free_only = false;
 };
 
@@ -61,9 +62,11 @@ public:
 	// Compiles the shaders and creates the sampler. False + error turns lighting off.
 	bool init(RenderingDevice *p_rd, String &r_error);
 	// (Re)creates the textures when the texel size outgrows them, uploads the texels, runs the
-	// cascades top-down, the light output and the bloom passes, and captures GPU timestamps. The
-	// area is in world cells; everything the renderer sizes works in its texel dims.
-	void render(const PackedByteArray &p_texels, const LightArea &p_area, float p_bloom_threshold);
+	// cascades top-down, the light output, `p_surface_passes` steps of light into solids and the
+	// bloom passes, and captures GPU timestamps. The area is in world cells; everything the
+	// renderer sizes works in its texel dims.
+	void render(const PackedByteArray &p_texels, const LightArea &p_area, float p_bloom_threshold,
+	            int p_surface_passes);
 	// For Texture2DRD on the main thread, after texture_generation() reports a new value.
 	RID light_rd() const { return light_texture; }
 	RID bloom_rd() const { return bloom_texture; }
@@ -98,6 +101,10 @@ private:
 	struct OutputParams {
 		int32_t area_x, area_y;
 	};
+	struct SurfaceParams {
+		int32_t size_x, size_y;
+		float falloff, falloff_diag;
+	};
 	struct BloomDownParams {
 		int32_t size_x, size_y;
 		float threshold, pad;
@@ -131,11 +138,13 @@ private:
 	RID mip_shader;
 	RID cascade_shader;
 	RID output_shader;
+	RID surface_shader;
 	RID bloom_down_shader;
 	RID bloom_blur_shader;
 	RID mip_pipeline;
 	RID cascade_pipeline;
 	RID output_pipeline;
+	RID surface_pipeline;
 	RID bloom_down_pipeline;
 	RID bloom_blur_pipeline;
 
@@ -150,11 +159,13 @@ private:
 	RID mip_textures[LIGHT_CASCADES];  // 1..5: one probe spacing per texel; [0] unused
 	RID cascade_textures[2];
 	RID light_texture;
+	RID surface_texture;  // the surface passes' ping-pong partner of light_texture
 	RID bloom_textures[2];
 	RID bloom_texture;  // the one holding the final blurred result
 	RID mip_sets[LIGHT_CASCADES];      // 1..5: reduce mip i-1 into mip i
 	RID cascade_sets[LIGHT_CASCADES];
-	RID output_set;
+	RID output_sets[2];   // [0] writes light_texture, [1] surface_texture
+	RID surface_sets[2];  // [0] light_texture -> surface_texture, [1] the reverse
 	RID bloom_down_set;
 	RID bloom_blur_sets[2];
 	std::vector<RetiredTexture> retired;

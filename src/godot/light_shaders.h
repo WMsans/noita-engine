@@ -191,6 +191,52 @@ void main() {
 }
 )GLSL";
 
+// One step of light into solid surfaces. A solid cell's own probe sits inside it, so every ray
+// it casts is blocked by the next cell and the cascades leave it dark. Each step lets a solid
+// texel take its brightest neighbour's light, dimmed by falloff; repeated, light reaches one cell
+// deeper per step. Open texels copy through untouched, so shadows in open air stay hard.
+inline constexpr const char *LIGHT_SURFACE_COMPUTE = R"GLSL(
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(push_constant, std430) uniform Params {
+	ivec2 size;
+	float falloff;
+	float falloff_diag;
+} params;
+
+layout(set = 0, binding = 0) uniform sampler2D input_tex;
+layout(rgba16f, set = 0, binding = 1) uniform image2D src;
+layout(rgba16f, set = 0, binding = 2) uniform image2D dst;
+
+// Input opacity at or above this is a solid surface; liquids and gases are lit by the rays.
+const float SOLID_OPACITY = 0.5;
+
+void main() {
+	ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+	if (p.x >= params.size.x || p.y >= params.size.y) {
+		return;
+	}
+	vec4 c = imageLoad(src, p);
+	if (texelFetch(input_tex, p, 0).a < SOLID_OPACITY) {
+		imageStore(dst, p, c);
+		return;
+	}
+	ivec2 hi = params.size - 1;
+	vec3 edge = max(max(imageLoad(src, clamp(p + ivec2(1, 0), ivec2(0), hi)).rgb,
+	                    imageLoad(src, clamp(p - ivec2(1, 0), ivec2(0), hi)).rgb),
+	                max(imageLoad(src, clamp(p + ivec2(0, 1), ivec2(0), hi)).rgb,
+	                    imageLoad(src, clamp(p - ivec2(0, 1), ivec2(0), hi)).rgb));
+	vec3 diag = max(max(imageLoad(src, clamp(p + ivec2(1, 1), ivec2(0), hi)).rgb,
+	                    imageLoad(src, clamp(p + ivec2(-1, 1), ivec2(0), hi)).rgb),
+	                max(imageLoad(src, clamp(p + ivec2(1, -1), ivec2(0), hi)).rgb,
+	                    imageLoad(src, clamp(p + ivec2(-1, -1), ivec2(0), hi)).rgb));
+	vec3 lit = max(c.rgb, max(edge * params.falloff, diag * params.falloff_diag));
+	imageStore(dst, p, vec4(lit, 1.0));
+}
+)GLSL";
+
 inline constexpr const char *BLOOM_DOWN_COMPUTE = R"GLSL(
 #version 450
 

@@ -989,6 +989,7 @@ func test_lighting_settings_defaults() -> bool:
 		"marker_light_radius": 48.0,
 		"bloom_threshold": 1.0,
 		"bloom_strength": 0.6,
+		"light_surface_depth": 10,
 	}
 	var written := {
 		"lighting_enabled": false,
@@ -1003,6 +1004,7 @@ func test_lighting_settings_defaults() -> bool:
 		"marker_light_radius": 24.0,
 		"bloom_threshold": 2.0,
 		"bloom_strength": 0.9,
+		"light_surface_depth": 4,
 	}
 	var light_defaults := {"color": Color(1, 0.75, 0.4), "energy": 1.5, "radius": 48.0, "flicker": 0.0, "enabled": true}
 	var light_written := {"color": Color(0.4, 0.5, 0.6), "energy": 3.0, "radius": 12.0, "flicker": 0.5, "enabled": false}
@@ -1089,6 +1091,30 @@ func test_pixel_light_free_order() -> bool:
 	await process_frame
 	survivor.free()
 	await process_frame
+	return true
+
+
+# The surface light depth: how many cells light spreads into solids. The setter clamps into
+# 0..32. Odd and even pass counts route the output pass differently, so flipping while running
+# must not error.
+func test_light_surface_depth_clamped_and_live() -> bool:
+	var world: PixelWorld = PixelWorld.new()
+	var bad: PackedStringArray = []
+	for pair: Array in [[0, 0], [32, 32], [-3, 0], [99, 32], [10, 10]]:
+		world.light_surface_depth = pair[0]
+		if world.light_surface_depth != pair[1]:
+			bad.append("light_surface_depth = %d reads %d, expected %d" % [pair[0], world.light_surface_depth, pair[1]])
+	world.free()
+	var live: PixelWorld = await _make_world()
+	for value: int in [9, 10, 0, 10]:
+		live.light_surface_depth = value
+		await process_frame
+		if live.light_surface_depth != value:
+			bad.append("light_surface_depth = %d reads %d while running" % [value, live.light_surface_depth])
+	live.free()
+	if not bad.is_empty():
+		printerr("  " + ", ".join(bad))
+		return false
 	return true
 
 

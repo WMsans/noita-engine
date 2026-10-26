@@ -128,13 +128,16 @@ bench: 1680 frames (+120 warm-up) | sim 3.53 ms mean / 5.09 p99 | frame 8.35 / 1
 That line is the committed artifact, so a fresh run is compared against it; a re-run on an
 otherwise idle M1 lands within noise (sim p99 5.14, frame p99 10.56, upload 1.04).
 
-Plan 6 on this M1 (the committed `bench/results/macos-m1-plan6.json`):
+Plan 6 on this M1 (the committed `bench/results/macos-m1-plan6.json`), re-run with the surface
+light pass on (`light_surface_depth` 10, ten extra full-screen compute passes):
 
 ```
-bench world: 1680 frames (+120 warm-up) | sim 3.12 ms mean / 5.15 p99 | frame 8.80 / 11.05 ms | stream 0.09 / 0.41 ms | gen 0.89 ms | chunks 6098 | cells 344807 | view-missing 0 frames | particles 319 / visual 43, 0.037 ms mean / 0.081 p99, dropped 1819 | bodies 53 (awake 42), physics 0.16 + shapes 0.79 + stamp 0.43 = 1.37 ms mean / 2.61 p99, 3.8 builds | creatures 43, 0.170 ms mean / 0.255 p99 | light 0.55 ms cpu mean / 0.92 p99 | light 0.000 ms gpu mean / 0.000 p99 (timestamps stubbed), spots 5.3 | budget pass | bench/results/...
+bench world: 1680 frames (+120 warm-up) | sim 3.15 ms mean / 5.15 p99 | frame 8.95 / 11.19 ms | stream 0.11 / 0.45 ms | gen 0.88 ms | chunks 6099 | cells 345155 | view-missing 0 frames | particles 313 / visual 44, 0.037 ms mean / 0.083 p99, dropped 1890 | bodies 53 (awake 42), physics 0.16 + shapes 0.78 + stamp 0.43 = 1.37 ms mean / 2.74 p99, 3.8 builds | creatures 43, 0.172 ms mean / 0.273 p99 | light 0.66 ms cpu mean / 1.15 p99 | light 0.000 ms gpu mean / 0.000 p99 (timestamps stubbed), spots 5.3 | budget pass | bench/results/...
 ```
 
-`--light-resolution=2` (the committed `macos-m1-plan6-halfres.json`) lands at frame 8.68 / 11.08 ms.
+`--light-resolution=2` (the committed `macos-m1-plan6-halfres.json`, five surface passes) lands at
+frame 8.70 / 11.02 ms. Before the surface pass the two were 11.05 and 11.08 ms p99, so the pass
+costs about 0.1 ms of frame p99 at full resolution and nothing measurable at half.
 Two runs of each agreed within 0.1 ms at p99.
 
 `frames` in the JSON is the number of sampled frames, i.e. `--frames` minus the 120 warm-up
