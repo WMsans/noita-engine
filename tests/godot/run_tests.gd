@@ -312,6 +312,40 @@ func test_body_falls_and_rests() -> bool:
 	return true
 
 
+# Bodies decode their texture once per texture (get_image() is a GPU readback), so a texture that
+# changes must be decoded again: a body built after the change follows the new pixels. An
+# AtlasTexture, because its region change emits `changed` and shows in get_image() headless too
+# (the dummy renderer never replaces an ImageTexture's stored image).
+func test_body_texture_change_rebuilds() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	var texture := AtlasTexture.new()
+	texture.atlas = _body_texture(12, 12)
+	texture.region = Rect2(0, 0, 12, 12)
+	var bodies: Array[PixelRigidBody] = []
+	for i in 3:
+		if i == 2:
+			await _register()
+			texture.region = Rect2(0, 0, 4, 4)
+		var body := PixelRigidBody.new()
+		body.texture = texture
+		body.pixel_material = &"wood"
+		body.position = Vector2(-40 + 40 * i, 200)
+		root.add_child(body)
+		bodies.append(body)
+	await _register()
+	var masses: Array[float] = []
+	for body: PixelRigidBody in bodies:
+		masses.append(body.get_mass())
+	world.free()
+	for body: PixelRigidBody in bodies:
+		body.free()
+	if masses[0] <= 0.0 or not is_equal_approx(masses[0], masses[1]) or masses[2] >= masses[0] * 0.5:
+		printerr("  masses %s: the shared texture must give equal masses, the changed one a smaller mass" % [masses])
+		return false
+	return true
+
+
 func test_body_bad_definitions() -> bool:
 	var world: PixelWorld = await _make_world()
 	var nodes: Array[PixelRigidBody] = []

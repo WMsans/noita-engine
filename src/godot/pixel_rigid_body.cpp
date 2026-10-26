@@ -1,12 +1,45 @@
 #include "pixel_rigid_body.h"
 
+#include <unordered_map>
+
 #include <godot_cpp/classes/image.hpp>
 #include <godot_cpp/core/class_db.hpp>
+#include <godot_cpp/variant/callable_method_pointer.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
 #include "pixel_world.h"
 
 namespace godot {
+
+namespace {
+
+// Texture2D::get_image() reads the texture back from the GPU, which waits for every frame in
+// flight (about 0.5 ms each on an M1, more with the light pass queued), and bodies are spawned
+// from a few shared textures. So each texture is decoded to RGBA8 once, keyed by its instance,
+// and decoded again after it emits `changed`. Main thread only, like build_def.
+std::unordered_map<uint64_t, Ref<Image>> decoded_images;
+
+void forget_decoded_image(uint64_t p_texture_id) { decoded_images.erase(p_texture_id); }
+
+Ref<Image> decoded_image(const Ref<Texture2D> &p_texture) {
+	const uint64_t id = (uint64_t)p_texture->get_instance_id();
+	const auto found = decoded_images.find(id);
+	if (found != decoded_images.end()) return found->second;
+
+	Ref<Image> image = p_texture->get_image();
+	if (image.is_null() || image->is_empty()) return Ref<Image>();
+	image = image->duplicate();
+	if (image->is_compressed()) image->decompress();
+	image->convert(Image::FORMAT_RGBA8);
+	// Drop the entries of freed textures; a texture's signals go with it, so nothing else would.
+	for (auto it = decoded_images.begin(); it != decoded_images.end();)
+		it = ObjectDB::get_instance(ObjectID(it->first)) ? std::next(it) : decoded_images.erase(it);
+	decoded_images[id] = image;
+	p_texture->connect("changed", callable_mp_static(&forget_decoded_image).bind(id), Object::CONNECT_ONE_SHOT);
+	return image;
+}
+
+} // namespace
 
 void PixelRigidBody::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_texture", "value"), &PixelRigidBody::set_texture);
@@ -64,14 +97,11 @@ bool PixelRigidBody::build_def(const MaterialTable &p_table, const Transform2D &
 		r_error = "has no texture";
 		return false;
 	}
-	Ref<Image> image = texture->get_image();
-	if (image.is_null() || image->is_empty()) {
+	const Ref<Image> image = decoded_image(texture);
+	if (image.is_null()) {
 		r_error = "texture has no image data";
 		return false;
 	}
-	image = image->duplicate();
-	if (image->is_compressed()) image->decompress();
-	image->convert(Image::FORMAT_RGBA8);
 
 	std::vector<PaletteEntry> entries;
 	if (palette.is_valid()) entries = palette->to_entries();
