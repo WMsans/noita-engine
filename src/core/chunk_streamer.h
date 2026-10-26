@@ -36,6 +36,9 @@ public:
 	// Up to `max` finished chunks that are in the latest request; finished chunks no longer
 	// requested are dropped here.
 	std::vector<std::unique_ptr<Chunk>> take_ready(int max);
+	// Un-delivers `coord`: a chunk the caller took and then dropped, so a later request for it
+	// queues it again. Also drops a queued or in-flight entry, whose result is then discarded.
+	void forget(ChunkCoord coord);
 	void wait_idle();  // blocks until every requested coord is ready (none queued or in flight)
 	int pending() const;      // requested coords not yet ready (queued + in flight)
 	StreamStats take_stats();  // since the previous call, then reset

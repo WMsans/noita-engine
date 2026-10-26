@@ -276,6 +276,28 @@ TEST_CASE("streamer does not regenerate a delivered chunk") {
 	CHECK(calls == 1);
 }
 
+// The world drops a delivered chunk whose coord left the loaded rect; without the forget that
+// coord stays delivered and is never re-queued, so the chunk is unloaded forever.
+TEST_CASE("streamer regenerates a forgotten coord") {
+	RecordingGen gen;
+	ChunkStreamer streamer(gen, 19, 2);
+
+	streamer.request({{0, 0}}, {0, 0});
+	streamer.wait_idle();
+	REQUIRE(streamer.take_ready(10).size() == 1);
+
+	streamer.forget({0, 0});
+	streamer.request({{0, 0}}, {0, 0});
+	streamer.wait_idle();
+	CHECK(streamer.pending() == 0);
+	CHECK(streamer.take_ready(10).size() == 1);
+
+	int calls = 0;
+	for (ChunkCoord c : gen.recorded())
+		if (c == ChunkCoord{0, 0}) ++calls;
+	CHECK(calls == 2);
+}
+
 TEST_CASE("streamer shuts down with work in flight") {
 	RecordingGen gen(5);  // 5 ms per chunk
 	const std::vector<ChunkCoord> all = block({0, 0}, 9, 9);

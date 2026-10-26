@@ -269,6 +269,32 @@ func test_regenerated_chunk_identical() -> bool:
 	return true
 
 
+# The hole gate: `view_missing` is the spec's hole detector, so it must go non-zero when the
+# viewport covers unloaded chunks. A current Camera2D puts the canvas transform over the far
+# point, where nothing is loaded yet: the 480x270 viewport covers 9x5 chunks and one frame
+# inserts at most max_inserts_per_frame (16).
+func test_view_missing_nonzero_then_zero() -> bool:
+	var target: Node2D = Node2D.new()
+	root.add_child(target)
+	var camera: Camera2D = Camera2D.new()
+	root.add_child(camera)
+	camera.make_current()
+	var world: PixelWorld = await _make_generated_world(target)
+	target.position = Vector2(100000, 0)
+	camera.position = target.position
+	await process_frame
+	var jumping: int = world.get_stats()["view_missing"]
+	var ready: bool = await _await_ready(world, _zone_rect(Vector2i(100000, 0), Vector2i(5, 3)))
+	var settled: int = world.get_stats()["view_missing"]
+	world.free()
+	target.free()
+	camera.free()
+	if jumping <= 0 or not ready or settled != 0:
+		printerr("  view_missing was %d after the jump (expected > 0), view ready=%s, %d once ready" % [jumping, ready, settled])
+		return false
+	return true
+
+
 func test_teleport_and_freed_target() -> bool:
 	var target: Node2D = Node2D.new()
 	root.add_child(target)

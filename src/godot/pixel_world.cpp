@@ -235,7 +235,10 @@ void PixelWorld::stream_generated_chunks() {
 
 	const auto start = std::chrono::steady_clock::now();
 	for (std::unique_ptr<Chunk> &chunk : streamer->take_ready(max_inserts_per_frame)) {
-		if (!loaded_rect.contains(chunk->coord)) continue;  // the target left while it generated
+		if (!loaded_rect.contains(chunk->coord)) {  // the target left while it generated
+			streamer->forget(chunk->coord);  // else the coord stays delivered and never reloads
+			continue;
+		}
 		const ChunkCoord coord = chunk->coord;
 		if (grid->find(coord)) continue;
 		grid->insert(std::move(chunk));

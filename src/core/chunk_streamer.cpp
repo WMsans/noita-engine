@@ -147,6 +147,17 @@ std::vector<std::unique_ptr<Chunk>> ChunkStreamer::take_ready(int max) {
 	return out;
 }
 
+void ChunkStreamer::forget(ChunkCoord coord) {
+	std::lock_guard<std::mutex> lock(mutex_);
+	const int64_t key = chunk_key(coord);
+	delivered_.erase(key);
+	// An in-flight entry that is gone makes the worker's landing check miss, so its result is
+	// dropped instead of landing on a coord the caller no longer wants.
+	req_.erase(std::remove_if(req_.begin(), req_.end(),
+	                          [key](const Entry &e) { return chunk_key(e.coord) == key; }),
+	           req_.end());
+}
+
 void ChunkStreamer::wait_idle() {
 	std::unique_lock<std::mutex> lock(mutex_);
 	drained_.wait(lock, [&] { return idle_locked(); });

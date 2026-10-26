@@ -549,6 +549,8 @@ void TerrainGenerator::generate(ChunkCoord coord, Chunk& out, uint32_t seed) con
 			const int depth = wy - h;
 			MatId mat = MAT_AIR;
 			if (depth >= 0) {
+				// shortcut: every cell re-computes the biome weights; the plan's single-biome
+				// column fast path is deferred. CPU only, generation runs in the background.
 				const BiomeWeights weights = weights_col(wx, xw, wy, depth);
 				const Blended amounts = blend(weights);
 				const int picked = pick_from(weights, wx, wy);

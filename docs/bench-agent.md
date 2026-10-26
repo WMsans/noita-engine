@@ -89,16 +89,21 @@ godot --path . res://bench/bench_world.tscn -- --frames=1800 --out=bench/results
 godot --path . res://bench/bench_world.tscn -- --frames=1800 --out=bench/results/linux-irisxe-plan2.json
 ```
 
-Pick the `--out` that matches the machine. Defaults: `--frames=1800`, `--out=user://bench.json`;
-a relative `--out` is resolved against the current directory and missing parent directories are
-created. `--frames` at or below 120 is refused without writing a file.
+Pick the `--out` that matches the machine. Defaults: `--frames=1800`; `--out=user://bench.json`
+for Plan 1 and `--out=user://bench_world.json` for Plan 2 (`bench/bench.gd` and
+`bench/bench_world.gd`); a relative `--out` is resolved against the current directory and
+missing parent directories are created. `--frames` at or below 120 is refused without writing
+a file.
 
 Expected: exit code 0, the JSON file exists, `budget_pass` is `true`, and one summary line is
-printed. Plan 1:
+printed. Plan 1 (the committed `bench/results/macos-m1-plan1.json`):
 
 ```
-bench: 1680 frames (+120 warm-up) | sim 3.53 ms mean / 5.14 p99 | frame 8.35 / 10.56 ms | upload 1.04 | chunks 53.0 | cells 108805 | budget pass | bench/results/...
+bench: 1680 frames (+120 warm-up) | sim 3.53 ms mean / 5.09 p99 | frame 8.35 / 10.53 ms | upload 1.02 | chunks 53.0 | cells 108384 | budget pass | bench/results/...
 ```
+
+That line is the committed artifact, so a fresh run is compared against it; a re-run on an
+otherwise idle M1 lands within noise (sim p99 5.14, frame p99 10.56, upload 1.04).
 
 Plan 2:
 

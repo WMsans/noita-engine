@@ -16,8 +16,9 @@ const SIM_BUDGET_MS := 6.0
 const STREAM_BUDGET_MS := 1.0
 const STREAM_P99_BUDGET_MS := 3.0
 const FRAME_P99_BUDGET_MS := 16.6
-# 50% of Plan 1's M1 figure (108383.9): the same workload per frame as the arena bench, so a
-# gutted streaming demo cannot pass by doing less work.
+# 50% of Plan 1's M1 figure (108383.9), the plan's floor for this bench: the generated world
+# must keep at least half an arena frame of work moving, so a gutted streaming demo cannot pass
+# by doing less work. The committed M1 run reports 3x this (325127).
 const CELLS_BUDGET := 54192.0
 
 # The camera is frame-locked, not time-based: 10 cells per frame is 600 cells/s at 60 fps and
