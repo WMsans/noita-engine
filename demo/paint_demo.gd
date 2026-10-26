@@ -1,12 +1,13 @@
 extends Node2D
 
-# Paint demo: WASD pans the camera that PixelWorld follows, left mouse paints the selected
-# material in a radius-6 circle, right mouse paints air, 1-0 pick one of the ten starter
-# materials, H sleeps the main thread for the hitch check.
+# Paint demo: WASD pans the camera that PixelWorld follows (hold Shift for 4x), left mouse
+# paints the selected material in a radius-6 circle, right mouse paints air, 1-0 pick one of
+# the ten starter materials, H sleeps the main thread for the hitch check.
 
 const MATERIALS: Array[StringName] = [&"rock", &"wood", &"sand", &"water", &"oil", &"lava", &"acid", &"fire", &"steam", &"smoke"]
 const BRUSH_RADIUS := 6
 const PAN_SPEED := 300.0  # cells per second
+const FAST_PAN := 4.0
 
 @onready var world: PixelWorld = $PixelWorld
 @onready var camera: Camera2D = $Camera2D
@@ -19,10 +20,11 @@ func _process(delta: float) -> void:
 	_pan(delta)
 	_paint()
 	var stats: Dictionary = world.get_stats()
-	info.text = "material: %s (%d)   brush: %d\n[1-0] pick  [LMB] paint  [RMB] air  [WASD] pan  [H] hitch\ntick %d   sim %.2f ms   upload %.2f ms\nchunks %d   simulated %d   cells %d" % [
+	info.text = "material: %s (%d)   brush: %d\n[1-0] pick  [LMB] paint  [RMB] air  [WASD] pan  [Shift] fast  [H] hitch\ntick %d   sim %.2f ms   upload %.2f ms\nchunks %d   active %d   simulated %d   cells %d\ngen pending %d   gen %.2f ms   stream %.2f ms   view missing %d" % [
 		MATERIALS[selected], selected + 1, BRUSH_RADIUS,
 		stats.tick, stats.sim_ms, stats.upload_ms,
-		stats.chunks_loaded, stats.chunks_simulated, stats.cells_updated]
+		stats.chunks_loaded, stats.chunks_active, stats.chunks_simulated, stats.cells_updated,
+		stats.gen_pending, stats.gen_ms, stats.stream_ms, stats.view_missing]
 
 
 func _pan(delta: float) -> void:
@@ -36,7 +38,8 @@ func _pan(delta: float) -> void:
 	if Input.is_key_pressed(KEY_S):
 		direction.y += 1.0
 	if direction != Vector2.ZERO:
-		camera.position += direction.normalized() * PAN_SPEED * delta
+		var speed := PAN_SPEED * (FAST_PAN if Input.is_key_pressed(KEY_SHIFT) else 1.0)
+		camera.position += direction.normalized() * speed * delta
 
 
 func _paint() -> void:

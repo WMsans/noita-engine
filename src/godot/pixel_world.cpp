@@ -1,11 +1,12 @@
 #include "pixel_world.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <cstdlib>
 
 #include <godot_cpp/classes/image.hpp>
 #include <godot_cpp/classes/rendering_server.hpp>
+#include <godot_cpp/classes/viewport.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
@@ -29,10 +30,23 @@ void PixelWorld::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("fill_circle", "center", "radius", "material"), &PixelWorld::fill_circle);
 	ClassDB::bind_method(D_METHOD("step", "ticks"), &PixelWorld::step);
 	ClassDB::bind_method(D_METHOD("is_chunk_loaded", "chunk"), &PixelWorld::is_chunk_loaded);
+	ClassDB::bind_method(D_METHOD("is_area_ready", "rect"), &PixelWorld::is_area_ready);
 	ClassDB::bind_method(D_METHOD("get_stats"), &PixelWorld::get_stats);
 
 	ClassDB::bind_method(D_METHOD("set_material_set", "value"), &PixelWorld::set_material_set);
 	ClassDB::bind_method(D_METHOD("get_material_set"), &PixelWorld::get_material_set);
+	ClassDB::bind_method(D_METHOD("set_generator", "value"), &PixelWorld::set_generator);
+	ClassDB::bind_method(D_METHOD("get_generator"), &PixelWorld::get_generator);
+	ClassDB::bind_method(D_METHOD("set_generator_threads", "value"), &PixelWorld::set_generator_threads);
+	ClassDB::bind_method(D_METHOD("get_generator_threads"), &PixelWorld::get_generator_threads);
+	ClassDB::bind_method(D_METHOD("set_max_inserts_per_frame", "value"), &PixelWorld::set_max_inserts_per_frame);
+	ClassDB::bind_method(D_METHOD("get_max_inserts_per_frame"), &PixelWorld::get_max_inserts_per_frame);
+	ClassDB::bind_method(D_METHOD("set_active_radius", "value"), &PixelWorld::set_active_radius);
+	ClassDB::bind_method(D_METHOD("get_active_radius"), &PixelWorld::get_active_radius);
+	ClassDB::bind_method(D_METHOD("set_loaded_margin", "value"), &PixelWorld::set_loaded_margin);
+	ClassDB::bind_method(D_METHOD("get_loaded_margin"), &PixelWorld::get_loaded_margin);
+	ClassDB::bind_method(D_METHOD("set_discard_hysteresis", "value"), &PixelWorld::set_discard_hysteresis);
+	ClassDB::bind_method(D_METHOD("get_discard_hysteresis"), &PixelWorld::get_discard_hysteresis);
 	ClassDB::bind_method(D_METHOD("set_world_seed", "value"), &PixelWorld::set_world_seed);
 	ClassDB::bind_method(D_METHOD("get_world_seed"), &PixelWorld::get_world_seed);
 	ClassDB::bind_method(D_METHOD("set_worker_threads", "value"), &PixelWorld::set_worker_threads);
@@ -47,6 +61,12 @@ void PixelWorld::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_simulating"), &PixelWorld::get_simulating);
 
 	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "material_set", PROPERTY_HINT_RESOURCE_TYPE, "PixelMaterialSet"), "set_material_set", "get_material_set");
+	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "generator", PROPERTY_HINT_RESOURCE_TYPE, "PixelWorldGenerator"), "set_generator", "get_generator");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "generator_threads"), "set_generator_threads", "get_generator_threads");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "max_inserts_per_frame"), "set_max_inserts_per_frame", "get_max_inserts_per_frame");
+	ADD_PROPERTY(PropertyInfo(Variant::VECTOR2I, "active_radius"), "set_active_radius", "get_active_radius");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "loaded_margin"), "set_loaded_margin", "get_loaded_margin");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "discard_hysteresis"), "set_discard_hysteresis", "get_discard_hysteresis");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "world_seed"), "set_world_seed", "get_world_seed");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "worker_threads"), "set_worker_threads", "get_worker_threads");
 	ADD_PROPERTY(PropertyInfo(Variant::NODE_PATH, "follow_target"), "set_follow_target", "get_follow_target");
@@ -67,10 +87,21 @@ void PixelWorld::_ready() {
 		UtilityFunctions::push_error("PixelWorld: material set does not compile: " + error);
 		return;
 	}
-	const MatId rock = table.id_of("rock");
-	if (rock == NO_MAT) {
-		UtilityFunctions::push_error("PixelWorld: material set has no 'rock' material for the arena border");
-		return;
+	if (generator_resource.is_valid()) {
+		generator = generator_resource->build(table, (uint32_t)world_seed, error);
+		if (!generator) {
+			UtilityFunctions::push_error("PixelWorld: generator does not compile: " + error);
+			return;
+		}
+	} else {
+		const MatId rock = table.id_of("rock");
+		if (rock == NO_MAT) {
+			UtilityFunctions::push_error("PixelWorld: material set has no 'rock' material for the arena border");
+			return;
+		}
+		arena_generator = std::make_unique<BoxGenerator>(arena.position.x, arena.position.y,
+		                                                 arena.position.x + arena.size.x,
+		                                                 arena.position.y + arena.size.y, rock, table);
 	}
 
 	palette.resize(table.size());
@@ -84,20 +115,43 @@ void PixelWorld::_ready() {
 	pool = std::make_unique<JobPool>(worker_threads == -1 ? JobPool::default_workers() : worker_threads);
 	grid = std::make_unique<WorldGrid>(table, (uint32_t)world_seed);
 	sim = std::make_unique<Simulator>(*grid, pool.get());
-	generator = std::make_unique<BoxGenerator>(arena.position.x, arena.position.y,
-	                                           arena.position.x + arena.size.x,
-	                                           arena.position.y + arena.size.y, rock, table);
 
 	pixels.resize(CHUNK * CHUNK * 4);
 	upload_image = Image::create_from_data(CHUNK, CHUNK, false, Image::FORMAT_RGBA8, pixels);
 
-	stream_chunks();
+	if (generator) {
+		streamer = std::make_unique<ChunkStreamer>(*generator, (uint32_t)world_seed, generator_threads);
+		// Fill the active zone before the first frame, so the world is never half-empty up front.
+		const Vector2i cell = target_cell();
+		const ChunkCoord centre = chunk_of(cell.x, cell.y);
+		const ChunkRect active = ChunkRect::around(centre, active_radius.x < 0 ? 0 : active_radius.x,
+		                                           active_radius.y < 0 ? 0 : active_radius.y);
+		std::vector<ChunkCoord> missing;
+		for (int y = active.y0; y <= active.y1; ++y)
+			for (int x = active.x0; x <= active.x1; ++x) missing.push_back({x, y});
+		streamer->request(missing, centre);
+		streamer->wait_idle();
+		for (std::unique_ptr<Chunk> &chunk : streamer->take_ready((int)missing.size())) {
+			const ChunkCoord coord = chunk->coord;
+			if (grid->find(coord)) continue;
+			grid->insert(std::move(chunk));
+			loaded.push_back(coord);
+		}
+	} else {
+		stream_chunks();
+	}
 }
 
 void PixelWorld::_process(double) {
 	if (!grid) return;
-	stream_chunks();
+	if (streamer) {
+		stream_generated_chunks();
+	} else {
+		insert_evict_ms = 0.0;
+		stream_chunks();
+	}
 	upload_dirty_chunks();
+	view_missing = streamer ? count_view_missing() : 0;
 }
 
 void PixelWorld::_physics_process(double) {
@@ -137,32 +191,105 @@ Vector2i PixelWorld::target_cell() const {
 void PixelWorld::stream_chunks() {
 	const Vector2i cell = target_cell();
 	const ChunkCoord centre = chunk_of(cell.x, cell.y);
+	const ChunkRect keep = ChunkRect::around(centre, load_radius.x, load_radius.y);
 
 	for (int dy = -load_radius.y; dy <= load_radius.y; ++dy)
 		for (int dx = -load_radius.x; dx <= load_radius.x; ++dx) {
 			const ChunkCoord coord{centre.x + dx, centre.y + dy};
 			if (grid->find(coord)) continue;
-			grid->load(coord, *generator);
+			grid->load(coord, *arena_generator);
 			loaded.push_back(coord);
 		}
 
 	// Unload what the target has moved away from; the data and its canvas item go with it.
 	for (size_t i = 0; i < loaded.size();) {
-		const ChunkCoord coord = loaded[i];
-		if (std::abs(coord.x - centre.x) <= load_radius.x && std::abs(coord.y - centre.y) <= load_radius.y) {
+		if (keep.contains(loaded[i])) {
 			++i;
 			continue;
 		}
-		grid->unload(coord);
-		drop_view(coord);
-		loaded[i] = loaded.back();
-		loaded.pop_back();
+		evict(loaded[i]);  // removes the entry, so `i` points at the next candidate
 	}
+}
+
+// Generator path: active / loaded / discard zones around the follow target, in this order.
+void PixelWorld::stream_generated_chunks() {
+	const Vector2i cell = target_cell();
+	const ChunkCoord centre = chunk_of(cell.x, cell.y);
+	// Live values, clamped on every read: a negative radius must never allocate a huge rect.
+	const int ax = active_radius.x < 0 ? 0 : active_radius.x;
+	const int ay = active_radius.y < 0 ? 0 : active_radius.y;
+	const int margin = loaded_margin < 0 ? 0 : loaded_margin;
+	const int hysteresis = discard_hysteresis < 0 ? 0 : discard_hysteresis;
+	const ChunkRect active = ChunkRect::around(centre, ax, ay);
+	const ChunkRect loaded_rect = ChunkRect::around(centre, ax + margin, ay + margin);
+	const ChunkRect discard =
+	    ChunkRect::around(centre, ax + margin + hysteresis, ay + margin + hysteresis);
+
+	sim->set_active_rect(active);
+
+	std::vector<ChunkCoord> missing;
+	for (int y = loaded_rect.y0; y <= loaded_rect.y1; ++y)
+		for (int x = loaded_rect.x0; x <= loaded_rect.x1; ++x)
+			if (!grid->find({x, y})) missing.push_back({x, y});
+	streamer->request(missing, centre);
+
+	const auto start = std::chrono::steady_clock::now();
+	for (std::unique_ptr<Chunk> &chunk : streamer->take_ready(max_inserts_per_frame)) {
+		if (!loaded_rect.contains(chunk->coord)) continue;  // the target left while it generated
+		const ChunkCoord coord = chunk->coord;
+		if (grid->find(coord)) continue;
+		grid->insert(std::move(chunk));
+		loaded.push_back(coord);
+	}
+	for (size_t i = 0; i < loaded.size();) {
+		if (discard.contains(loaded[i])) {
+			++i;
+			continue;
+		}
+		evict(loaded[i]);
+	}
+	insert_evict_ms = std::chrono::duration<double, std::milli>(
+	                      std::chrono::steady_clock::now() - start)
+	                      .count();
+
+	const StreamStats stats = streamer->take_stats();
+	gen_ms = stats.generated > 0 ? stats.gen_ms_total / stats.generated : 0.0;
+	chunks_generated += stats.generated;
+}
+
+// The single discard path: unload the chunk, drop its view and forget the coord. This is the
+// future persistence hook — a save would read the chunk here, before it is unloaded.
+void PixelWorld::evict(ChunkCoord coord) {
+	grid->unload(coord);
+	drop_view(coord);
+	const auto it = std::find(loaded.begin(), loaded.end(), coord);
+	if (it != loaded.end()) loaded.erase(it);
+}
+
+int PixelWorld::count_view_missing() const {
+	const Viewport *viewport = get_viewport();
+	if (!viewport) return 0;
+	// Viewport pixels -> canvas -> this node's space, so the visible rect is in world cells.
+	const Transform2D view_to_local =
+	    get_global_transform().affine_inverse() * get_canvas_transform().affine_inverse();
+	const Rect2 visible = view_to_local.xform(viewport->get_visible_rect());
+	const int left = (int)std::floor(visible.position.x);
+	const int top = (int)std::floor(visible.position.y);
+	const int right = (int)std::ceil(visible.position.x + visible.size.x) - 1;
+	const int bottom = (int)std::ceil(visible.position.y + visible.size.y) - 1;
+	const ChunkCoord c0 = chunk_of(left, top);
+	const ChunkCoord c1 = chunk_of(right, bottom);
+	int missing = 0;
+	for (int y = c0.y; y <= c1.y; ++y)
+		for (int x = c0.x; x <= c1.x; ++x)
+			if (!grid->find({x, y})) ++missing;
+	return missing;
 }
 
 void PixelWorld::upload_dirty_chunks() {
 	RenderingServer *rs = RenderingServer::get_singleton();
 	const auto start = std::chrono::steady_clock::now();
+	double first_upload = 0.0;
 
 	grid->for_each_chunk([&](Chunk &chunk) {
 		if (!chunk.render_dirty.exchange(false)) return;
@@ -173,12 +300,17 @@ void PixelWorld::upload_dirty_chunks() {
 		if (view.has_texture) {
 			rs->texture_2d_update(view.texture, upload_image, 0);
 		} else {
+			const auto create_start = std::chrono::steady_clock::now();
 			view.texture = rs->texture_2d_create(upload_image);
 			const Vector2 origin((float)(chunk.coord.x * CHUNK), (float)(chunk.coord.y * CHUNK));
 			rs->canvas_item_add_texture_rect(view.canvas_item, Rect2(origin, Vector2(CHUNK, CHUNK)), view.texture);
 			view.has_texture = true;
+			first_upload +=
+			    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - create_start)
+			        .count();
 		}
 	});
+	first_upload_ms = first_upload;
 
 	const auto elapsed = std::chrono::steady_clock::now() - start;
 	upload_ms = (double)std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count() / 1000.0;
@@ -279,6 +411,18 @@ bool PixelWorld::is_chunk_loaded(const Vector2i &p_chunk) const {
 	return grid->find({p_chunk.x, p_chunk.y}) != nullptr;
 }
 
+bool PixelWorld::is_area_ready(const Rect2i &p_rect) const {
+	if (p_rect.size.x <= 0 || p_rect.size.y <= 0) return true;
+	if (!grid) return false;
+	const ChunkCoord c0 = chunk_of(p_rect.position.x, p_rect.position.y);
+	const ChunkCoord c1 = chunk_of(p_rect.position.x + p_rect.size.x - 1,
+	                               p_rect.position.y + p_rect.size.y - 1);
+	for (int y = c0.y; y <= c1.y; ++y)
+		for (int x = c0.x; x <= c1.x; ++x)
+			if (!grid->find({x, y})) return false;
+	return true;
+}
+
 Dictionary PixelWorld::get_stats() const {
 	Dictionary stats;
 	if (sim) {
@@ -295,6 +439,13 @@ Dictionary PixelWorld::get_stats() const {
 	}
 	stats["upload_ms"] = upload_ms;
 	stats["chunks_loaded"] = (int64_t)loaded.size();
+	// The arena path has no streamer: every loaded chunk is active and streaming reads 0.
+	stats["chunks_active"] = streamer ? (int64_t)sim->last_stats().chunks_active : (int64_t)loaded.size();
+	stats["gen_pending"] = streamer ? streamer->pending() : 0;
+	stats["gen_ms"] = streamer ? gen_ms : 0.0;
+	stats["chunks_generated"] = streamer ? chunks_generated : (int64_t)0;
+	stats["stream_ms"] = streamer ? insert_evict_ms + first_upload_ms : 0.0;
+	stats["view_missing"] = streamer ? view_missing : 0;
 	return stats;
 }
 

@@ -153,10 +153,177 @@ func test_stats_keys() -> bool:
 	var world: PixelWorld = await _make_world()
 	var stats: Dictionary = world.get_stats()
 	world.free()
-	for key: String in ["sim_ms", "upload_ms", "chunks_loaded", "chunks_simulated", "cells_updated", "tick"]:
+	var keys: Array[String] = ["sim_ms", "upload_ms", "chunks_loaded", "chunks_simulated", "cells_updated", "tick", "chunks_active", "gen_pending", "gen_ms", "chunks_generated", "stream_ms", "view_missing"]
+	for key: String in keys:
 		if not stats.has(key):
 			printerr("  get_stats() is missing '%s'; keys are %s" % [key, stats.keys()])
 			return false
+	# The arena path has no streamer: everything is active and the streaming stats are 0.
+	for key: String in ["gen_pending", "gen_ms", "chunks_generated", "stream_ms", "view_missing"]:
+		if stats[key] != 0:
+			printerr("  arena path has %s = %s, expected 0" % [key, stats[key]])
+			return false
+	if stats["chunks_active"] != stats["chunks_loaded"]:
+		printerr("  arena path has chunks_active %s, chunks_loaded %s" % [stats["chunks_active"], stats["chunks_loaded"]])
+		return false
+	return true
+
+
+# --- generated world (Plan 2) --------------------------------------------------------------
+
+# `target` must already be in the tree; the world's _ready blocks once to fill the active zone.
+func _make_generated_world(target: Node2D) -> PixelWorld:
+	var world: PixelWorld = PixelWorld.new()
+	world.material_set = load("res://materials/default_set.tres")
+	world.generator = load("res://worldgen/default_generator.tres")
+	world.worker_threads = 1
+	world.generator_threads = 2
+	# Off from the start: the first frame can run physics ticks, and a settling tick rewrites
+	# generated cells, which the cell-comparison test would then see as a difference.
+	world.simulating = false
+	world.follow_target = target.get_path()
+	root.add_child(world)
+	await process_frame
+	return world
+
+
+func _await_ready(world: PixelWorld, rect: Rect2i, max_frames: int = 600) -> bool:
+	for i: int in max_frames:
+		if world.is_area_ready(rect):
+			return true
+		await process_frame
+	return world.is_area_ready(rect)
+
+
+# The world cells covered by the (2*radius+1)-chunk zone around `cell`.
+func _zone_rect(cell: Vector2i, radius: Vector2i) -> Rect2i:
+	return Rect2i(cell.x - radius.x * 64, cell.y - radius.y * 64, (2 * radius.x + 1) * 64, (2 * radius.y + 1) * 64)
+
+
+func test_generated_world_active_zone_ready() -> bool:
+	var target: Node2D = Node2D.new()
+	root.add_child(target)
+	var world: PixelWorld = await _make_generated_world(target)
+	var ready: bool = world.is_area_ready(_zone_rect(Vector2i.ZERO, Vector2i(8, 5)))
+	# _ready fills the active zone synchronously; the sky cell is in the loaded zone (chunk
+	# (0,-8)), which streams in normally, so wait for its chunk rather than the first frame.
+	await _await_ready(world, Rect2i(0, -500, 1, 1))
+	var sky: StringName = world.get_material_at(Vector2i(0, -500))
+	world.free()
+	target.free()
+	if not ready or sky != &"air":
+		printerr("  active zone ready=%s, (0,-500) is '%s'" % [ready, sky])
+		return false
+	return true
+
+
+func test_far_chunks_discarded() -> bool:
+	var target: Node2D = Node2D.new()
+	root.add_child(target)
+	var world: PixelWorld = await _make_generated_world(target)
+	target.position = Vector2(20000, 0)
+	var ready: bool = await _await_ready(world, _zone_rect(Vector2i(20000, 0), Vector2i(8, 5)))
+	await process_frame
+	await process_frame
+	var origin: bool = world.is_chunk_loaded(Vector2i(0, 0))
+	world.free()
+	target.free()
+	if not ready or origin:
+		printerr("  far zone ready=%s, origin chunk loaded=%s" % [ready, origin])
+		return false
+	return true
+
+
+func test_regenerated_chunk_identical() -> bool:
+	var target: Node2D = Node2D.new()
+	root.add_child(target)
+	var world: PixelWorld = await _make_generated_world(target)
+	world.simulating = false
+	var before: Array[StringName] = []
+	for y: int in range(4 * 64, 5 * 64):
+		for x: int in range(0, 64):
+			before.append(world.get_material_at(Vector2i(x, y)))
+
+	target.position = Vector2(20000, 0)
+	for i: int in 600:
+		if not world.is_chunk_loaded(Vector2i(0, 4)):
+			break
+		await process_frame
+	var unloaded: bool = not world.is_chunk_loaded(Vector2i(0, 4))
+
+	target.position = Vector2.ZERO
+	var ready: bool = await _await_ready(world, Rect2i(0, 4 * 64, 64, 64))
+
+	var different := 0
+	var index := 0
+	for y: int in range(4 * 64, 5 * 64):
+		for x: int in range(0, 64):
+			if world.get_material_at(Vector2i(x, y)) != before[index]:
+				different += 1
+			index += 1
+	world.free()
+	target.free()
+	if not unloaded or not ready or different != 0:
+		printerr("  unloaded=%s ready=%s, %d of 4096 cells differ" % [unloaded, ready, different])
+		return false
+	return true
+
+
+func test_teleport_and_freed_target() -> bool:
+	var target: Node2D = Node2D.new()
+	root.add_child(target)
+	var world: PixelWorld = await _make_generated_world(target)
+	target.position = Vector2(100000, 3000)
+	var chunk_rect := Rect2i(1562 * 64, 46 * 64, 64, 64)
+	# Nothing has been requested yet, so the far area is deterministically unloaded.
+	var not_ready: bool = not world.is_area_ready(chunk_rect)
+	var unloaded_read: StringName = world.get_material_at(Vector2i(100000, 3000))
+	var ready: bool = await _await_ready(world, chunk_rect)
+	var origin: bool = world.is_chunk_loaded(Vector2i(0, 0))
+	world.simulating = true
+	var tick_before: int = world.get_stats()["tick"]
+	target.free()
+	await physics_frame
+	await process_frame
+	await physics_frame
+	await process_frame
+	var tick_after: int = world.get_stats()["tick"]
+	world.free()
+	if not not_ready or unloaded_read != &"" or not ready or origin or tick_after <= tick_before:
+		printerr("  before-frame ready=%s read='%s', after ready=%s origin=%s, ticks %d -> %d" % [not_ready, unloaded_read, ready, origin, tick_before, tick_after])
+		return false
+	return true
+
+
+func test_bad_zone_values_clamped() -> bool:
+	var target: Node2D = Node2D.new()
+	root.add_child(target)
+	var world: PixelWorld = await _make_generated_world(target)
+	world.active_radius = Vector2i(-3, -3)
+	world.loaded_margin = -5
+	world.discard_hysteresis = -1
+	for i: int in 3:
+		await process_frame
+	var loaded: int = world.get_stats()["chunks_loaded"]
+	var centre_ready: bool = world.is_area_ready(Rect2i(0, 0, 64, 64))
+	world.free()
+	target.free()
+	if loaded < 1 or not centre_ready:
+		printerr("  chunks_loaded=%d, centre chunk ready=%s" % [loaded, centre_ready])
+		return false
+	return true
+
+
+func test_free_world_while_streaming() -> bool:
+	var target: Node2D = Node2D.new()
+	root.add_child(target)
+	var world: PixelWorld = await _make_generated_world(target)
+	target.position = Vector2(50000, 0)
+	await process_frame  # the request is published and the workers are busy
+	world.free()  # joins them; no use-after-free of the generator or the table
+	await process_frame
+	await process_frame
+	target.free()
 	return true
 
 
