@@ -386,3 +386,55 @@ TEST_CASE("a chunk that changes every tick rebuilds at most every fourth tick") 
 	CHECK(builds >= 3);
 	CHECK(builds <= 4);
 }
+
+TEST_CASE("a fast body never falls through a floor at a chunk's first row") {
+	int through = 0;
+	for (int start = 10; start <= 400; start += 10) {
+		World w(128, 704);
+		phystest::fill(w.grid, 0, 576, 128, 578, w.id("rock"));
+		PhysicsWorld physics(w.grid, GRAVITY);
+		const int crate = physics.add_body(phystest::box(w.t, "wood", 12, 12, 64, (float)start));
+		b2Body_SetLinearVelocity(physics.body_id(crate), {0.0f, 2000.0f});
+		phystest::run(physics, 120);
+		if (phystest::pos(physics, crate).y >= 576.0f) ++through;
+	}
+	CHECK(through == 0);
+}
+
+TEST_CASE("a jointed car is enabled or disabled as a whole") {
+	World w;
+	phystest::fill(w.grid, 0, 200, SIZE, SIZE, w.id("rock"));
+	PhysicsWorld physics(w.grid, GRAVITY);
+	const int chassis = physics.add_body(phystest::box(w.t, "rock", 40, 8, 50, 170));
+	const int back = physics.add_body(phystest::disc(w.t, "rock", 5, 36, 182));
+	const int front = physics.add_body(phystest::disc(w.t, "rock", 5, 66, 182));  // chunk x = 1
+	physics.add_wheel(chassis, back, 36, 182, WheelParams{});
+	physics.add_wheel(chassis, front, 66, 182, WheelParams{});
+	physics.set_active_rect(ChunkRect{0, -1, 0, 3});  // the front wheel's chunk is not active
+	phystest::run(physics, 1);
+	CHECK_FALSE(b2Body_IsEnabled(physics.body_id(chassis)));
+	CHECK_FALSE(b2Body_IsEnabled(physics.body_id(back)));
+	CHECK_FALSE(b2Body_IsEnabled(physics.body_id(front)));
+	physics.set_active_rect(ChunkRect{0, -1, 3, 3});
+	phystest::run(physics, 1);
+	CHECK(b2Body_IsEnabled(physics.body_id(chassis)));
+	CHECK(b2Body_IsEnabled(physics.body_id(front)));
+}
+
+TEST_CASE("removing or teleporting a sleeping body wakes the sand on it") {
+	for (bool teleport : {false, true}) {
+		World w;
+		phystest::fill(w.grid, 0, 100, SIZE, SIZE, w.id("rock"));
+		PhysicsWorld physics(w.grid, GRAVITY);
+		Simulator sim(w.grid);
+		const int crate = physics.add_body(phystest::box(w.t, "wood", 12, 12, 128, 40));
+		tick_all(physics, sim, 120);
+		phystest::fill(w.grid, 126, 60, 131, 80, w.id("sand"));
+		tick_all(physics, sim, 400);
+		REQUIRE_FALSE(b2Body_IsAwake(physics.body_id(crate)));
+		if (teleport) physics.teleport(crate, 40, 40, 0);
+		else physics.remove_body(crate);
+		tick_all(physics, sim, 120);
+		CHECK(simtest::mat_at(w.grid, 128, 99) == w.id("sand"));
+	}
+}

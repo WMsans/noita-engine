@@ -190,14 +190,15 @@ void PixelWorld::_physics_process(double) {
 }
 
 // Terrain shapes and Box2D first, then the bodies are stamped into the grid for the cell sim
-// (sand piles on them, water flows around them) and lifted out again before particles move.
+// and the particles (sand piles on them, water flows around them, debris bounces off them
+// instead of landing inside them) and lifted out again.
 void PixelWorld::tick_world() {
 	physics->update_terrain();
 	physics->step();
 	physics->stamp();
 	sim->tick();
-	physics->unstamp();
 	particles->step();
+	physics->unstamp();
 	sync_bodies();
 }
 

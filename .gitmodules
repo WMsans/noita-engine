@@ -4,3 +4,4 @@
 [submodule "thirdparty/box2d"]
 	path = thirdparty/box2d
 	url = https://github.com/erincatto/box2d
+	ignore = untracked  # scons writes .o files next to the Box2D sources

@@ -1,4 +1,5 @@
 #include <cmath>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -7,6 +8,7 @@
 #include "material.h"
 #include "outline.h"
 #include "rng.h"
+#include "world_grid.h"
 
 namespace {
 
@@ -60,6 +62,28 @@ float point_segment_distance(b2Vec2 p, b2Vec2 a, b2Vec2 b) {
 	float t = len2 > 0 ? ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2 : 0;
 	t = std::fmax(0.0f, std::fmin(1.0f, t));
 	return std::hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
+}
+
+// rock (solid) and sand (collision-solid powder).
+MaterialTable sand_table() {
+	std::vector<MaterialDef> defs(2);
+	defs[0].name = "rock";
+	defs[0].cls = MatClass::Solid;
+	defs[0].collision_solid = true;
+	defs[1].name = "sand";
+	defs[1].cls = MatClass::Powder;
+	defs[1].collision_solid = true;
+	MaterialTable table;
+	std::string error;
+	REQUIRE(MaterialTable::compile(defs, {}, table, error));
+	return table;
+}
+
+std::unique_ptr<Chunk> empty_chunk(ChunkCoord coord) {
+	auto chunk = std::make_unique<Chunk>();
+	chunk->coord = coord;
+	for (Cell& c : chunk->cells) c = Cell{};
+	return chunk;
 }
 
 }  // namespace
@@ -179,8 +203,8 @@ TEST_CASE("chunk mask skips body pixels and non-solids") {
 	std::string error;
 	REQUIRE(MaterialTable::compile(defs, {}, table, error));
 
-	Chunk chunk;
-	for (Cell& c : chunk.cells) c = Cell{};
+	WorldGrid grid(table, 1);
+	Chunk& chunk = *grid.insert(empty_chunk({0, 0}));
 	chunk.at(0, 0).mat = table.id_of("rock");
 	chunk.at(1, 0).mat = table.id_of("sand");
 	chunk.at(1, 1).mat = table.id_of("rock");  // sand counts only when it rests on solid
@@ -189,7 +213,7 @@ TEST_CASE("chunk mask skips body pixels and non-solids") {
 	chunk.at(3, 0).flags |= FLAG_BODY;
 
 	Mask m;
-	chunk_solid_mask(chunk, nullptr, table, m);
+	chunk_solid_mask(grid, chunk, m);
 	REQUIRE(m.size() == (size_t)CHUNK * CHUNK);
 	CHECK(m[0] == 1);
 	CHECK(m[1] == 1);
@@ -199,32 +223,21 @@ TEST_CASE("chunk mask skips body pixels and non-solids") {
 }
 
 TEST_CASE("chunk mask counts powder only where it rests on solid ground") {
-	std::vector<MaterialDef> defs(2);
-	defs[0].name = "rock";
-	defs[0].cls = MatClass::Solid;
-	defs[0].collision_solid = true;
-	defs[1].name = "sand";
-	defs[1].cls = MatClass::Powder;
-	defs[1].collision_solid = true;
-	MaterialTable table;
-	std::string error;
-	REQUIRE(MaterialTable::compile(defs, {}, table, error));
+	MaterialTable table = sand_table();
 	const MatId rock = table.id_of("rock"), sand = table.id_of("sand");
-
-	Chunk chunk;
-	for (Cell& c : chunk.cells) c = Cell{};
-	chunk.at(0, 63).mat = rock;   // sand stack on rock: solid
+	WorldGrid grid(table, 1);
+	Chunk& chunk = *grid.insert(empty_chunk({0, 0}));
+	Chunk& below = *grid.insert(empty_chunk({0, 1}));
+	grid.insert(empty_chunk({0, 2}));
+	chunk.at(0, 63).mat = rock;  // sand stack on rock: solid
 	chunk.at(0, 62).mat = sand;
 	chunk.at(0, 61).mat = sand;
-	chunk.at(1, 20).mat = sand;   // sand in mid-air: not solid
-	chunk.at(2, 63).mat = sand;   // bottom row: rests on the chunk below
-
-	Chunk below;
-	for (Cell& c : below.cells) c = Cell{};
+	chunk.at(1, 20).mat = sand;  // sand in mid-air: not solid
+	chunk.at(2, 63).mat = sand;  // bottom row: rests on the chunk below
 	below.at(2, 0).mat = rock;
 
 	Mask m;
-	chunk_solid_mask(chunk, &below, table, m);
+	chunk_solid_mask(grid, chunk, m);
 	CHECK(m[63 * CHUNK + 0] == 1);
 	CHECK(m[62 * CHUNK + 0] == 1);
 	CHECK(m[61 * CHUNK + 0] == 1);
@@ -232,6 +245,27 @@ TEST_CASE("chunk mask counts powder only where it rests on solid ground") {
 	CHECK(m[63 * CHUNK + 2] == 1);
 
 	below.at(2, 0).mat = MAT_AIR;
-	chunk_solid_mask(chunk, &below, table, m);
+	chunk_solid_mask(grid, chunk, m);
 	CHECK(m[63 * CHUNK + 2] == 0);
+}
+
+TEST_CASE("a sand stream crossing a chunk border is not solid") {
+	MaterialTable table = sand_table();
+	const MatId rock = table.id_of("rock"), sand = table.id_of("sand");
+	WorldGrid grid(table, 1);
+	Chunk& top = *grid.insert(empty_chunk({0, 0}));
+	Chunk& mid = *grid.insert(empty_chunk({0, 1}));
+	Chunk& low = *grid.insert(empty_chunk({0, 2}));
+	for (int y = 40; y < 64; ++y) top.at(5, y).mat = sand;  // falling: ends in mid-air at y 84
+	for (int y = 0; y < 20; ++y) mid.at(5, y).mat = sand;
+	for (int y = 40; y < 64; ++y) top.at(9, y).mat = sand;  // resting: a column down to rock
+	for (int y = 0; y < 64; ++y) mid.at(9, y).mat = sand;
+	low.at(9, 0).mat = rock;
+
+	Mask m;
+	chunk_solid_mask(grid, top, m);
+	for (int y = 40; y < 64; ++y) {
+		CHECK(m[(size_t)y * CHUNK + 5] == 0);
+		CHECK(m[(size_t)y * CHUNK + 9] == 1);
+	}
 }

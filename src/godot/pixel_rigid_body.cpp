@@ -236,8 +236,7 @@ void PixelRigidBody::teleport(const Vector2 &p_position, float p_rotation) {
 	const b2BodyId id = body();
 	if (B2_IS_NULL(id)) return;
 	const Transform2D xform = get_world()->get_global_transform().affine_inverse() * get_global_transform();
-	b2Body_SetTransform(id, {xform.get_origin().x, xform.get_origin().y}, b2MakeRot(xform.get_rotation()));
-	b2Body_SetAwake(id, true);
+	get_world()->get_physics()->teleport(handle, xform.get_origin().x, xform.get_origin().y, xform.get_rotation());
 }
 
 } // namespace godot

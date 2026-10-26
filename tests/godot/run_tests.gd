@@ -375,6 +375,29 @@ func test_body_free_order() -> bool:
 	return true
 
 
+func test_particles_do_not_land_inside_bodies() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	var body := _make_body(24, 24, &"wood", Vector2(0, 240))
+	await _register()
+	world.step(120)
+	var centre := Vector2i(body.position.round())
+	for i: int in 10:
+		world.spawn_particles(&"sand", Vector2(-60, centre.y - 20 + 4 * i), Vector2(300, 0), 10, 0.2)
+	world.step(120)
+	var inside := 0
+	for y: int in range(centre.y - 11, centre.y + 11):  # the body's interior, without its rim
+		for x: int in range(centre.x - 11, centre.x + 11):
+			if world.get_material_at(Vector2i(x, y)) == &"sand":
+				inside += 1
+	world.free()
+	body.free()
+	if inside > 0:
+		printerr("  %d sand cells landed inside the body" % inside)
+		return false
+	return true
+
+
 func test_raycast_reports_body() -> bool:
 	var world: PixelWorld = await _make_world()
 	world.simulating = false

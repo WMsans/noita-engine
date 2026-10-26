@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include "world_grid.h"
+
 namespace {
 
 struct Dir {
@@ -52,8 +54,25 @@ void dp(const Loop& loop, size_t i, size_t j, float eps, std::vector<uint8_t>& k
 
 }  // namespace
 
-void chunk_solid_mask(const Chunk& chunk, const Chunk* below, const MaterialTable& table, Mask& out) {
+// A powder column below (wx, wy) rests on something: it runs down through collision-solid
+// powder to a non-powder collision-solid cell or an unloaded chunk.
+// ponytail: walks at most SUPPORT_WALK cells, then assumes support (deep desert sand).
+bool powder_supported_below(const WorldGrid& grid, int wx, int wy) {
+	constexpr int SUPPORT_WALK = 256;
+	const MaterialTable& table = grid.materials();
+	for (int i = 0; i < SUPPORT_WALK; ++i) {
+		Cell c{};
+		if (!grid.get(wx, wy + i, c)) return true;  // unloaded counts as solid
+		const CompiledMaterial& m = table.get(c.mat);
+		if (!m.collision_solid || (c.flags & FLAG_BODY)) return false;
+		if (m.cls != MatClass::Powder) return true;
+	}
+	return true;
+}
+
+void chunk_solid_mask(const WorldGrid& grid, const Chunk& chunk, Mask& out) {
 	out.assign((size_t)CHUNK * CHUNK, 0);
+	const MaterialTable& table = grid.materials();
 	auto solid = [&](const Cell& c) { return table.get(c.mat).collision_solid && !(c.flags & FLAG_BODY); };
 	for (int x = 0; x < CHUNK; ++x)
 		for (int y = CHUNK - 1; y >= 0; --y) {  // bottom up, so the support below is known
@@ -61,7 +80,9 @@ void chunk_solid_mask(const Chunk& chunk, const Chunk* below, const MaterialTabl
 			const Cell& c = chunk.cells[i];
 			if (!solid(c)) continue;
 			if (table.get(c.mat).cls == MatClass::Powder) {
-				const bool supported = y + 1 < CHUNK ? out[i + CHUNK] != 0 : (!below || solid(below->cells[(size_t)x]));
+				const bool supported = y + 1 < CHUNK ? out[i + CHUNK] != 0
+				                                     : powder_supported_below(grid, chunk.coord.x * CHUNK + x,
+				                                                              chunk.coord.y * CHUNK + CHUNK);
 				if (!supported) continue;
 			}
 			out[i] = 1;

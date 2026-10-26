@@ -52,6 +52,9 @@ PhysicsWorld::PhysicsWorld(WorldGrid& grid, float gravity) : grid(grid), gravity
 	b2SetLengthUnitsPerMeter(10.0f);  // before b2DefaultWorldDef, which reads it
 	b2WorldDef def = b2DefaultWorldDef();
 	def.gravity = {0.0f, gravity};
+	// Nothing moves further in a tick than the margin terrain shapes are kept around bodies,
+	// so a body can't step into a chunk whose shapes were never built (960 cells/s).
+	def.maximumLinearSpeed = BODY_SHAPE_MARGIN / PHYSICS_DT;
 	world = b2CreateWorld(&def);
 }
 
@@ -128,9 +131,26 @@ int PhysicsWorld::add_body(const BodyDef& def) {
 
 void PhysicsWorld::remove_body(int handle) {
 	if (!has_body(handle)) return;
+	wake_footprint(*bodies[(size_t)handle]);
 	b2DestroyBody(bodies[(size_t)handle]->id);
 	bodies[(size_t)handle].reset();
 	--stats_.bodies;
+}
+
+void PhysicsWorld::teleport(int handle, float x, float y, float angle) {
+	if (!has_body(handle)) return;
+	Body& body = *bodies[(size_t)handle];
+	wake_footprint(body);
+	b2Body_SetTransform(body.id, {x, y}, b2MakeRot(angle));
+	b2Body_SetAwake(body.id, true);
+}
+
+// A sleeping body stamps without waking the cells around it, so sand resting on it sleeps
+// too; when the body goes, the sim must look at that place again.
+void PhysicsWorld::wake_footprint(const Body& body) {
+	const b2AABB box = b2Body_ComputeBounds(body.id);
+	for (int y = (int)std::floor(box.lowerBound.y) - 1; y <= (int)std::ceil(box.upperBound.y); ++y)
+		for (int x = (int)std::floor(box.lowerBound.x) - 1; x <= (int)std::ceil(box.upperBound.x); ++x) grid.wake(x, y);
 }
 
 bool PhysicsWorld::has_body(int handle) const {
@@ -184,7 +204,7 @@ void PhysicsWorld::update_terrain() {
 				// Too soon: leave the flag set so the chunk is looked at again next tick.
 				if (it != terrain.end() && tick_ - it->second.built_tick < SHAPE_REBUILD_INTERVAL) continue;
 				chunk->shape_dirty.store(false);
-				chunk_solid_mask(*chunk, grid.find({x, y + 1}), grid.materials(), mask);
+				chunk_solid_mask(grid, *chunk, mask);
 				if (it != terrain.end() && it->second.mask == mask) continue;
 				build_terrain({x, y}, std::move(mask));
 				mask = Mask();
@@ -233,10 +253,33 @@ void PhysicsWorld::wake_bodies_in(ChunkCoord coord) {
 
 void PhysicsWorld::step() {
 	const Clock::time_point start = Clock::now();
+	// Jointed bodies go on and off together: Box2D drops a joint whose body is disabled, and a
+	// car must not lose a wheel at the edge of the active zone.
+	std::vector<char> wants(bodies.size(), 0);
+	for (size_t h = 0; h < bodies.size(); ++h) wants[h] = bodies[h] && wants_enabled(*bodies[h]);
+	std::vector<int> stack;
+	b2JointId joints[16];
+	for (size_t h = 0; h < bodies.size(); ++h) {
+		if (!bodies[h] || wants[h]) continue;
+		stack.push_back((int)h);
+		while (!stack.empty()) {
+			const b2BodyId id = bodies[(size_t)stack.back()]->id;
+			stack.pop_back();
+			const int n = b2Body_GetJoints(id, joints, 16);
+			for (int j = 0; j < n; ++j)
+				for (b2BodyId other : {b2Joint_GetBodyA(joints[j]), b2Joint_GetBodyB(joints[j])}) {
+					const int o = handle_of(other);
+					if (o >= 0 && wants[(size_t)o]) {
+						wants[(size_t)o] = 0;
+						stack.push_back(o);
+					}
+				}
+		}
+	}
 	for (size_t h = 0; h < bodies.size(); ++h) {
 		Body* body = bodies[h].get();
 		if (!body) continue;
-		const bool want = wants_enabled(*body);
+		const bool want = wants[h] != 0;
 		if (want != b2Body_IsEnabled(body->id)) {
 			if (want) b2Body_Enable(body->id);
 			else b2Body_Disable(body->id);

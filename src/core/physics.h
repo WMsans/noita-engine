@@ -70,6 +70,8 @@ public:
 
 	int add_body(const BodyDef& def);  // handle >= 0, or -1 if it has no opaque pixels
 	void remove_body(int handle);      // also destroys its joints
+	// Moves a body, waking what was resting on it at its old place.
+	void teleport(int handle, float x, float y, float angle);
 	bool has_body(int handle) const;
 	b2BodyId body_id(int handle) const;
 
@@ -120,6 +122,7 @@ private:
 	};
 
 	bool wants_enabled(const Body& body) const;
+	void wake_footprint(const Body& body);
 	void build_terrain(ChunkCoord coord, Mask&& mask);
 	void wake_bodies_in(ChunkCoord coord);
 

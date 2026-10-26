@@ -111,7 +111,7 @@ otherwise idle M1 lands within noise (sim p99 5.14, frame p99 10.56, upload 1.04
 Plan 4 (Plan 3's committed line, without bodies, was sim 4.56 / 7.49, frame 8.83 / 10.76):
 
 ```
-bench world: 1680 frames (+120 warm-up) | sim 4.41 ms mean / 7.59 p99 | frame 9.70 / 14.32 ms | stream 0.08 / 0.31 ms | gen 0.70 ms | chunks 6099 | cells 341389 | view-missing 0 frames | particles 237 / visual 43, 0.015 ms mean / 0.051 p99, dropped 252 | bodies 53 (awake 41), physics 0.10 + shapes 0.74 + stamp 0.43 = 1.26 ms mean / 2.30 p99, 3.6 builds | budget pass | bench/results/...
+bench world: 1680 frames (+120 warm-up) | sim 4.40 ms mean / 7.31 p99 | frame 9.70 / 14.48 ms | stream 0.07 / 0.31 ms | gen 0.69 ms | chunks 6099 | cells 341268 | view-missing 0 frames | particles 213 / visual 39, 0.014 ms mean / 0.050 p99, dropped 270 | bodies 53 (awake 41), physics 0.10 + shapes 0.76 + stamp 0.43 = 1.28 ms mean / 2.41 p99, 3.3 builds | budget pass | bench/results/...
 ```
 
 `frames` in the JSON is the number of sampled frames, i.e. `--frames` minus the 120 warm-up
@@ -206,12 +206,12 @@ Plan 3 — `bench/results/macos-m1-plan3.json`: `budget_pass: true`, `sim_ms_mea
 `particle_ms_mean` 0.018 ms (budget 1.0), p99 0.068 ms, `particles_material_mean` 233 (floor
 200), `particles_visual_mean` 41, `particles_dropped` 250 over about 75 000 thrown cells.
 
-Plan 4 — `bench/results/macos-m1-plan4.json`: `budget_pass: true`, `sim_ms_mean` 4.41 ms,
-`frame_ms_p99` 14.32 ms, `bodies_mean` 53 (awake 41), `body_ms_mean` 1.26 ms (budget 2.0) =
-physics 0.10 + shapes 0.74 + stamp 0.43, `body_ms_p99` 2.30 ms, 3.6 shape builds per tick. The
+Plan 4 — `bench/results/macos-m1-plan4.json`: `budget_pass: true`, `sim_ms_mean` 4.40 ms,
+`frame_ms_p99` 14.48 ms, `bodies_mean` 53 (awake 41), `body_ms_mean` 1.28 ms (budget 2.0) =
+physics 0.10 + shapes 0.76 + stamp 0.43, `body_ms_p99` 2.41 ms, 3.3 shape builds per tick. The
 bodies fall under the sand and water faucets, so their chunks change every tick: shape
 rebuilds are rate-limited to one per chunk every 4 ticks, which is what brings shapes from
-1.55 ms to 0.74 ms.
+1.55 ms to about 0.75 ms.
 
 The Linux Iris Xe numbers are still an open hand-off: `bench/results/linux-irisxe-plan1.json`
 and `linux-irisxe-plan4.json` do not exist yet. Its 20 hardware threads and its GPU are the two
