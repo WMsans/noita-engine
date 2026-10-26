@@ -465,7 +465,7 @@ Godot tests (headless):
 Checkpoints:
 - **Mac (this machine):** builds, all tests, and `bench_world` with `budget_pass: true`,
   committed as `bench/results/macos-m1-plan2.json`. Also a visual fly-through in the demo.
-- **Linux hand-off:** `docs/mac-agent.md` becomes a two-platform "bench agent" doc (the
+- **Linux hand-off:** `docs/bench-agent.md` is the two-platform "bench agent" doc (the
   builder decides the exact form). It tells the Linux machine to build, run both test
   suites, and run **both** benches (Plan 1 and Plan 2). The results are committed as
   `bench/results/linux-irisxe-plan1.json` and `-plan2.json`.

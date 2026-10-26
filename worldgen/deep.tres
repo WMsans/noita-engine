@@ -12,4 +12,4 @@ surface_depth = 0
 pocket_threshold = 0.05
 tunnel_threshold = 0.12
 cavern_threshold = 0.25
-liquid_threshold = 0.2
+liquid_threshold = 0.15

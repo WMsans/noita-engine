@@ -1,0 +1,21 @@
+{
+	"budget_pass": true,
+	"cells_updated_mean": 325126.695238095,
+	"chunks_generated": 6099,
+	"chunks_simulated_mean": 156.307738095238,
+	"frame_ms_mean": 9.51058571428572,
+	"frame_ms_p99": 12.328,
+	"frames": 1680,
+	"gen_ms_mean": 0.678016585814147,
+	"machine": "Apple M1",
+	"os": "macOS",
+	"renderer": "Apple M1 (Apple7)",
+	"sim_ms_mean": 4.39004485000001,
+	"sim_ms_p99": 7.2165,
+	"stream_ms_mean": 0.073913917857143,
+	"stream_ms_p99": 0.358166,
+	"upload_ms_mean": 3.30003988095238,
+	"upload_ms_p99": 4.354,
+	"view_missing_frames": 0,
+	"worker_threads": -1
+}
