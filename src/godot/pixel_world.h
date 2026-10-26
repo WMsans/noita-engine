@@ -167,7 +167,7 @@ class PixelWorld : public Node2D {
 	void build_light_frame();
 	void update_light_backdrop(const LightArea &p_area);
 	void hide_light_backdrop();
-	void render_light_frame(const LightArea &p_area);
+	void render_light_frame(const LightArea &p_area, const PackedByteArray &p_texels);
 	void update_light_overlay(const LightArea &p_area);
 	void hide_light_overlay();
 	void free_light_overlay();

@@ -594,11 +594,16 @@ void PixelWorld::build_light_frame() {
 	add_light_spots(area, spots, texels);
 
 	light_spots = (int)spots.size();
+	// The job holds its own copy of the texels; this pack is the upload buffer and counts as part
+	// of the CPU budget, so the timer ends after it.
+	PackedByteArray upload;
+	upload.resize(light_texels.size());
+	memcpy(upload.ptrw(), light_texels.ptr(), (size_t)light_texels.size());
 	light_cpu_ms =
 	    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
 	light_ran_this_frame = true;
 	update_light_backdrop(area);
-	render_light_frame(area);
+	render_light_frame(area, upload);
 	light_gpu_ms = light_renderer ? light_renderer->gpu_ms() : 0.0;
 }
 
@@ -638,9 +643,9 @@ void PixelWorld::hide_light_backdrop() {
 	backdrop_visible = false;
 }
 
-// Queues one frame of the GPU pass. The job holds the renderer by shared_ptr and the texels by
-// value, so a queued call stays valid even if this node dies first.
-void PixelWorld::render_light_frame(const LightArea &p_area) {
+// Queues one frame of the GPU pass. The job holds the renderer by shared_ptr and its own copy of
+// the texels, so a queued call stays valid even if this node dies first.
+void PixelWorld::render_light_frame(const LightArea &p_area, const PackedByteArray &p_texels) {
 	RenderingServer *rs = RenderingServer::get_singleton();
 	if (!rs) return;
 	if (light_overlay_broken) {
@@ -653,12 +658,10 @@ void PixelWorld::render_light_frame(const LightArea &p_area) {
 		hide_light_overlay();
 		return;
 	}
-	// light_texels keeps its own allocation; the job's copy is what the render thread reads.
-	PackedByteArray texels;
-	texels.resize(light_texels.size());
-	memcpy(texels.ptrw(), light_texels.ptr(), (size_t)light_texels.size());
+	// build_light_frame packed the upload copy already: the job takes that buffer, so the render
+	// thread never reads light_texels, which the next frame overwrites.
 	rs->call_on_render_thread(
-	    Callable(memnew(LightRenderJob(light_renderer, texels, p_area, bloom_threshold, false))));
+	    Callable(memnew(LightRenderJob(light_renderer, p_texels, p_area, bloom_threshold, false))));
 	update_light_overlay(p_area);
 }
 

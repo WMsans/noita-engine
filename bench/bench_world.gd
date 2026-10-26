@@ -24,8 +24,9 @@ const BODY_BUDGET_MS := 2.0  # Box2D step + terrain shapes + stamping
 const BODIES_BUDGET := 40.0  # bodies alive on average, so a bench without bodies cannot pass
 const CREATURE_BUDGET_MS := 1.0
 const CREATURES_BUDGET := 30.0  # creatures alive on average
-# Lighting: the light-input build (grid walk + light copy) per frame, the GPU light + bloom
-# pass, and the spots that prove the pass ran on real lights.
+# Lighting: the light-input build (grid walk + spot discs + the copy into the render job's
+# upload buffer) per frame, the GPU light + bloom pass, and the spots that prove the pass ran on
+# real lights.
 const LIGHT_CPU_BUDGET_MS := 1.0
 const LIGHT_GPU_BUDGET_MS := 3.0
 const LIGHT_SPOTS_BUDGET := 1.0
@@ -287,6 +288,15 @@ func _texture(size: int, colour: Color, disc: bool) -> ImageTexture:
 	return ImageTexture.create_from_image(image)
 
 
+# The "GPU time above zero" clause. Metal stubs RenderingDevice timestamp queries (the driver
+# zeroes the results), so a macOS run that reports no GPU time at all is the one case where the
+# clause is dropped, recorded in the JSON as `light_gpu_ms_stubbed`. Keyed to the OS, not to the
+# samples: on any other driver an all-zero series means the light pass never ran (a failed
+# LightRenderer), which has to fail instead of passing on the spots and CPU numbers alone.
+func _light_gpu_ok(os_name: String, reported: bool, mean: float) -> bool:
+	return (os_name == "macOS" and not reported) or mean > 0.0
+
+
 func _finish() -> void:
 	if frame_samples.is_empty():
 		_refuse("no frame samples were collected after %d frames, so there is nothing to report" % frame)
@@ -306,15 +316,14 @@ func _finish() -> void:
 	var light_cpu_mean := _mean(light_cpu_samples)
 	var light_gpu_mean := _mean(light_gpu_samples)
 	var light_spots_mean := _mean(light_spots_samples)
-	# macOS/Metal stubs RenderingDevice timestamp queries (the driver zeroes the results), so a
-	# driver that reports no GPU time at all is recorded as unsupported and only the "GPU time is
-	# above zero" clause is skipped. The <= 3 ms budget, the CPU budget and the spot count are
-	# kept as the proof that lighting ran.
+	# Any sample above zero means the driver reports GPU time at all; a macOS run that reports none
+	# is the known Metal stub. `light_gpu_stubbed` is what the gate below keys the exemption to.
 	var light_gpu_supported := false
 	for sample: float in light_gpu_samples:
 		if sample > 0.0:
 			light_gpu_supported = true
 			break
+	var light_gpu_stubbed := OS.get_name() == "macOS" and not light_gpu_supported
 	var result := {
 		"machine": OS.get_processor_name(),
 		"os": OS.get_name(),
@@ -358,6 +367,7 @@ func _finish() -> void:
 		"light_gpu_ms_mean": light_gpu_mean,
 		"light_gpu_ms_p99": _p99(light_gpu_samples),
 		"light_gpu_ms_supported": light_gpu_supported,
+		"light_gpu_ms_stubbed": light_gpu_stubbed,
 		"light_spots_mean": light_spots_mean,
 		"budget_pass": sim_mean <= SIM_BUDGET_MS
 			and stream_mean <= STREAM_BUDGET_MS
@@ -373,7 +383,7 @@ func _finish() -> void:
 			and creatures_mean >= CREATURES_BUDGET
 			and light_cpu_mean <= LIGHT_CPU_BUDGET_MS
 			and light_gpu_mean <= LIGHT_GPU_BUDGET_MS
-			and (not light_gpu_supported or light_gpu_mean > 0.0)
+			and _light_gpu_ok(OS.get_name(), light_gpu_supported, light_gpu_mean)
 			and light_spots_mean >= LIGHT_SPOTS_BUDGET,
 	}
 	var written := _write_json(result)
@@ -389,7 +399,7 @@ func _finish() -> void:
 		result.creatures_mean, result.creature_ms_mean, result.creature_ms_p99,
 		result.light_cpu_ms_mean, result.light_cpu_ms_p99,
 		result.light_gpu_ms_mean, result.light_gpu_ms_p99,
-		"reported" if result.light_gpu_ms_supported else "stubbed", result.light_spots_mean,
+		"reported" if result.light_gpu_ms_supported else ("stubbed" if result.light_gpu_ms_stubbed else "missing"), result.light_spots_mean,
 		"pass" if result.budget_pass else "FAIL", out_path if written else "JSON NOT WRITTEN"])
 	get_tree().quit(0 if written else 1)
 

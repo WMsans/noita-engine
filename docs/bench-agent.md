@@ -122,7 +122,7 @@ Plan 6 on this M1 (the committed `bench/results/macos-m1-plan6.json`; **red** on
 see the status section — do not copy it as a target):
 
 ```
-bench world: 1680 frames (+120 warm-up) | sim 4.45 ms mean / 7.39 p99 | frame 11.26 / 20.75 ms | stream 0.08 / 0.39 ms | gen 0.66 ms | chunks 6099 | cells 345095 | view-missing 0 frames | particles 313 / visual 42, 0.032 ms mean / 0.075 p99, dropped 1682 | bodies 54 (awake 42), physics 0.16 + shapes 0.82 + stamp 0.41 = 1.38 ms mean / 2.63 p99, 3.8 builds | creatures 43, 0.159 ms mean / 0.230 p99 | light 0.48 ms cpu mean / 0.66 p99 | light 0.000 ms gpu mean / 0.000 p99 (timestamps stubbed), spots 5.3 | budget FAIL | bench/results/...
+bench world: 1680 frames (+120 warm-up) | sim 4.46 ms mean / 7.44 p99 | frame 11.25 / 20.89 ms | stream 0.08 / 0.39 ms | gen 0.66 ms | chunks 6099 | cells 345357 | view-missing 0 frames | particles 312 / visual 43, 0.033 ms mean / 0.075 p99, dropped 1883 | bodies 53 (awake 42), physics 0.15 + shapes 0.82 + stamp 0.41 = 1.38 ms mean / 2.60 p99, 3.8 builds | creatures 43, 0.159 ms mean / 0.230 p99 | light 0.62 ms cpu mean / 1.00 p99 | light 0.000 ms gpu mean / 0.000 p99 (timestamps stubbed), spots 5.3 | budget FAIL | bench/results/...
 ```
 
 For reference, the same scene with `lighting_enabled = false` reproduces Plan 5's committed run
@@ -142,11 +142,14 @@ chunks were awake per frame, and `view_missing_frames` counts frames with a hole
 `physics_ms_*` (Box2D step), `shape_ms_*` (terrain shape builds), `stamp_ms_*` (stamp +
 unstamp) and their sum `body_ms_*`; `shape_builds_mean` is chunk shape rebuilds per tick.
 `creatures_mean` is creatures alive per frame and `creature_ms_*` the creature grid pass.
-`light_cpu_ms_*` is the light-input build for one frame (grid walk into the RGBA8 texels, marker
-and spot collection, spot discs) — the plan's 1 ms CPU budget; `light_gpu_ms_*` is the light +
-bloom compute pass from RenderingDevice timestamps; `light_spots_mean` is how many lights the
-frame used (the camera torch plus room markers); `light_gpu_ms_supported` says whether the driver
-reported any GPU time at all.
+`light_cpu_ms_*` is the light-input build for one frame — grid walk into the RGBA8 texels, marker
+and spot collection, spot discs, and the copy of those texels into the render job's upload buffer
+— the plan's 1 ms CPU budget (the copy is inside the timer, not a separate untimed step);
+`light_gpu_ms_*` is the light + bloom compute pass from RenderingDevice timestamps;
+`light_spots_mean` is how many lights the frame used (the camera torch plus room markers);
+`light_gpu_ms_supported` says whether the driver reported any GPU time at all, and
+`light_gpu_ms_stubbed` says the run was allowed to report none because it is the known Metal stub
+(both are recorded so the exemption is auditable).
 
 Budgets (`bench.gd` and `bench_world.gd`; do not relax them to make a run pass):
 
@@ -165,16 +168,19 @@ Budgets (`bench.gd` and `bench_world.gd`; do not relax them to make a run pass):
 | `creatures_mean` | — | ≥ 30 |
 | `light_cpu_ms_mean` | — | ≤ 1.0 |
 | `light_gpu_ms_mean` | — | ≤ 3.0 (light + bloom) |
-| `light_gpu_ms_mean > 0` | — | lighting really ran |
+| `light_gpu_ms_mean > 0` | — | lighting really ran (see the Metal note) |
 | `light_spots_mean` | — | ≥ 1 |
 
 **macOS/Metal cannot report GPU time.** Godot 4.7.2's Metal driver stubs RenderingDevice
 timestamp queries (`timestamp_query_pool_get_results` just zeroes the buffer), so
-`light_gpu_ms_*` is always 0 there. The bench probes the samples: if not one is above zero it
-records `light_gpu_ms_supported: false` and skips **only** the `light_gpu_ms_mean > 0` clause. The
-`≤ 3.0` budget, the CPU budget and `light_spots_mean ≥ 1` still have to pass, and a driver that
-does report timestamps must report a non-zero mean. On Metal the only GPU signal left is
-`frame_ms_p99`.
+`light_gpu_ms_*` is always 0 there. The bench keys that one exemption to the OS, not to the
+samples: on macOS `OS.get_name() == "macOS"` with not a single sample above zero records
+`light_gpu_ms_supported: false` **and** `light_gpu_ms_stubbed: true` and skips **only** the
+`light_gpu_ms_mean > 0` clause. Everywhere else the clause always applies — an all-zero series on
+Linux (or on macOS if it ever reports GPU time) means the light pass never ran, e.g. a
+`LightRenderer` that failed to initialise, and it fails the gate instead of passing on the CPU and
+spot numbers. The `≤ 3.0` budget, the CPU budget and `light_spots_mean ≥ 1` always apply. On
+Metal the only GPU signal left is `frame_ms_p99`.
 
 If `budget_pass` is `false`: re-run twice to rule out a cold or throttled machine, then record
 the numbers and report back before touching the simulator or the workload.
@@ -208,7 +214,8 @@ complete only then.
   `view_missing_frames > 0` (a real streaming hole), or a particle gate (`particle_ms_mean`:
   profile `ParticlePool::step`; `particles_material_mean` under 200: say so, don't shrink it), or
   `body_ms_mean` (say which of physics / shapes / stamp dominates), or a creature gate, or a
-  light gate (`light_cpu_ms_mean`: profile `build_light_inputs` + the spot discs; `frame_ms_p99`
+  light gate (`light_cpu_ms_mean`: profile `build_light_inputs`, the spot discs and the texel
+  copy into the upload buffer; `frame_ms_p99`
   with `lighting_enabled = false` says whether the light pass is what pushed it over;
   `light_spots_mean` under 1 means lighting never ran — keep the `--headless` out of it).
 - **Environment:** `sw_vers`, `sysctl -n machdep.cpu.brand_string`, `sysctl -n hw.ncpu` on
@@ -258,12 +265,13 @@ Plan 5 — `bench/results/macos-m1-plan5.json`: `budget_pass: true`, `sim_ms_mea
 run predates the lighting pass.
 
 Plan 6 — `bench/results/macos-m1-plan6.json`: **`budget_pass: false`** on this M1, and it is the
-one guardrail this plan did not clear. Every gate passes except `frame_ms_p99`: 20.75 ms against
-the 16.6 ms budget (three runs: 20.75, 21.16, 20.88). The lighting gates themselves pass —
-`light_cpu_ms_mean` 0.48 ms (budget 1.0, p99 0.66), `light_spots_mean` 5.3 (floor 1), and
-`light_gpu_ms_supported: false` because Metal cannot report GPU time, so the only GPU signal is
-the frame time. `sim_ms_mean` 4.45, `stream_ms_mean` 0.08, `frame_ms_mean` 11.26, `cells_updated_mean`
-345095, `view_missing_frames` 0, `body_ms_mean` 1.38, `creature_ms_mean` 0.159.
+one guardrail this plan did not clear. Every gate passes except `frame_ms_p99`: 20.89 ms against
+the 16.6 ms budget (three runs: 20.75, 21.16, 20.89). The lighting gates themselves pass —
+`light_cpu_ms_mean` 0.62 ms (budget 1.0, p99 1.00), `light_spots_mean` 5.3 (floor 1), and
+`light_gpu_ms_supported: false` with `light_gpu_ms_stubbed: true` because Metal cannot report GPU
+time, so the only GPU signal is the frame time. `sim_ms_mean` 4.46, `stream_ms_mean` 0.08,
+`frame_ms_mean` 11.25, `cells_updated_mean` 345357, `view_missing_frames` 0, `body_ms_mean` 1.38,
+`creature_ms_mean` 0.159.
 
 The light pass is the whole difference: the same scene with `lighting_enabled = false` reproduces
 Plan 5 (frame 9.98 / 15.01), and the pass alone — bench workload, torch and lava removed — gives
@@ -276,9 +284,9 @@ this is new GPU work, not a regression in the simulator.
 
 The plan's fallbacks for a GPU budget miss (half resolution, per-dirty-chunk inputs, then a
 GPU-side input pass) each need the user's go-ahead and none is implemented. Note that the first
-two fallbacks cut the CPU input cost (already 0.48 ms of the 1 ms budget) and half resolution is
-the one that would touch this failure: at a quarter of the texels (`light_margin = 0`) the p99
-lands at 16.6 ms, right on the budget.
+two fallbacks cut the CPU input cost (already 0.62 ms of the 1 ms budget, upload copy included)
+and half resolution is the one that would touch this failure: at a quarter of the texels
+(`light_margin = 0`) the p99 lands at 16.6 ms, right on the budget.
 
 The Linux Iris Xe numbers are still an open hand-off: `bench/results/linux-irisxe-plan1.json`
 and `linux-irisxe-plan6.json` do not exist yet. Its 20 hardware threads and its GPU are the two

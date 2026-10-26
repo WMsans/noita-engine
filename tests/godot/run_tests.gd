@@ -1058,6 +1058,36 @@ func test_pixel_light_free_order() -> bool:
 	return true
 
 
+# Review: the light GPU gate must never silently drop on a driver that reports timestamps. Metal
+# stubs them, so only a macOS run reporting no GPU time at all may skip the "above zero" clause;
+# an all-zero series on any other driver means the pass never ran (a failed LightRenderer) and
+# has to fail.
+func test_bench_light_gpu_gate_exemption() -> bool:
+	var bench: Node = load("res://bench/bench_world.gd").new()
+	if not bench.has_method("_light_gpu_ok"):
+		printerr("  bench_world.gd has no _light_gpu_ok() gate predicate")
+		bench.free()
+		return false
+	var checks: Array = [
+		["macOS", false, 0.0, true],  # stubbed timestamps: only the frame gate is left there
+		["macOS", true, 0.4, true],
+		["Linux", true, 1.2, true],
+		["Linux", false, 0.0, false],  # the driver should report, it reported nothing: fail
+		["Linux", true, 0.0, false],
+		["macOS", true, 0.0, false],
+	]
+	var bad: PackedStringArray = []
+	for check: Array in checks:
+		var got: bool = bench._light_gpu_ok(check[0], check[1], check[2])
+		if got != check[3]:
+			bad.append("_light_gpu_ok(%s, %s, %s) = %s, expected %s" % [check[0], check[1], check[2], got, check[3]])
+	bench.free()
+	if not bad.is_empty():
+		printerr("  light gpu gate: " + ", ".join(bad))
+		return false
+	return true
+
+
 func test_existing_scenes_opt_out() -> bool:
 	var scenes: Array[String] = ["res://demo/world_demo.tscn", "res://demo/paint_demo.tscn", "res://demo/bodies_demo.tscn", "res://demo/creatures_demo.tscn", "res://bench/bench.tscn"]
 	for path: String in scenes:
