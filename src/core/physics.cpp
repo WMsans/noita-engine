@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cmath>
 
+#include "creature.h"
 #include "generator.h"
 #include "material.h"
 #include "world_grid.h"
@@ -132,9 +133,66 @@ int PhysicsWorld::add_body(const BodyDef& def) {
 void PhysicsWorld::remove_body(int handle) {
 	if (!has_body(handle)) return;
 	wake_footprint(*bodies[(size_t)handle]);
+	const bool creature = bodies[(size_t)handle]->creature;
+	if (creature) b2DestroyBody(bodies[(size_t)handle]->foot);
 	b2DestroyBody(bodies[(size_t)handle]->id);
 	bodies[(size_t)handle].reset();
-	--stats_.bodies;
+	--(creature ? stats_.creatures : stats_.bodies);
+}
+
+int PhysicsWorld::add_creature(const CreatureDef& def) {
+	if (def.w <= 0 || def.h <= 0) return -1;
+	const int handle = (int)bodies.size();
+	b2BodyDef bd = b2DefaultBodyDef();
+	bd.type = b2_dynamicBody;
+	bd.position = {def.x, def.y};
+	bd.userData = handle_data(handle);
+	bd.motionLocks.angularZ = true;  // creatures stay upright
+	bd.enableSleep = false;          // always driven by game code
+	bd.gravityScale = def.gravity_scale;
+	const b2BodyId id = b2CreateBody(world, &bd);
+	b2ShapeDef sd = b2DefaultShapeDef();
+	sd.density = def.mass / (float)(def.w * def.h);
+	sd.material.friction = def.friction;
+	sd.filter.categoryBits = CAT_CREATURE;
+	sd.filter.maskBits = CAT_BODY | CAT_CREATURE;  // terrain is the grid pass's job
+	sd.filter.groupIndex = handle + 1;              // ...except its own foot (below)
+	sd.enableHitEvents = true;
+	const b2Polygon box = b2MakeBox(def.w * 0.5f, def.h * 0.5f);
+	b2CreatePolygonShape(id, &sd, &box);
+
+	// The foot: a kinematic segment as wide as the creature, parked under it at the grid floor
+	// by place_foot. Same positive group as its creature (always collide), mask 0 (nothing else).
+	b2BodyDef fd = b2DefaultBodyDef();
+	fd.type = b2_kinematicBody;
+	fd.position = {def.x, def.y + def.h * 0.5f};
+	fd.isEnabled = false;
+	const b2BodyId foot = b2CreateBody(world, &fd);
+	b2ShapeDef fs = b2DefaultShapeDef();
+	fs.material.friction = def.friction;
+	fs.filter.categoryBits = CAT_FOOT;
+	fs.filter.maskBits = 0;
+	fs.filter.groupIndex = handle + 1;
+	const b2Segment segment = {{-def.w * 0.5f, 0.0f}, {def.w * 0.5f, 0.0f}};
+	b2CreateSegmentShape(foot, &fs, &segment);
+
+	auto body = std::make_unique<Body>();
+	body->id = id;
+	body->w = def.w;
+	body->h = def.h;
+	body->creature = true;
+	body->step_height = def.step_height;
+	body->foot = foot;
+	bodies.push_back(std::move(body));
+	++stats_.creatures;
+	return handle;
+}
+
+bool PhysicsWorld::is_creature(int handle) const { return has_body(handle) && bodies[(size_t)handle]->creature; }
+
+const CreatureState& PhysicsWorld::creature_state(int handle) const {
+	static const CreatureState none;
+	return is_creature(handle) ? bodies[(size_t)handle]->state : none;
 }
 
 void PhysicsWorld::teleport(int handle, float x, float y, float angle) {
@@ -193,7 +251,7 @@ void PhysicsWorld::update_terrain() {
 
 	Mask mask;
 	for (const std::unique_ptr<Body>& body : bodies) {
-		if (!body || !wants_enabled(*body)) continue;
+		if (!body || body->creature || !wants_enabled(*body)) continue;
 		const ChunkRect around = chunks_around(b2Body_ComputeBounds(body->id), BODY_SHAPE_MARGIN);
 		for (int y = around.y0; y <= around.y1; ++y)
 			for (int x = around.x0; x <= around.x1; ++x) {
@@ -230,7 +288,7 @@ void PhysicsWorld::build_terrain(ChunkCoord coord, Mask&& mask) {
 	cd.materialCount = 1;
 	cd.isLoop = true;
 	cd.filter.categoryBits = CAT_TERRAIN;
-	cd.filter.maskBits = CAT_BODY | CAT_CREATURE;
+	cd.filter.maskBits = CAT_BODY;  // creatures meet terrain through the grid pass only
 	for (const Loop& loop : trace_loops(mask, CHUNK, CHUNK)) {
 		const Loop simple = simplify_loop(loop, 1.0f);
 		cd.points = simple.data();
@@ -283,6 +341,10 @@ void PhysicsWorld::step() {
 		if (want != b2Body_IsEnabled(body->id)) {
 			if (want) b2Body_Enable(body->id);
 			else b2Body_Disable(body->id);
+			if (body->creature && !want && body->foot_on) {
+				b2Body_Disable(body->foot);
+				body->foot_on = false;
+			}
 		}
 		if (want) {
 			body->left = false;
@@ -295,8 +357,15 @@ void PhysicsWorld::step() {
 		}
 	}
 
-	for (const std::unique_ptr<Body>& body : bodies)
-		if (body && body->submerged > 0 && b2Body_IsEnabled(body->id)) apply_buoyancy(*body);
+	for (const std::unique_ptr<Body>& body : bodies) {
+		if (!body || !b2Body_IsEnabled(body->id)) continue;
+		if (body->submerged > 0) apply_buoyancy(*body);
+		if (body->creature) {
+			const b2Vec2 p = b2Body_GetPosition(body->id);
+			body->prev_x = p.x;
+			body->prev_y = p.y;
+		}
+	}
 
 	b2World_Step(world, PHYSICS_DT, PHYSICS_SUBSTEPS);
 
@@ -317,9 +386,66 @@ void PhysicsWorld::step() {
 
 	int awake = 0;
 	for (const std::unique_ptr<Body>& body : bodies)
-		if (body && b2Body_IsEnabled(body->id) && b2Body_IsAwake(body->id)) ++awake;
+		if (body && !body->creature && b2Body_IsEnabled(body->id) && b2Body_IsAwake(body->id)) ++awake;
 	stats_.awake = awake;
-	stats_.physics_ms = ms_since(start);
+
+	const Clock::time_point creatures_start = Clock::now();
+	for (const std::unique_ptr<Body>& body : bodies)
+		if (body && body->creature && b2Body_IsEnabled(body->id)) creature_pass(*body);
+	stats_.creature_ms = ms_since(creatures_start);
+	stats_.physics_ms = ms_since(start) - stats_.creature_ms;
+}
+
+// Box2D moved the creature against bodies and other creatures; now the cells get their say:
+// sweep from where it was to where Box2D put it, and keep what the sweep allows.
+void PhysicsWorld::creature_pass(Body& body) {
+	const b2Vec2 p = b2Body_GetPosition(body.id);
+	b2Vec2 v = b2Body_GetLinearVelocity(body.id);
+	const GridPass r = creature_grid_pass(grid, particles, body.prev_x, body.prev_y, p.x, p.y, body.w, body.h,
+	                                      body.step_height, body.state.floor, b2Length(v));
+	if (r.x != p.x || r.y != p.y) b2Body_SetTransform(body.id, {r.x, r.y}, b2Rot_identity);
+	if (r.stopped_x) v.x = 0;
+	if ((r.floor && v.y > 0) || (r.ceiling && v.y < 0)) v.y = 0;
+	b2Body_SetLinearVelocity(body.id, v);
+
+	// Standing on a body or another creature counts as the floor too: a touching contact whose
+	// normal points down from the creature.
+	bool on_body = false;
+	b2ContactData contacts[8];
+	const int n = b2Body_GetContactData(body.id, contacts, 8);
+	for (int i = 0; i < n && !on_body; ++i) {
+		if (contacts[i].manifold.pointCount == 0) continue;
+		const bool is_a = B2_ID_EQUALS(b2Shape_GetBody(contacts[i].shapeIdA), body.id);
+		const float down = is_a ? contacts[i].manifold.normal.y : -contacts[i].manifold.normal.y;
+		on_body = down > 0.7f;
+	}
+	body.state.floor = r.floor || on_body;
+	body.state.ceiling = r.ceiling;
+	body.state.wall = r.wall;
+	body.state.submerged_fraction = (float)r.submerged / (float)(body.w * body.h);
+	body.state.liquid = r.liquid;
+	place_foot(body);
+}
+
+// The highest blocking cell within FOOT_REACH under any of the box's columns; the foot goes on
+// its top edge, or away when there is none (airborne). It sits at the real floor, not at the
+// creature's feet, so walking down a slope or off a ledge still falls to the ground.
+void PhysicsWorld::place_foot(Body& body) {
+	constexpr int FOOT_REACH = 4;
+	const b2Vec2 p = b2Body_GetPosition(body.id);
+	const int x0 = (int)std::floor(p.x - body.w * 0.5f + 1e-4f), x1 = (int)std::floor(p.x + body.w * 0.5f - 1e-4f);
+	const int below = (int)std::floor(p.y + body.h * 0.5f - 1e-4f) + 1;
+	int floor_row = INT32_MAX;
+	for (int x = x0; x <= x1; ++x)
+		for (int y = below; y < below + FOOT_REACH && y < floor_row; ++y)
+			if (creature_blocks(grid, x, y)) floor_row = y;
+	const bool on = floor_row != INT32_MAX;
+	if (on) b2Body_SetTransform(body.foot, {p.x, (float)floor_row}, b2Rot_identity);
+	if (on != body.foot_on) {
+		if (on) b2Body_Enable(body.foot);
+		else b2Body_Disable(body.foot);
+		body.foot_on = on;
+	}
 }
 
 // Archimedes on the liquid the last stamp covered, at its centroid (so a tipped crate rights
@@ -341,7 +467,7 @@ void PhysicsWorld::stamp() {
 	const Clock::time_point start = Clock::now();
 	const MaterialTable& mt = grid.materials();
 	for (const std::unique_ptr<Body>& owned : bodies) {
-		if (!owned || !b2Body_IsEnabled(owned->id)) continue;
+		if (!owned || owned->creature || !b2Body_IsEnabled(owned->id)) continue;  // creatures aren't pixels
 		Body& body = *owned;
 		body.submerged = 0;
 		body.liquid_density = body.sum_x = body.sum_y = 0;
