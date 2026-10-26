@@ -51,6 +51,9 @@ constexpr uint64_t CAT_TERRAIN = 1;
 constexpr uint64_t CAT_BODY = 2;
 constexpr uint64_t CAT_CREATURE = 4;  // reserved for Plan 5
 constexpr float TERRAIN_FRICTION = 0.8f;
+// A chunk's shapes rebuild at most this often (ticks): terrain collision may lag the pixels by
+// up to 50 ms, and a chunk under a sand faucet costs a quarter of the builds.
+constexpr uint32_t SHAPE_REBUILD_INTERVAL = 4;
 constexpr int BODY_SHAPE_MARGIN = 16;  // cells around a body whose chunks keep terrain shapes
 constexpr float PHYSICS_DT = 1.0f / 60.0f;
 constexpr int PHYSICS_SUBSTEPS = 4;
@@ -113,6 +116,7 @@ private:
 	struct Terrain {
 		b2BodyId id;
 		Mask mask;
+		uint32_t built_tick;
 	};
 
 	bool wants_enabled(const Body& body) const;
@@ -129,5 +133,6 @@ private:
 	std::optional<ChunkRect> active_rect;
 	std::vector<BodyHit> hits_;
 	std::vector<int> left_world;
+	uint32_t tick_ = 0;  // counts update_terrain calls
 	PhysicsStats stats_{};
 };

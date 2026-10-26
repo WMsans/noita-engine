@@ -158,6 +158,7 @@ bool PhysicsWorld::wants_enabled(const Body& body) const {
 void PhysicsWorld::update_terrain() {
 	const Clock::time_point start = Clock::now();
 	stats_.shape_builds = 0;
+	++tick_;
 
 	// Shapes of chunks that are gone go with them.
 	for (auto it = terrain.begin(); it != terrain.end();) {
@@ -180,6 +181,8 @@ void PhysicsWorld::update_terrain() {
 				if (!chunk) continue;
 				const auto it = terrain.find(chunk_key({x, y}));
 				if (it != terrain.end() && !chunk->shape_dirty.load()) continue;
+				// Too soon: leave the flag set so the chunk is looked at again next tick.
+				if (it != terrain.end() && tick_ - it->second.built_tick < SHAPE_REBUILD_INTERVAL) continue;
 				chunk->shape_dirty.store(false);
 				chunk_solid_mask(*chunk, grid.find({x, y + 1}), grid.materials(), mask);
 				if (it != terrain.end() && it->second.mask == mask) continue;
@@ -214,7 +217,7 @@ void PhysicsWorld::build_terrain(ChunkCoord coord, Mask&& mask) {
 		cd.pointCount = (int)simple.size();
 		b2CreateChain(id, &cd);
 	}
-	terrain[chunk_key(coord)] = Terrain{id, std::move(mask)};
+	terrain[chunk_key(coord)] = Terrain{id, std::move(mask), tick_};
 	++stats_.shape_builds;
 	wake_bodies_in(coord);
 }

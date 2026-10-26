@@ -252,9 +252,15 @@ TEST_CASE("sand piles on a body") {
 	phystest::fill(w.grid, 126, 10, 131, 40, w.id("sand"));
 	tick_all(physics, sim, 200);
 
-	CHECK(simtest::mat_at(w.grid, 128, 87) == w.id("sand"));
-	for (int y = 88; y < 100; ++y)
-		for (int x = 122; x < 134; ++x) CHECK(simtest::mat_at(w.grid, x, y) != w.id("sand"));
+	// Shapes are simplified to within a cell, so the crate may sit a cell off the pixel ground
+	// and overlap a cell of sand at its rim; its interior never holds sand.
+	const b2Vec2 p = phystest::pos(physics, crate);
+	const int top = (int)std::lround(p.y) - 6, left = (int)std::lround(p.x) - 6;
+	bool sand_on_top = false;
+	for (int y = top - 3; y <= top; ++y) sand_on_top |= simtest::mat_at(w.grid, 128, y) == w.id("sand");
+	CHECK(sand_on_top);
+	for (int y = top + 1; y < top + 11; ++y)
+		for (int x = left + 1; x < left + 11; ++x) CHECK(simtest::mat_at(w.grid, x, y) != w.id("sand"));
 	// Sand resting on the crate makes no terrain shape pressing down on it.
 	CHECK(std::fabs(phystest::pos(physics, crate).y - 94.0f) <= 1.0f);
 	CHECK(std::fabs(phystest::angle(physics, crate)) < 0.05f);
@@ -362,4 +368,21 @@ TEST_CASE("removing a body removes its joints") {
 	CHECK_FALSE(b2Joint_IsValid(joint));
 	physics.remove_joint(joint);
 	phystest::run(physics, 2);
+}
+
+TEST_CASE("a chunk that changes every tick rebuilds at most every fourth tick") {
+	World w;
+	phystest::fill(w.grid, 0, 100, SIZE, SIZE, w.id("rock"));
+	PhysicsWorld physics(w.grid, GRAVITY);
+	physics.add_body(phystest::box(w.t, "wood", 12, 12, 128, 40));
+	phystest::run(physics, 120);  // settled, shapes built
+	int builds = 0;
+	for (int i = 0; i < 16; ++i) {
+		w.grid.set(140, 100, i % 2 ? w.id("rock") : MAT_AIR);  // the floor chunk under the crate
+		physics.update_terrain();
+		builds += physics.stats().shape_builds;
+		physics.step();
+	}
+	CHECK(builds >= 3);
+	CHECK(builds <= 4);
 }

@@ -20,6 +20,8 @@ const PARTICLE_BUDGET_MS := 1.0
 # A bench that makes no particles must not pass: at least this many material particles in
 # flight on average.
 const PARTICLES_BUDGET := 200.0
+const BODY_BUDGET_MS := 2.0  # Box2D step + terrain shapes + stamping
+const BODIES_BUDGET := 40.0  # bodies alive on average, so a bench without bodies cannot pass
 # 50% of Plan 1's M1 figure (108383.9), the plan's floor for this bench: the generated world
 # must keep at least half an arena frame of work moving, so a gutted streaming demo cannot pass
 # by doing less work. The committed M1 run reports 3x this (325127).
@@ -55,6 +57,13 @@ const EXPLODE_RADIUS := 24
 const EXPLODE_POWER := 400.0  # cells per second at the centre
 const SPARK_COUNT := 150
 const SPARK_LIFETIME := 0.8
+# Bodies: every BODY_PERIOD frames drop BODY_BATCH (crates, every third a boulder) in a row
+# above the camera; any further than BODY_FREE_DISTANCE from the camera, or that left the
+# world, is freed. At 10 cells/frame that keeps about 60 alive.
+const BODY_PERIOD := 10
+const BODY_BATCH := 10
+const BODY_MAX := 60
+const BODY_FREE_DISTANCE := 600.0
 
 @onready var world: PixelWorld = $PixelWorld
 @onready var camera: Camera2D = $Camera2D
@@ -77,6 +86,16 @@ var gen_samples: Array[float] = []  # only frames that finished a chunk
 var particle_samples: Array[float] = []
 var particles_material_samples: Array[float] = []
 var particles_visual_samples: Array[float] = []
+var body_samples: Array[float] = []
+var bodies_awake_samples: Array[float] = []
+var physics_samples: Array[float] = []
+var shape_samples: Array[float] = []
+var stamp_samples: Array[float] = []
+var shape_build_samples: Array[float] = []
+var body_cost_samples: Array[float] = []
+var bodies: Array[PixelRigidBody] = []
+var crate_texture: ImageTexture
+var boulder_texture: ImageTexture
 var view_missing_frames := 0
 
 
@@ -87,6 +106,8 @@ func _ready() -> void:
 	for i in WAYPOINTS.size():
 		path_length += WAYPOINTS[i].distance_to(WAYPOINTS[(i + 1) % WAYPOINTS.size()])
 	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
+	crate_texture = _texture(12, Color(0.55, 0.35, 0.18), false)
+	boulder_texture = _texture(14, Color(0.45, 0.45, 0.48), true)
 	last_usec = Time.get_ticks_usec()
 
 
@@ -109,6 +130,13 @@ func _process(_delta: float) -> void:
 		particle_samples.append(float(stats.particle_ms))
 		particles_material_samples.append(float(stats.particles_material))
 		particles_visual_samples.append(float(stats.particles_visual))
+		body_samples.append(float(stats.bodies))
+		bodies_awake_samples.append(float(stats.bodies_awake))
+		physics_samples.append(float(stats.physics_ms))
+		shape_samples.append(float(stats.shape_ms))
+		stamp_samples.append(float(stats.stamp_ms))
+		shape_build_samples.append(float(stats.shape_builds))
+		body_cost_samples.append(float(stats.physics_ms) + float(stats.shape_ms) + float(stats.stamp_ms))
 		if float(stats.gen_ms) > 0.0:
 			gen_samples.append(float(stats.gen_ms))
 		if int(stats.view_missing) > 0:
@@ -162,6 +190,38 @@ func _paint_workload(centre: Vector2i) -> void:
 		world.fill_circle(blast, EXPLODE_RADIUS, &"sand")
 		world.explode(blast, EXPLODE_RADIUS, EXPLODE_POWER)
 		world.spawn_visual_particles(Color.YELLOW, Vector2(blast), Vector2(0, -200), SPARK_COUNT, PI, SPARK_LIFETIME)
+	_cycle_bodies(centre)
+
+
+func _cycle_bodies(centre: Vector2i) -> void:
+	for i in range(bodies.size() - 1, -1, -1):
+		var body := bodies[i]
+		if body.global_position.distance_to(Vector2(centre)) > BODY_FREE_DISTANCE or body.has_meta(&"left"):
+			body.queue_free()
+			bodies.remove_at(i)
+	if frame % BODY_PERIOD != 0:
+		return
+	for i in BODY_BATCH:
+		if bodies.size() >= BODY_MAX:
+			return
+		var body := PixelRigidBody.new()
+		var boulder := i % 3 == 2
+		body.texture = boulder_texture if boulder else crate_texture
+		body.pixel_material = &"rock" if boulder else &"wood"
+		body.shape = PixelRigidBody.SHAPE_CIRCLE if boulder else PixelRigidBody.SHAPE_HULL
+		body.position = Vector2(centre) + Vector2(-135 + 30 * i, -100)
+		body.left_world.connect(body.set_meta.bind(&"left", true))
+		add_child(body)
+		bodies.append(body)
+
+
+func _texture(size: int, colour: Color, disc: bool) -> ImageTexture:
+	var image := Image.create(size, size, false, Image.FORMAT_RGBA8)
+	for y: int in size:
+		for x: int in size:
+			var d := Vector2(x + 0.5 - size / 2.0, y + 0.5 - size / 2.0).length()
+			image.set_pixel(x, y, colour if not disc or d <= size / 2.0 else Color(0, 0, 0, 0))
+	return ImageTexture.create_from_image(image)
 
 
 func _finish() -> void:
@@ -176,6 +236,8 @@ func _finish() -> void:
 	var cells_mean := _mean(cell_samples)
 	var particle_mean := _mean(particle_samples)
 	var particles_mean := _mean(particles_material_samples)
+	var body_cost_mean := _mean(body_cost_samples)
+	var bodies_mean := _mean(body_samples)
 	var result := {
 		"machine": OS.get_processor_name(),
 		"os": OS.get_name(),
@@ -200,6 +262,17 @@ func _finish() -> void:
 		"particles_material_mean": particles_mean,
 		"particles_visual_mean": _mean(particles_visual_samples),
 		"particles_dropped": int(final_stats.particles_dropped),
+		"bodies_mean": bodies_mean,
+		"bodies_awake_mean": _mean(bodies_awake_samples),
+		"physics_ms_mean": _mean(physics_samples),
+		"physics_ms_p99": _p99(physics_samples),
+		"shape_ms_mean": _mean(shape_samples),
+		"shape_ms_p99": _p99(shape_samples),
+		"stamp_ms_mean": _mean(stamp_samples),
+		"stamp_ms_p99": _p99(stamp_samples),
+		"shape_builds_mean": _mean(shape_build_samples),
+		"body_ms_mean": body_cost_mean,
+		"body_ms_p99": _p99(body_cost_samples),
 		"budget_pass": sim_mean <= SIM_BUDGET_MS
 			and stream_mean <= STREAM_BUDGET_MS
 			and stream_p99 <= STREAM_P99_BUDGET_MS
@@ -207,16 +280,20 @@ func _finish() -> void:
 			and view_missing_frames == 0
 			and cells_mean >= CELLS_BUDGET
 			and particle_mean <= PARTICLE_BUDGET_MS
-			and particles_mean >= PARTICLES_BUDGET,
+			and particles_mean >= PARTICLES_BUDGET
+			and body_cost_mean <= BODY_BUDGET_MS
+			and bodies_mean >= BODIES_BUDGET,
 	}
 	var written := _write_json(result)
-	print("bench world: %d frames (+%d warm-up) | sim %.2f ms mean / %.2f p99 | frame %.2f / %.2f ms | stream %.2f / %.2f ms | gen %.2f ms | chunks %d | cells %.0f | view-missing %d frames | particles %.0f / visual %.0f, %.3f ms mean / %.3f p99, dropped %d | budget %s | %s" % [
+	print("bench world: %d frames (+%d warm-up) | sim %.2f ms mean / %.2f p99 | frame %.2f / %.2f ms | stream %.2f / %.2f ms | gen %.2f ms | chunks %d | cells %.0f | view-missing %d frames | particles %.0f / visual %.0f, %.3f ms mean / %.3f p99, dropped %d | bodies %.0f (awake %.0f), physics %.2f + shapes %.2f + stamp %.2f = %.2f ms mean / %.2f p99, %.1f builds | budget %s | %s" % [
 		result.frames, WARMUP_FRAMES, result.sim_ms_mean, result.sim_ms_p99,
 		result.frame_ms_mean, result.frame_ms_p99, result.stream_ms_mean,
 		result.stream_ms_p99, result.gen_ms_mean, result.chunks_generated,
 		result.cells_updated_mean, result.view_missing_frames,
 		result.particles_material_mean, result.particles_visual_mean, result.particle_ms_mean,
 		result.particle_ms_p99, result.particles_dropped,
+		result.bodies_mean, result.bodies_awake_mean, result.physics_ms_mean, result.shape_ms_mean,
+		result.stamp_ms_mean, result.body_ms_mean, result.body_ms_p99, result.shape_builds_mean,
 		"pass" if result.budget_pass else "FAIL", out_path if written else "JSON NOT WRITTEN"])
 	get_tree().quit(0 if written else 1)
 

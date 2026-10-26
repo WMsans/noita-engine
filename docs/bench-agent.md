@@ -4,11 +4,11 @@ Everything below runs from the repository root with `scons` and Godot 4.7.x on `
 commands are the same on both platforms; `./build.sh` picks `macos`/`linux` and `arm64`/`x86_64`
 from `uname` and passes them to `scons` explicitly. Copy-pasteable.
 
-Checkpoints: `bench/results/macos-m1-plan1.json`, `macos-m1-plan2.json` and
-`macos-m1-plan3.json` are done on the Apple M1 machine. The Linux Iris Xe machine owes
-`linux-irisxe-plan1.json` and `linux-irisxe-plan3.json`. Plan 3's `bench_world` run replaces
-the Plan 2 one: same scene, same camera path and workload plus explosions, and Plan 2's gates
-plus two particle gates.
+Checkpoints: `bench/results/macos-m1-plan1.json` through `macos-m1-plan4.json` are done on
+the Apple M1 machine. The Linux Iris Xe machine owes `linux-irisxe-plan1.json` and
+`linux-irisxe-plan4.json`. Each plan's `bench_world` run replaces the one before: same scene,
+same camera path, the earlier workload plus the new one (Plan 3 explosions, Plan 4 bodies),
+and the earlier gates plus the new ones.
 
 ## 1. Get the branch
 
@@ -58,8 +58,7 @@ also redirects the XDG dirs into `build/` so a sandboxed machine cannot crash Go
 ```
 ==> Build OK: ... libnoita_engine.<platform>.template_debug.<arch>.<ext>
 ==> Build OK: ... libnoita_engine.<platform>.template_release.<arch>.<ext>
-[doctest] test cases:     95 |     95 passed | 0 failed | 0 skipped
-[doctest] assertions: 203024 | 203024 passed | 0 failed |
+[doctest] test cases:    126 |    126 passed | 0 failed | 0 skipped
 [doctest] Status: SUCCESS!
 
 ==> Running Godot-side tests (headless)...
@@ -83,13 +82,14 @@ godot --path . res://bench/bench.tscn -- --frames=1800 --out=bench/results/macos
 godot --path . res://bench/bench.tscn -- --frames=1800 --out=bench/results/linux-irisxe-plan1.json
 ```
 
-Plan 3 (generated world: camera flies the surface/dive/cavern-run/return polyline at 10 cells
+Plan 4 (generated world: camera flies the surface/dive/cavern-run/return polyline at 10 cells
 per frame while chunks stream in, sleep and get discarded; every 20 frames a radius-24 sand
-disc is blown up with a burst of visual sparks):
+disc is blown up with a burst of visual sparks; every 10 frames 10 crates and boulders drop
+above the camera, and bodies more than 600 cells away are freed, about 53 alive):
 
 ```bash
-godot --path . res://bench/bench_world.tscn -- --frames=1800 --out=bench/results/macos-m1-plan3.json
-godot --path . res://bench/bench_world.tscn -- --frames=1800 --out=bench/results/linux-irisxe-plan3.json
+godot --path . res://bench/bench_world.tscn -- --frames=1800 --out=bench/results/macos-m1-plan4.json
+godot --path . res://bench/bench_world.tscn -- --frames=1800 --out=bench/results/linux-irisxe-plan4.json
 ```
 
 Pick the `--out` that matches the machine. Defaults: `--frames=1800`; `--out=user://bench.json`
@@ -108,10 +108,10 @@ bench: 1680 frames (+120 warm-up) | sim 3.53 ms mean / 5.09 p99 | frame 8.35 / 1
 That line is the committed artifact, so a fresh run is compared against it; a re-run on an
 otherwise idle M1 lands within noise (sim p99 5.14, frame p99 10.56, upload 1.04).
 
-Plan 3 (Plan 2's committed line, without explosions, was sim 4.39 / 7.22, frame 9.51 / 12.33):
+Plan 4 (Plan 3's committed line, without bodies, was sim 4.56 / 7.49, frame 8.83 / 10.76):
 
 ```
-bench world: 1680 frames (+120 warm-up) | sim 4.56 ms mean / 7.49 p99 | frame 8.83 / 10.76 ms | stream 0.08 / 0.40 ms | gen 0.86 ms | chunks 6099 | cells 328339 | view-missing 0 frames | particles 233 / visual 41, 0.018 ms mean / 0.068 p99, dropped 250 | budget pass | bench/results/...
+bench world: 1680 frames (+120 warm-up) | sim 4.41 ms mean / 7.59 p99 | frame 9.70 / 14.32 ms | stream 0.08 / 0.31 ms | gen 0.70 ms | chunks 6099 | cells 341389 | view-missing 0 frames | particles 237 / visual 43, 0.015 ms mean / 0.051 p99, dropped 252 | bodies 53 (awake 41), physics 0.10 + shapes 0.74 + stamp 0.43 = 1.26 ms mean / 2.30 p99, 3.6 builds | budget pass | bench/results/...
 ```
 
 `frames` in the JSON is the number of sampled frames, i.e. `--frames` minus the 120 warm-up
@@ -123,10 +123,13 @@ chunks were awake per frame, and `view_missing_frames` counts frames with a hole
 `min(4, hardware_concurrency - 1)`). `particle_ms_*` is the particle step per tick,
 `particles_material_mean` / `particles_visual_mean` the particles in flight per frame, and
 `particles_dropped` the cumulative material particles that found nowhere to land.
+`bodies_mean` / `bodies_awake_mean` are rigid bodies alive / awake per frame;
+`physics_ms_*` (Box2D step), `shape_ms_*` (terrain shape builds), `stamp_ms_*` (stamp +
+unstamp) and their sum `body_ms_*`; `shape_builds_mean` is chunk shape rebuilds per tick.
 
 Budgets (`bench.gd` and `bench_world.gd`; do not relax them to make a run pass):
 
-| gate | Plan 1 | Plan 3 (`bench_world`) |
+| gate | Plan 1 | Plan 4 (`bench_world`) |
 |---|---|---|
 | `sim_ms_mean` | ≤ 6.0 | ≤ 6.0 |
 | `stream_ms_mean` / `stream_ms_p99` | — | ≤ 1.0 / ≤ 3.0 |
@@ -135,6 +138,8 @@ Budgets (`bench.gd` and `bench_world.gd`; do not relax them to make a run pass):
 | `view_missing_frames` | — | 0 |
 | `particle_ms_mean` | — | ≤ 1.0 |
 | `particles_material_mean` | — | ≥ 200 |
+| `body_ms_mean` | — | ≤ 2.0 |
+| `bodies_mean` | — | ≥ 40 |
 
 If `budget_pass` is `false`: re-run twice to rule out a cold or throttled machine, then record
 the numbers and report back before touching the simulator or the workload.
@@ -142,14 +147,14 @@ the numbers and report back before touching the simulator or the workload.
 ## 5. Commit
 
 ```bash
-git add bench/results/<machine>-plan1.json bench/results/<machine>-plan3.json
+git add bench/results/<machine>-plan1.json bench/results/<machine>-plan4.json
 git commit -m "bench: <machine> results"
 git push
 ```
 
 Commit the result JSON files only — never edit a budget or the workload to turn a red run green.
 The checkpoint is done when both files are committed with `budget_pass: true`. On the Linux
-machine that is `linux-irisxe-plan1.json` **and** `linux-irisxe-plan3.json`; Plans 2 and 3 are
+machine that is `linux-irisxe-plan1.json` **and** `linux-irisxe-plan4.json`; Plans 2 to 4 are
 complete only then.
 
 ## If anything fails, report back
@@ -166,7 +171,8 @@ complete only then.
   `sim_ms_mean` (generated content churning — check for liquid that never settles),
   a stream gate (check `generator_threads` and `max_inserts_per_frame`), or
   `view_missing_frames > 0` (a real streaming hole), or a particle gate (`particle_ms_mean`:
-  profile `ParticlePool::step`; `particles_material_mean` under 200: say so, don't shrink it).
+  profile `ParticlePool::step`; `particles_material_mean` under 200: say so, don't shrink it), or
+  `body_ms_mean` (say which of physics / shapes / stamp dominates).
 - **Environment:** `sw_vers`, `sysctl -n machdep.cpu.brand_string`, `sysctl -n hw.ncpu` on
   macOS; `lsb_release -a`, `lscpu` (or `grep 'model name' /proc/cpuinfo`), `nproc` on Linux.
 
@@ -176,7 +182,7 @@ Executed on 2026-10-25 on the Apple M1 machine (Apple M1, 8 cores, macOS 26.4.1,
 The branch was already checked out here and is not pushed, so step 1's `git fetch` /
 `git pull --ff-only` was **not** run — that part is for whoever runs this doc next.
 `./build.sh --release --test --verify` passed: both libraries OK,
-`95 | 95 passed`, `203024 | 203024` assertions, `Status: SUCCESS!`,
+`126 | 126 passed`, `Status: SUCCESS!`,
 `OK: ALL GODOT TESTS PASSED.`
 
 Plan 1 — `bench/results/macos-m1-plan1.json`: `budget_pass: true`, `sim_ms_mean` 3.53 ms
@@ -200,6 +206,13 @@ Plan 3 — `bench/results/macos-m1-plan3.json`: `budget_pass: true`, `sim_ms_mea
 `particle_ms_mean` 0.018 ms (budget 1.0), p99 0.068 ms, `particles_material_mean` 233 (floor
 200), `particles_visual_mean` 41, `particles_dropped` 250 over about 75 000 thrown cells.
 
+Plan 4 — `bench/results/macos-m1-plan4.json`: `budget_pass: true`, `sim_ms_mean` 4.41 ms,
+`frame_ms_p99` 14.32 ms, `bodies_mean` 53 (awake 41), `body_ms_mean` 1.26 ms (budget 2.0) =
+physics 0.10 + shapes 0.74 + stamp 0.43, `body_ms_p99` 2.30 ms, 3.6 shape builds per tick. The
+bodies fall under the sand and water faucets, so their chunks change every tick: shape
+rebuilds are rate-limited to one per chunk every 4 ticks, which is what brings shapes from
+1.55 ms to 0.74 ms.
+
 The Linux Iris Xe numbers are still an open hand-off: `bench/results/linux-irisxe-plan1.json`
-and `linux-irisxe-plan3.json` do not exist yet. Its 20 hardware threads and its GPU are the two
+and `linux-irisxe-plan4.json` do not exist yet. Its 20 hardware threads and its GPU are the two
 things to watch — the stream gates first, then `sim_ms_mean`.
