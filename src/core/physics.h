@@ -33,6 +33,20 @@ struct PhysicsStats {
 	double physics_ms = 0, shape_ms = 0, stamp_ms = 0;
 };
 
+// Joint settings; angles in radians, speeds in rad/s, torques in Box2D units (cells).
+struct RevoluteParams {
+	bool limit = false;
+	float lower = 0, upper = 0;
+	bool motor = false;
+	float speed = 0, max_torque = 0;
+};
+struct WheelParams {
+	float axis_x = 0, axis_y = 1;  // world-space suspension axis at creation
+	float hertz = 4, damping = 0.7f;
+	bool motor = false;
+	float speed = 0, max_torque = 0;
+};
+
 constexpr uint64_t CAT_TERRAIN = 1;
 constexpr uint64_t CAT_BODY = 2;
 constexpr uint64_t CAT_CREATURE = 4;  // reserved for Plan 5
@@ -64,6 +78,12 @@ public:
 	// powder or liquid they cover; non-body solids and other bodies' pixels are skipped.
 	void stamp();    // before Simulator::tick
 	void unstamp();  // after it: every cell still carrying FLAG_BODY gets its held cell back
+
+	// The anchor is in world cells; both joint frames start aligned with the world, so a
+	// revolute's angle and a wheel's axis are measured from the pose at creation.
+	b2JointId add_revolute(int a, int b, float x, float y, const RevoluteParams& params);
+	b2JointId add_wheel(int a, int b, float x, float y, const WheelParams& params);
+	void remove_joint(b2JointId joint);  // no-op if it went with one of its bodies
 
 	const std::vector<BodyHit>& hits() const { return hits_; }
 	std::vector<int> take_left_world();  // handles whose chunk unloaded since the last call

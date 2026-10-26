@@ -320,3 +320,46 @@ TEST_CASE("wood floats and rock sinks") {
 	CHECK(std::fabs(wood_y - 100.0f) <= 8.0f);
 	CHECK(std::fabs(phystest::pos(physics, rock).y - 134.0f) <= 1.5f);
 }
+
+TEST_CASE("a motor car drives along a floor") {
+	World w;
+	phystest::fill(w.grid, 0, 200, SIZE, SIZE, w.id("rock"));
+	PhysicsWorld physics(w.grid, GRAVITY);
+	const int chassis = physics.add_body(phystest::box(w.t, "rock", 40, 8, 60, 170));
+	const int back = physics.add_body(phystest::disc(w.t, "rock", 5, 46, 182));
+	const int front = physics.add_body(phystest::disc(w.t, "rock", 5, 74, 182));
+	WheelParams wheel;
+	wheel.motor = true;
+	wheel.speed = 5.0f;
+	wheel.max_torque = 1e6f;
+	physics.add_wheel(chassis, back, 46, 182, wheel);
+	physics.add_wheel(chassis, front, 74, 182, wheel);
+	phystest::run(physics, 180);
+	CHECK(phystest::pos(physics, chassis).x >= 120.0f);
+	CHECK(std::fabs(phystest::angle(physics, chassis)) < 0.5f);
+}
+
+TEST_CASE("revolute hinge holds") {
+	World w;
+	phystest::fill(w.grid, 0, 100, SIZE, SIZE, w.id("rock"));
+	PhysicsWorld physics(w.grid, GRAVITY);
+	const int a = physics.add_body(phystest::box(w.t, "wood", 12, 12, 120, 40));
+	const int b = physics.add_body(phystest::box(w.t, "wood", 12, 12, 132, 40));
+	physics.add_revolute(a, b, 126, 40, RevoluteParams{});
+	phystest::run(physics, 120);
+	const b2Vec2 pa = phystest::pos(physics, a), pb = phystest::pos(physics, b);
+	CHECK(std::fabs(std::hypot(pb.x - pa.x, pb.y - pa.y) - 12.0f) <= 1.5f);
+}
+
+TEST_CASE("removing a body removes its joints") {
+	World w;
+	PhysicsWorld physics(w.grid, GRAVITY);
+	const int a = physics.add_body(phystest::box(w.t, "wood", 12, 12, 120, 40));
+	const int b = physics.add_body(phystest::box(w.t, "wood", 12, 12, 132, 40));
+	const b2JointId joint = physics.add_revolute(a, b, 126, 40, RevoluteParams{});
+	REQUIRE(b2Joint_IsValid(joint));
+	physics.remove_body(a);
+	CHECK_FALSE(b2Joint_IsValid(joint));
+	physics.remove_joint(joint);
+	phystest::run(physics, 2);
+}

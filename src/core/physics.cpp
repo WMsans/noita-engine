@@ -344,6 +344,50 @@ void PhysicsWorld::unstamp() {
 	stats_.stamp_ms += ms_since(start);
 }
 
+namespace {
+
+// Frames at the anchor, rotated so that their x axis points along `world_angle`.
+void set_frames(b2JointDef& base, b2BodyId a, b2BodyId b, b2Vec2 anchor, float world_angle) {
+	base.bodyIdA = a;
+	base.bodyIdB = b;
+	base.localFrameA.p = b2Body_GetLocalPoint(a, anchor);
+	base.localFrameA.q = b2MakeRot(world_angle - b2Rot_GetAngle(b2Body_GetRotation(a)));
+	base.localFrameB.p = b2Body_GetLocalPoint(b, anchor);
+	base.localFrameB.q = b2MakeRot(world_angle - b2Rot_GetAngle(b2Body_GetRotation(b)));
+}
+
+}  // namespace
+
+b2JointId PhysicsWorld::add_revolute(int a, int b, float x, float y, const RevoluteParams& params) {
+	if (!has_body(a) || !has_body(b) || a == b) return b2_nullJointId;
+	b2RevoluteJointDef jd = b2DefaultRevoluteJointDef();
+	set_frames(jd.base, body_id(a), body_id(b), {x, y}, 0.0f);
+	jd.enableLimit = params.limit;
+	jd.lowerAngle = params.lower;
+	jd.upperAngle = params.upper;
+	jd.enableMotor = params.motor;
+	jd.motorSpeed = params.speed;
+	jd.maxMotorTorque = params.max_torque;
+	return b2CreateRevoluteJoint(world, &jd);
+}
+
+b2JointId PhysicsWorld::add_wheel(int a, int b, float x, float y, const WheelParams& params) {
+	if (!has_body(a) || !has_body(b) || a == b) return b2_nullJointId;
+	b2WheelJointDef jd = b2DefaultWheelJointDef();
+	set_frames(jd.base, body_id(a), body_id(b), {x, y}, std::atan2(params.axis_y, params.axis_x));
+	jd.enableSpring = true;
+	jd.hertz = params.hertz;
+	jd.dampingRatio = params.damping;
+	jd.enableMotor = params.motor;
+	jd.motorSpeed = params.speed;
+	jd.maxMotorTorque = params.max_torque;
+	return b2CreateWheelJoint(world, &jd);
+}
+
+void PhysicsWorld::remove_joint(b2JointId joint) {
+	if (b2Joint_IsValid(joint)) b2DestroyJoint(joint);
+}
+
 std::vector<int> PhysicsWorld::take_left_world() {
 	std::vector<int> out;
 	out.swap(left_world);
