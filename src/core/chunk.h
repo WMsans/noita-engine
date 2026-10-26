@@ -34,6 +34,9 @@ struct Chunk {
 	std::atomic_flag next_lock = ATOMIC_FLAG_INIT;  // guards `next`; other chunks' workers write it
 	std::atomic<bool> render_dirty{true};
 	std::atomic<bool> shape_dirty{true};  // set with render_dirty; PhysicsWorld clears it
+	// Set with render_dirty, cleared by the light-input build. Separate from render_dirty because
+	// upload_dirty_chunks consumes that one first.
+	std::atomic<bool> light_dirty{true};
 	// Local indices (ly * CHUNK + lx) of the @light room markers stamped in this chunk.
 	std::vector<uint16_t> light_markers;
 

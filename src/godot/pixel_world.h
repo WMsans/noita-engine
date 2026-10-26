@@ -115,7 +115,12 @@ class PixelWorld : public Node2D {
 	LightPalette light_palette;  // rebuilt when a fire-glow setting changes
 	// This frame's lit area and its RGBA8 inputs (r,g,b emission, a opacity), for the renderer.
 	LightArea light_area_now;
-	PackedByteArray light_texels;
+	PackedByteArray light_texels;  // upload buffer: base + this frame's spots
+	// The same texels with no spots in them, plus the texels the last lit frame's spots wrote, so
+	// the next frame can undo them and repaint only what changed.
+	PackedByteArray light_base;
+	LightArea light_base_area;
+	std::vector<LightRect> light_spot_rects;
 	bool light_ran_this_frame = false;
 	double light_cpu_ms = 0.0;
 	double light_gpu_ms = 0.0;  // filled from the GPU timestamps once the light pass exists

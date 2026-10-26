@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 #include "cell.h"
 #include "chunk.h"
@@ -35,12 +36,12 @@ uint8_t pack_opacity(float a) {
 }
 
 void build_row(const WorldGrid& grid, const LightPalette& palette, const LightArea& area, int row,
-               LightTexel* out) {
+               int tx0, int tx1, LightTexel* out) {
 	const int wy = area.y0 + row;
 	const int ly = floor_mod(wy, CHUNK);
-	LightTexel* dst = out + (size_t)row * area.w;
-	const int wx_end = area.x0 + area.w;
-	for (int wx = area.x0; wx < wx_end;) {
+	LightTexel* dst = out + (size_t)row * light_texel_w(area) + tx0;
+	const int wx_end = area.x0 + tx1;
+	for (int wx = area.x0 + tx0; wx < wx_end;) {
 		Chunk* chunk = grid.find(chunk_of(wx, wy));  // once per 64 cells of the row
 		const int lx = floor_mod(wx, CHUNK);
 		const int n = std::min(CHUNK - lx, wx_end - wx);
@@ -57,21 +58,21 @@ void build_row(const WorldGrid& grid, const LightPalette& palette, const LightAr
 }
 
 void build_texel_row(const WorldGrid& grid, const LightPalette& palette, const LightArea& area,
-                     int texel_row, LightTexel* out, uint32_t* opacity_sum) {
+                     int texel_row, int tx0, int tx1, LightTexel* out, uint32_t* opacity_sum) {
 	const int scale = area.scale;
 	const int texel_w = light_texel_w(area);
 	const int y0 = area.y0 + texel_row * scale;
 	const int y1 = std::min(y0 + scale, area.y0 + area.h);
 	LightTexel* const dst = out + (size_t)texel_row * texel_w;
-	for (int tx = 0; tx < texel_w; ++tx) dst[tx] = LightTexel{0, 0, 0, 0};
-	std::fill(opacity_sum, opacity_sum + texel_w, 0u);
-	const int x_end = area.x0 + area.w;
+	for (int tx = tx0; tx < tx1; ++tx) dst[tx] = LightTexel{0, 0, 0, 0};
+	std::fill(opacity_sum + tx0, opacity_sum + tx1, 0u);
+	const int x_end = area.x0 + std::min(tx1 * scale, area.w);
 	for (int wy = y0; wy < y1; ++wy) {
 		const int ly = floor_mod(wy, CHUNK);
 		// The texel column and the cells it still takes: the last column covers fewer cells.
-		int tx = 0;
-		int left = std::min(scale, area.w);
-		for (int wx = area.x0; wx < x_end;) {
+		int tx = tx0;
+		int left = std::min(scale, area.w - tx0 * scale);
+		for (int wx = area.x0 + tx0 * scale; wx < x_end;) {
 			Chunk* chunk = grid.find(chunk_of(wx, wy));  // once per 64 cells of the row
 			const int lx = floor_mod(wx, CHUNK);
 			const int n = std::min(CHUNK - lx, x_end - wx);
@@ -95,10 +96,42 @@ void build_texel_row(const WorldGrid& grid, const LightPalette& palette, const L
 	// Opacity is the mean over the cells the block covers, not over scale x scale: a partial block
 	// at the area's right or bottom edge keeps a wall opaque instead of diluting it into a leak.
 	const int rows = y1 - y0;
-	for (int tx = 0; tx < texel_w; ++tx) {
+	for (int tx = tx0; tx < tx1; ++tx) {
 		const int cols = std::min(scale, area.w - tx * scale);
 		dst[tx].a = (uint8_t)std::lround((double)opacity_sum[tx] / (double)(cols * rows));
 	}
+}
+
+// The spot's source disc in texel space: centre, radius and the texels it can write.
+struct SpotDisc {
+	float x, y;
+	int sr;
+	LightRect rect;
+};
+
+// False for a non-finite spot or one wholly outside the area, which write nothing.
+bool spot_disc(const LightArea& area, const LightSpot& s, SpotDisc& out) {
+	if (!std::isfinite(s.x) || !std::isfinite(s.y) || !std::isfinite(s.r) || !std::isfinite(s.g) ||
+	    !std::isfinite(s.b) || !std::isfinite(s.energy))
+		return false;
+	// Texel space: the area's origin is texel 0, and the source disc shrinks with the scale.
+	const float scale = (float)area.scale;
+	const float x = (s.x - (float)area.x0) / scale;
+	const float y = (s.y - (float)area.y0) / scale;
+	const int sr = std::max(1, spot_source_radius(s.radius) / area.scale);
+	// Clamp the disc into the area in floats before any int cast, so a huge coordinate
+	// just falls out of range instead of overflowing.
+	const float x_lo = std::max(x - (float)sr, 0.0f);
+	const float x_hi = std::min(x + (float)sr, (float)(light_texel_w(area) - 1));
+	const float y_lo = std::max(y - (float)sr, 0.0f);
+	const float y_hi = std::min(y + (float)sr, (float)(light_texel_h(area) - 1));
+	if (x_lo > x_hi || y_lo > y_hi) return false;  // wholly outside
+	out.x = x;
+	out.y = y;
+	out.sr = sr;
+	// Truncating the lower bound may start one texel early; the distance test drops it.
+	out.rect = LightRect{(int)x_lo, (int)y_lo, (int)x_hi - (int)x_lo + 1, (int)y_hi - (int)y_lo + 1};
+	return true;
 }
 
 }  // namespace
@@ -144,32 +177,78 @@ LightPalette LightPalette::build(const MaterialTable& table, float fire_r, float
 	return pal;
 }
 
-void build_light_inputs(const WorldGrid& grid, const LightPalette& palette,
-                        const LightArea& area, LightTexel* out, JobPool* pool) {
+// Rows banded across the pool: the whole-area build is this over every texel, so the incremental
+// path cannot drift from it.
+void build_light_rects(const WorldGrid& grid, const LightPalette& palette, const LightArea& area,
+                       const std::vector<LightRect>& rects, LightTexel* out, JobPool* pool) {
 	if (area.w <= 0 || area.h <= 0 || area.scale < 1) return;
-	const int texel_h = light_texel_h(area);
 	const int texel_w = light_texel_w(area);
-	const int bands = (texel_h + LIGHT_ROW_BAND - 1) / LIGHT_ROW_BAND;
+	std::vector<int> first_band(rects.size());  // the global band index each rect starts at
+	int bands = 0;
+	for (size_t i = 0; i < rects.size(); ++i) {
+		first_band[i] = bands;
+		bands += (rects[i].h + LIGHT_ROW_BAND - 1) / LIGHT_ROW_BAND;
+	}
 	// One row of opacity scratch per band, allocated once per build and only above scale 1: the
 	// default path must not allocate per band every frame.
 	std::vector<uint32_t> opacity_sum;
-	if (area.scale > 1) opacity_sum.resize((size_t)texel_w * bands);
+	if (area.scale > 1 && bands > 0) opacity_sum.resize((size_t)texel_w * bands);
 	auto work = [&](int band) {
-		const int r0 = band * LIGHT_ROW_BAND;
-		const int r1 = std::min(r0 + LIGHT_ROW_BAND, texel_h);
+		size_t i = 0;  // the rects are few, so a linear scan per band is cheapest
+		while (i + 1 < rects.size() && band >= first_band[i + 1]) ++i;
+		const LightRect& rect = rects[i];
+		const int r0 = rect.y + (band - first_band[i]) * LIGHT_ROW_BAND;
+		const int r1 = std::min(r0 + LIGHT_ROW_BAND, rect.y + rect.h);
 		uint32_t* const sum = opacity_sum.empty() ? nullptr : &opacity_sum[(size_t)band * texel_w];
 		for (int r = r0; r < r1; ++r) {
 			// Scale 1 is the default path and stays one texel per cell, cell for cell.
 			if (area.scale == 1)
-				build_row(grid, palette, area, r, out);
+				build_row(grid, palette, area, r, rect.x, rect.x + rect.w, out);
 			else
-				build_texel_row(grid, palette, area, r, out, sum);
+				build_texel_row(grid, palette, area, r, rect.x, rect.x + rect.w, out, sum);
 		}
 	};
-	if (pool)
+	// A single band is a small region: one pool handshake costs more than the rows themselves.
+	if (pool && bands > 1)
 		pool->parallel_for(bands, work);
 	else
 		for (int band = 0; band < bands; ++band) work(band);
+}
+
+void build_light_inputs(const WorldGrid& grid, const LightPalette& palette,
+                        const LightArea& area, LightTexel* out, JobPool* pool) {
+	if (area.w <= 0 || area.h <= 0 || area.scale < 1) return;
+	build_light_rects(grid, palette, area,
+	                  {LightRect{0, 0, light_texel_w(area), light_texel_h(area)}}, out, pool);
+}
+
+LightRect light_region_rect(const LightArea& area, int cx0, int cy0, int cx1, int cy1) {
+	LightRect r;
+	if (area.w <= 0 || area.h <= 0 || area.scale < 1) return r;
+	const int wx0 = std::max(cx0, area.x0);
+	const int wy0 = std::max(cy0, area.y0);
+	const int wx1 = std::min(cx1, area.x0 + area.w);
+	const int wy1 = std::min(cy1, area.y0 + area.h);
+	if (wx0 >= wx1 || wy0 >= wy1) return r;
+	const int scale = area.scale;
+	// Outward to the blocks the rect touches: the block holding wx0 may start left of it (and
+	// outside the rect's chunk at scale 3, where a chunk is not a whole number of blocks).
+	const int tx0 = (wx0 - area.x0) / scale;
+	const int ty0 = (wy0 - area.y0) / scale;
+	const int tx1 = (wx1 - area.x0 + scale - 1) / scale;
+	const int ty1 = (wy1 - area.y0 + scale - 1) / scale;
+	r.x = tx0;
+	r.y = ty0;
+	r.w = tx1 - tx0;
+	r.h = ty1 - ty0;
+	return r;
+}
+
+void build_light_region(const WorldGrid& grid, const LightPalette& palette, const LightArea& area,
+                        int cx0, int cy0, int cx1, int cy1, LightTexel* out, JobPool* pool) {
+	const LightRect rect = light_region_rect(area, cx0, cy0, cx1, cy1);
+	if (rect.w <= 0 || rect.h <= 0) return;
+	build_light_rects(grid, palette, area, {rect}, out, pool);
 }
 
 // ponytail: radius -> source disc is a tuning knob, not physics. In 2D radiance cascades a
@@ -184,36 +263,19 @@ int spot_source_radius(float radius) {
 }
 
 void add_light_spots(const LightArea& area, const std::vector<LightSpot>& spots, LightTexel* out) {
+	if (area.w <= 0 || area.h <= 0 || area.scale < 1 || light_texel_w(area) <= 0) return;
 	const int texel_w = light_texel_w(area);
-	const int texel_h = light_texel_h(area);
-	if (area.w <= 0 || area.h <= 0 || area.scale < 1 || texel_w <= 0 || texel_h <= 0) return;
-	const float scale = (float)area.scale;
-	const int right = texel_w - 1;
-	const int bottom = texel_h - 1;
 	for (const LightSpot& s : spots) {
-		if (!std::isfinite(s.x) || !std::isfinite(s.y) || !std::isfinite(s.r) ||
-		    !std::isfinite(s.g) || !std::isfinite(s.b) || !std::isfinite(s.energy))
-			continue;
-		// Texel space: the area's origin is texel 0, and the source disc shrinks with the scale.
-		const float x = (s.x - (float)area.x0) / scale;
-		const float y = (s.y - (float)area.y0) / scale;
-		const int sr = std::max(1, spot_source_radius(s.radius) / area.scale);
-		// Clamp the disc into the area in floats before any int cast, so a huge coordinate
-		// just falls out of range instead of overflowing.
-		const float x_lo = std::max(x - (float)sr, 0.0f);
-		const float x_hi = std::min(x + (float)sr, (float)right);
-		const float y_lo = std::max(y - (float)sr, 0.0f);
-		const float y_hi = std::min(y + (float)sr, (float)bottom);
-		if (x_lo > x_hi || y_lo > y_hi) continue;  // wholly outside
+		SpotDisc disc;
+		if (!spot_disc(area, s, disc)) continue;
 		const LightTexel add{pack_emission(s.r * s.energy), pack_emission(s.g * s.energy),
 		                     pack_emission(s.b * s.energy), 0};
-		const float r2 = (float)(sr * sr);
-		// Truncating the lower bound may start one texel early; the distance test drops it.
-		for (int ty = (int)y_lo; (float)ty <= y_hi; ++ty) {
-			const float dy = (float)ty - y;
+		const float r2 = (float)(disc.sr * disc.sr);
+		for (int ty = disc.rect.y; ty < disc.rect.y + disc.rect.h; ++ty) {
+			const float dy = (float)ty - disc.y;
 			LightTexel* row = out + (size_t)ty * texel_w;
-			for (int tx = (int)x_lo; (float)tx <= x_hi; ++tx) {
-				const float dx = (float)tx - x;
+			for (int tx = disc.rect.x; tx < disc.rect.x + disc.rect.w; ++tx) {
+				const float dx = (float)tx - disc.x;
 				if (dx * dx + dy * dy > r2) continue;
 				LightTexel& t = row[tx];
 				t.r = (uint8_t)std::min(255, t.r + add.r);
@@ -221,6 +283,31 @@ void add_light_spots(const LightArea& area, const std::vector<LightSpot>& spots,
 				t.b = (uint8_t)std::min(255, t.b + add.b);
 			}
 		}
+	}
+}
+
+std::vector<LightRect> spot_rects(const LightArea& area, const std::vector<LightSpot>& spots) {
+	std::vector<LightRect> out;
+	if (area.w <= 0 || area.h <= 0 || area.scale < 1 || light_texel_w(area) <= 0) return out;
+	for (const LightSpot& s : spots) {
+		SpotDisc disc;
+		if (spot_disc(area, s, disc)) out.push_back(disc.rect);
+	}
+	return out;
+}
+
+void restore_light_rects(const LightArea& area, const std::vector<LightRect>& rects,
+                         const LightTexel* base, LightTexel* out) {
+	if (area.w <= 0 || area.h <= 0 || area.scale < 1) return;
+	const int texel_w = light_texel_w(area);
+	const int texel_h = light_texel_h(area);
+	for (const LightRect& r : rects) {
+		const int x0 = std::max(r.x, 0), x1 = std::min(r.x + r.w, texel_w);
+		const int y0 = std::max(r.y, 0), y1 = std::min(r.y + r.h, texel_h);
+		if (x0 >= x1) continue;
+		for (int ty = y0; ty < y1; ++ty)
+			memcpy(out + (size_t)ty * texel_w + x0, base + (size_t)ty * texel_w + x0,
+			       (size_t)(x1 - x0) * sizeof(LightTexel));
 	}
 }
 

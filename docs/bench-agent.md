@@ -131,7 +131,7 @@ Plan 6 on this M1 (the committed `bench/results/macos-m1-plan6.json`; **red** on
 see the status section — do not copy it as a target):
 
 ```
-bench world: 1680 frames (+120 warm-up) | sim 4.47 ms mean / 7.44 p99 | frame 11.24 / 21.14 ms | stream 0.08 / 0.39 ms | gen 0.66 ms | chunks 6099 | cells 344977 | view-missing 0 frames | particles 318 / visual 43, 0.032 ms mean / 0.074 p99, dropped 1641 | bodies 53 (awake 42), physics 0.15 + shapes 0.82 + stamp 0.41 = 1.38 ms mean / 2.53 p99, 3.8 builds | creatures 43, 0.159 ms mean / 0.232 p99 | light 0.59 ms cpu mean / 1.00 p99 | light 0.000 ms gpu mean / 0.000 p99 (timestamps stubbed), spots 5.3 | budget FAIL | bench/results/...
+bench world: 1680 frames (+120 warm-up) | sim 4.45 ms mean / 7.44 p99 | frame 11.21 / 20.96 ms | stream 0.08 / 0.40 ms | gen 0.65 ms | chunks 6099 | cells 345160 | view-missing 0 frames | particles 316 / visual 43, 0.033 ms mean / 0.077 p99, dropped 1920 | bodies 53 (awake 42), physics 0.15 + shapes 0.82 + stamp 0.41 = 1.38 ms mean / 2.53 p99, 3.8 builds | creatures 43, 0.158 ms mean / 0.233 p99 | light 0.52 ms cpu mean / 0.90 p99 | light 0.000 ms gpu mean / 0.000 p99 (timestamps stubbed), spots 5.3 | budget FAIL | bench/results/...
 ```
 
 For reference, the same scene with `lighting_enabled = false` reproduces Plan 5's committed run
@@ -151,9 +151,10 @@ chunks were awake per frame, and `view_missing_frames` counts frames with a hole
 `physics_ms_*` (Box2D step), `shape_ms_*` (terrain shape builds), `stamp_ms_*` (stamp +
 unstamp) and their sum `body_ms_*`; `shape_builds_mean` is chunk shape rebuilds per tick.
 `creatures_mean` is creatures alive per frame and `creature_ms_*` the creature grid pass.
-`light_cpu_ms_*` is the light-input build for one frame — grid walk into the RGBA8 texels, marker
-and spot collection, spot discs, and the copy of those texels into the render job's upload buffer
-— the plan's 1 ms CPU budget (the copy is inside the timer, not a separate untimed step);
+`light_cpu_ms_*` is the light-input build for one frame — grid walk into the RGBA8 texels (the
+whole area when the lit area changed, otherwise only the chunks that changed), marker and spot
+collection, spot discs, and the copy of those texels into the render job's upload buffer — the
+plan's 1 ms CPU budget (the copy is inside the timer, not a separate untimed step);
 `light_gpu_ms_*` is the light + bloom compute pass from RenderingDevice timestamps;
 `light_spots_mean` is how many lights the frame used (the camera torch plus room markers);
 `light_gpu_ms_supported` says whether the driver reported any GPU time at all, and
@@ -224,8 +225,9 @@ complete only then.
   `view_missing_frames > 0` (a real streaming hole), or a particle gate (`particle_ms_mean`:
   profile `ParticlePool::step`; `particles_material_mean` under 200: say so, don't shrink it), or
   `body_ms_mean` (say which of physics / shapes / stamp dominates), or a creature gate, or a
-  light gate (`light_cpu_ms_mean`: profile `build_light_inputs`, the spot discs and the texel
-  copy into the upload buffer; `frame_ms_p99`
+  light gate (`light_cpu_ms_mean`: profile `PixelWorld::build_light_frame` — the dirty-chunk scan
+  and `build_light_rects`, the spot discs and the restore of the last frame's spot rects;
+  `frame_ms_p99`
   with `lighting_enabled = false` says whether the light pass is what pushed it over;
   `light_spots_mean` under 1 means lighting never ran — keep the `--headless` out of it).
 - **Environment:** `sw_vers`, `sysctl -n machdep.cpu.brand_string`, `sysctl -n hw.ncpu` on
@@ -237,10 +239,10 @@ Executed on 2026-10-25 on the Apple M1 machine (Apple M1, 8 cores, macOS 26.4.1,
 The branch was already checked out here and is not pushed, so step 1's `git fetch` /
 `git pull --ff-only` was **not** run — that part is for whoever runs this doc next.
 `./build.sh --release --test --verify` passed: both libraries OK,
-`166 | 166 passed`, `Status: SUCCESS!`,
-`OK: ALL GODOT TESTS PASSED.` (Plan 6 re-ran it; Plans 1–5 saw 152 core cases, Plan 6 161, and
-the half-resolution follow-up added 4 core cases and 1 Godot case; the half-resolution review fix
-added 2 more core cases — 168.)
+`172 | 172 passed`, `Status: SUCCESS!`,
+`OK: ALL GODOT TESTS PASSED.` (Plan 6 re-ran it; Plans 1–5 saw 152 core cases, Plan 6 161, the
+half-resolution follow-up added 4 core cases and 1 Godot case, the half-resolution review fix
+added 2 more, and the per-dirty-chunk inputs added 4 — 172.)
 
 Plan 1 — `bench/results/macos-m1-plan1.json`: `budget_pass: true`, `sim_ms_mean` 3.53 ms
 (budget 6.0), `sim_ms_p99` 5.09 ms, `frame_ms_mean` 8.35 ms, `upload_ms_mean` 1.02 ms,
@@ -277,13 +279,13 @@ Plan 5 — `bench/results/macos-m1-plan5.json`: `budget_pass: true`, `sim_ms_mea
 run predates the lighting pass.
 
 Plan 6 — `bench/results/macos-m1-plan6.json`: **`budget_pass: false`** on this M1, and it is the
-one guardrail this plan did not clear. Every gate passes except `frame_ms_p99`: 21.14 ms against
-the 16.6 ms budget (earlier runs: 20.83, 20.75, 21.16, 20.89, 20.91, 21.08). The lighting gates
-themselves pass — `light_cpu_ms_mean` 0.59 ms (budget 1.0, p99 1.00), `light_spots_mean` 5.3
+one guardrail this plan did not clear. Every gate passes except `frame_ms_p99`: 20.96 ms against
+the 16.6 ms budget (earlier runs: 20.83, 20.75, 21.16, 20.89, 20.91, 21.14, 21.08). The lighting
+gates themselves pass — `light_cpu_ms_mean` 0.52 ms (budget 1.0, p99 0.90), `light_spots_mean` 5.3
 (floor 1), and `light_gpu_ms_supported: false` with `light_gpu_ms_stubbed: true` because Metal
 cannot report GPU time, so the only GPU signal is the frame time. `light_resolution` 1,
-`sim_ms_mean` 4.47, `stream_ms_mean` 0.08, `frame_ms_mean` 11.24, `cells_updated_mean` 344977,
-`view_missing_frames` 0, `body_ms_mean` 1.38, `creature_ms_mean` 0.159.
+`sim_ms_mean` 4.45, `stream_ms_mean` 0.08, `frame_ms_mean` 11.21, `cells_updated_mean` 345160,
+`view_missing_frames` 0, `body_ms_mean` 1.38, `creature_ms_mean` 0.158.
 
 The light pass is the whole difference: the same scene with `lighting_enabled = false` reproduces
 Plan 5 (frame 9.98 / 15.01), and the pass alone — bench workload, torch and lava removed — gives
@@ -297,24 +299,50 @@ numbers were measured before the light pass existed, so this is new GPU work, no
 the simulator.
 
 The plan's fallbacks for a GPU budget miss (half resolution, per-dirty-chunk inputs, then a
-GPU-side input pass) each need the user's go-ahead; the first one landed as an opt-in setting and
-the other two are not implemented. Note that half resolution cuts the upload and cascade work but
-not the CPU input walk, and it is the one that touches this failure.
+GPU-side input pass) each need the user's go-ahead; the first two have landed (the second one is
+described below) and the third is not implemented. Note that half resolution cuts the upload and
+cascade work but not the CPU input walk, and it is the one that touches this failure.
 
 Plan 6 half resolution — `bench/results/macos-m1-plan6-halfres.json` (same scene, one build,
 `--light-resolution=2`): **still `budget_pass: false`**, but the frame p99 drops from 21.14 to
-**17.26 ms** (−18%) and the mean from 11.24 to 10.71 ms. A second run of the same settings measured
+**17.16 ms** (−18%) and the mean from 11.24 to 10.67 ms. A second run of the same settings measured
 17.37 ms p99 (and a second default run 21.08 ms), so it is a real improvement, not noise — and it
-is still about 0.7 ms over the 16.6 ms budget. The other gates are unchanged (`sim_ms_mean` 4.44,
-`stream_ms_mean` 0.08, `view_missing` 0, `body_ms_mean` 1.40, `creature_ms_mean` 0.162);
-`light_cpu_ms_mean` 0.66 (p99 0.76 — the mean rises a hair because the block packing walks the same
-cells with more per-cell work, while the upload copy that p99 sees drops to a quarter).
+is still about 0.6 ms over the 16.6 ms budget. The other gates are unchanged (`sim_ms_mean` 4.44,
+`stream_ms_mean` 0.08, `view_missing` 0, `body_ms_mean` 1.39, `creature_ms_mean` 0.162);
+`light_cpu_ms_mean` 0.55 (p99 0.70 — the block packing walks the same cells with more per-cell
+work, while the upload copy that p99 sees drops to a quarter).
 `light_spots_mean` 5.3, `light_gpu_ms_stubbed` `true`, `light_resolution` 2. What it costs in
 looks: light is 2-cell blocks everywhere (softened by the overlay's linear filter), shadow edges
 are chunkier, and the source disc is divided by the scale, so the torch glow is smaller and dimmer
 (the capture harness's torch/far-dark ratio drops from 19.8x to 10.5x). Coarser probes also mean the cascade reach in world cells doubles per step,
 so distant light travels farther than the rays' near field resolves. It
 is opt-in: the committed default is `light_resolution = 1`.
+
+Plan 6 per-dirty-chunk inputs (`src/core/light_input.*`, `Chunk::light_dirty`, `PixelWorld`): the
+light pass no longer rebuilds the whole 992×768 lit area every frame. `PixelWorld` keeps a
+persistent base of emission/opacity (materials and burning cells, no spots) and a persistent upload
+buffer. Each lit frame repaints only the texels of the chunks that changed since the last lit frame
+(the `light_dirty` flag, cleared per chunk) plus the chunks that were unloaded, coalesced into x-runs
+per chunk row and built in one pool dispatch; the previous frame's spot rects are then restored
+from the base instead of the whole 3 MB buffer being copied. The first frame after any change — a
+new lit area, a resolution change, a chunk that loaded or unloaded — still shows the new terrain in
+that same frame: an area or scale change rebuilds the whole base, and an inconsistent base (size or
+scale mismatch, never built) falls back to a full rebuild too.
+
+Measured on this M1, same scene, before → after: default resolution `light_cpu_ms_mean` 0.58 →
+**0.52 ms** and p99 1.02 → **0.90**; half resolution 0.66 → **0.55 ms** and p99 0.79 → **0.70**.
+The win is small on this workload for two measured reasons: the bench camera flies at 10 cells per
+frame, so about 43% of the frames land on a new 32-cell-snapped lit area and have to rebuild the
+base in full, and on most of the remaining frames the sim's faucets, explosions, bodies and
+creatures already dirty most of the ~192 chunks in view, so the repaint covers close to the whole
+area anyway. A frame whose dirty chunks cover half the area or more costs about the same either way.
+The upload copy is gone from the steady state, which is where the p99 gain comes from.
+
+This fallback does not clear the failing gate on its own, and it is not meant to: `frame_ms_p99`
+is **GPU-bound** (the frame time cannot separate the light pass from the rest of the GPU work on
+Metal), so shaving CPU input-build time leaves it where it was: 20.96 ms default, 17.16 ms at half
+resolution, both over the 16.6 ms budget. The frame means do not move either (11.21 and 10.67 ms).
+What would move that number is the third fallback, the GPU-side input pass.
 
 The Linux Iris Xe numbers are still an open hand-off: `bench/results/linux-irisxe-plan1.json`
 and `linux-irisxe-plan6.json` do not exist yet. Its 20 hardware threads and its GPU are the two

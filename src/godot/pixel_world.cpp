@@ -546,8 +546,10 @@ void PixelWorld::reset_light_stats() {
 }
 
 // One RGBA8 texel per lit-area cell (per light_resolution x light_resolution cells above 1) from
-// the grid the physics frame just ticked, then the game lights and room markers on top. --headless
-// has no RenderingDevice: lighting is then a no-op with zeroed stats, not an error.
+// the grid the physics frame just ticked, then the game lights and room markers on top. Only the
+// texels of chunks that changed since the last lit frame are rebuilt into the base, and only the
+// texels the last frame's spots wrote are restored from it. --headless has no RenderingDevice:
+// lighting is then a no-op with zeroed stats, not an error.
 void PixelWorld::build_light_frame() {
 	RenderingServer *rs = RenderingServer::get_singleton();
 	Rect2 visible;
@@ -555,6 +557,10 @@ void PixelWorld::build_light_frame() {
 		reset_light_stats();
 		hide_light_backdrop();
 		hide_light_overlay();
+		// Nothing consumed the dirty state. Dropping it is safe because the base is invalidated:
+		// the next lit frame rebuilds the whole area.
+		grid->take_light_unloaded();
+		light_base_area = LightArea();
 		return;
 	}
 	// Pass the view as a rect with a snapped size and an aligned origin: the lit area's size then
@@ -580,7 +586,8 @@ void PixelWorld::build_light_frame() {
 	const int texel_h = light_texel_h(area);
 	const int64_t bytes = (int64_t)texel_w * texel_h * 4;
 	light_texels.resize(bytes);
-	if (light_texels.size() != bytes) {  // resize failed: never write through a null pointer
+	light_base.resize(bytes);
+	if (light_texels.size() != bytes || light_base.size() != bytes) {  // never write through null
 		reset_light_stats();
 		hide_light_backdrop();
 		hide_light_overlay();
@@ -589,7 +596,56 @@ void PixelWorld::build_light_frame() {
 
 	const auto start = std::chrono::steady_clock::now();
 	LightTexel *texels = reinterpret_cast<LightTexel *>(light_texels.ptrw());
-	build_light_inputs(*grid, light_palette, area, texels, pool.get());
+	LightTexel *base = reinterpret_cast<LightTexel *>(light_base.ptrw());
+	const bool area_changed = light_base_area.x0 != area.x0 || light_base_area.y0 != area.y0 ||
+	                          light_base_area.w != area.w || light_base_area.h != area.h ||
+	                          light_base_area.scale != area.scale;
+	// The texels of the chunks that changed since the last lit frame, coalesced into x-runs per
+	// chunk row: a frame that touches many chunks then costs a few region builds, not one pool
+	// handshake per chunk.
+	std::vector<LightRect> repainted;
+	if (!area_changed) {
+		std::vector<ChunkCoord> dirty;
+		for (const ChunkCoord &coord : grid->take_light_unloaded()) dirty.push_back(coord);
+		grid->for_each_chunk([&](Chunk &chunk) {
+			if (chunk.light_dirty.exchange(false)) dirty.push_back(chunk.coord);
+		});
+		std::sort(dirty.begin(), dirty.end(), [](ChunkCoord a, ChunkCoord b) {
+			return a.y != b.y ? a.y < b.y : a.x < b.x;
+		});
+		dirty.erase(std::unique(dirty.begin(), dirty.end(),
+		                        [](ChunkCoord a, ChunkCoord b) { return a.x == b.x && a.y == b.y; }),
+		            dirty.end());
+		for (size_t i = 0; i < dirty.size();) {
+			size_t j = i + 1;
+			while (j < dirty.size() && dirty[j].y == dirty[i].y && dirty[j].x == dirty[j - 1].x + 1)
+				++j;
+			// Whole chunk cells: an unloaded chunk's cells then read as absent and go dark.
+			const LightRect rect =
+			    light_region_rect(area, dirty[i].x * CHUNK, dirty[i].y * CHUNK,
+			                      (dirty[j - 1].x + 1) * CHUNK, (dirty[i].y + 1) * CHUNK);
+			if (rect.w > 0 && rect.h > 0) repainted.push_back(rect);
+			i = j;
+		}
+	}
+	if (area_changed) {
+		// A new area or a base that is inconsistent with it (size, scale, or never built) falls
+		// back to the whole-area build: the first frame after a change must show the new terrain.
+		build_light_inputs(*grid, light_palette, area, base, pool.get());
+		grid->take_light_unloaded();
+		grid->for_each_chunk([](Chunk &chunk) { chunk.light_dirty.store(false); });
+		light_spot_rects.clear();
+		memcpy(texels, base, (size_t)bytes);
+		light_base_area = area;
+	} else {
+		build_light_rects(*grid, light_palette, area, repainted, base, pool.get());
+		for (const LightRect &rect : repainted)
+			for (int ty = rect.y; ty < rect.y + rect.h; ++ty)
+				memcpy(texels + (size_t)ty * texel_w + rect.x,
+				       base + (size_t)ty * texel_w + rect.x, (size_t)rect.w * sizeof(LightTexel));
+		// Undo the last frame's spots before adding this frame's, instead of copying the base.
+		restore_light_rects(area, light_spot_rects, base, texels);
+	}
 
 	std::vector<LightSpot> spots;
 	const double time = (double)Time::get_singleton()->get_ticks_msec() / 1000.0;
@@ -606,18 +662,16 @@ void PixelWorld::build_light_frame() {
 	                       marker_light_color.b, marker_light_energy, marker_light_radius};
 	collect_marker_lights(*grid, area, marker, spots);
 	add_light_spots(area, spots, texels);
+	light_spot_rects = spot_rects(area, spots);
 
 	light_spots = (int)spots.size();
-	// The job holds its own copy of the texels; this pack is the upload buffer and counts as part
-	// of the CPU budget, so the timer ends after it.
-	PackedByteArray upload;
-	upload.resize(light_texels.size());
-	memcpy(upload.ptrw(), light_texels.ptr(), (size_t)light_texels.size());
+	// The build, the repaints and the spots are all of the input budget; the job takes the texels
+	// by value, so the render thread never reads light_texels, which the next frame overwrites.
 	light_cpu_ms =
 	    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
 	light_ran_this_frame = true;
 	update_light_backdrop(area);
-	render_light_frame(area, upload);
+	render_light_frame(area, light_texels);
 	light_gpu_ms = light_renderer ? light_renderer->gpu_ms() : 0.0;
 }
 

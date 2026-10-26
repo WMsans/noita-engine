@@ -451,3 +451,179 @@ TEST_CASE("texel size rounds up and scale 1 is unchanged") {
 	CHECK(std::memcmp(&out[1], &rock, sizeof(LightTexel)) == 0);
 	CHECK(std::memcmp(&out[2], &lava, sizeof(LightTexel)) == 0);
 }
+
+TEST_CASE("region rebuild matches a full build") {
+	LightTable lt;
+	WorldGrid grid(lt.table, 7);
+	const MatId cycle[3] = {lt.rock, lt.lava, lt.wood};
+	for (int cy = -1; cy <= 1; ++cy)
+		for (int cx = -1; cx <= 1; ++cx) {
+			Chunk& chunk = *grid.insert(empty_chunk({cx, cy}));
+			for (int ly = 0; ly < CHUNK; ++ly)
+				for (int lx = 0; lx < CHUNK; ++lx) {
+					const uint32_t h = (uint32_t)(lx * 31 + ly * 17 + cx * 5 + cy * 3);
+					chunk.at(lx, ly).mat = cycle[h % 3];
+					if (h % 11 == 0) chunk.at(lx, ly).flags |= FLAG_BURNING;
+				}
+		}
+
+	const LightPalette pal = fire_palette(lt.table);
+	LightArea area{-32, -32, 192, 192};  // reaches past the loaded chunks on every side
+	JobPool pool(4);
+	for (int scale = 1; scale <= 3; ++scale) {
+		area.scale = scale;
+		CAPTURE(scale);
+		std::vector<LightTexel> out = build(grid, pal, area, &pool);  // the persistent base
+
+		// Three chunks change, on both sides of the area's origin (which is not block aligned).
+		Chunk& origin = *grid.find({0, 0});
+		for (int lx = 0; lx < CHUNK; ++lx) origin.at(lx, 3).mat = MAT_AIR;  // rock -> air
+		origin.at(10, 10).mat = lt.lava;                                  // air -> lava
+		origin.at(20, 20).flags |= FLAG_BURNING;
+		Chunk& left = *grid.find({-1, 0});
+		left.at(63, 40).mat = lt.lava;
+		Chunk& corner = *grid.find({1, 1});
+		corner.at(0, 0).mat = MAT_AIR;
+		corner.at(1, 0).flags |= FLAG_BURNING;
+
+		build_light_region(grid, pal, area, 0, 0, CHUNK, CHUNK, out.data(), &pool);
+		build_light_region(grid, pal, area, -CHUNK, 0, 0, CHUNK, out.data(), &pool);
+		build_light_region(grid, pal, area, CHUNK, CHUNK, 2 * CHUNK, 2 * CHUNK, out.data(), &pool);
+
+		const std::vector<LightTexel> fresh = build(grid, pal, area, &pool);
+		REQUIRE(out.size() == fresh.size());
+		CHECK(std::memcmp(out.data(), fresh.data(), out.size() * sizeof(LightTexel)) == 0);
+	}
+}
+
+TEST_CASE("region build clips to the area and to whole texel blocks") {
+	LightTable lt;
+	WorldGrid grid(lt.table, 1);
+	Chunk& chunk = *grid.insert(empty_chunk({0, 0}));
+	chunk.at(1, 1).mat = lt.lava;  // block cells 0..2: one lava of nine
+	chunk.at(4, 4).mat = lt.rock;  // block cells 3..5: one rock of nine
+
+	LightArea area{0, 0, 7, 7};  // 3x3 texels at scale 3, both area edges partial
+	area.scale = 3;
+	const int tw = light_texel_w(area);
+	const int th = light_texel_h(area);
+	REQUIRE(tw == 3);
+	REQUIRE(th == 3);
+	const LightTexel SENTINEL{17, 34, 51, 68};
+	const LightTexel FILL{1, 2, 3, 4};
+	std::vector<LightTexel> buf((size_t)tw * th + 16, SENTINEL);
+	LightTexel* const out = buf.data() + 8;
+	const LightPalette pal = fire_palette(lt.table);
+
+	// Partly outside the area and misaligned to the blocks: cell 1 sits in block 0, so only
+	// texel (0, 0) is rewritten.
+	std::fill(out, out + (size_t)tw * th, FILL);
+	build_light_region(grid, pal, area, -5, -4, 2, 2, out, nullptr);
+	const LightTexel lava{128, 57, 13, 9};  // one lava cell of nine: 77 / 9
+	CHECK(std::memcmp(&out[0], &lava, sizeof(LightTexel)) == 0);
+	for (int i = 1; i < tw * th; ++i) CHECK(std::memcmp(&out[i], &FILL, sizeof(LightTexel)) == 0);
+
+	// A single misaligned cell in the middle: its whole block (all nine cells) is rebuilt.
+	std::fill(out, out + (size_t)tw * th, FILL);
+	build_light_region(grid, pal, area, 4, 4, 5, 5, out, nullptr);
+	const LightTexel rock{0, 0, 0, 28};  // 255 / 9
+	CHECK(std::memcmp(&out[tw + 1], &rock, sizeof(LightTexel)) == 0);
+	for (int i = 0; i < tw * th; ++i)
+		if (i != tw + 1) CHECK(std::memcmp(&out[i], &FILL, sizeof(LightTexel)) == 0);
+
+	// Clipped at the bottom-right edge: block 2 covers one column and one row of air cells.
+	std::fill(out, out + (size_t)tw * th, FILL);
+	build_light_region(grid, pal, area, 6, 6, 100, 100, out, nullptr);
+	CHECK(std::memcmp(&out[2 * tw + 2], &CLEAR, sizeof(LightTexel)) == 0);
+	for (int i = 0; i < tw * th; ++i)
+		if (i != 2 * tw + 2) CHECK(std::memcmp(&out[i], &FILL, sizeof(LightTexel)) == 0);
+
+	// Wholly outside, including the cell just past the area's edge: nothing written.
+	std::fill(out, out + (size_t)tw * th, FILL);
+	build_light_region(grid, pal, area, 64, 64, 128, 128, out, nullptr);
+	build_light_region(grid, pal, area, 7, 0, 8, 1, out, nullptr);
+	for (int i = 0; i < tw * th; ++i) CHECK(std::memcmp(&out[i], &FILL, sizeof(LightTexel)) == 0);
+
+	for (size_t i = 0; i < 8; ++i) {
+		CHECK(std::memcmp(&buf[i], &SENTINEL, sizeof(LightTexel)) == 0);
+		CHECK(std::memcmp(&buf[(size_t)tw * th + 8 + i], &SENTINEL, sizeof(LightTexel)) == 0);
+	}
+}
+
+TEST_CASE("dirty flags mark changed chunks") {
+	LightTable lt;
+	WorldGrid grid(lt.table, 1);
+	Chunk& chunk = *grid.insert(empty_chunk({0, 0}));
+	CHECK(chunk.light_dirty.load());  // a fresh chunk is dirty
+
+	chunk.light_dirty.store(false);
+	CHECK(grid.set(5, 5, lt.rock));
+	CHECK(chunk.light_dirty.load());
+
+	chunk.light_dirty.store(false);
+	CHECK(grid.put(5, 5, Cell{}));
+	CHECK(chunk.light_dirty.load());
+
+	chunk.light_dirty.store(false);
+	grid.wake(5, 5);
+	CHECK(chunk.light_dirty.load());
+
+	// A neighbour of a changed cell is marked too: the 3x3 around (63, 5) reaches (1, 0).
+	Chunk& right = *grid.insert(empty_chunk({1, 0}));
+	CHECK(right.light_dirty.load());  // insert sets it
+	right.light_dirty.store(false);
+	CHECK(grid.set(63, 5, lt.rock));
+	CHECK(right.light_dirty.load());
+
+	// Unload reports the coord once and drains.
+	grid.unload({1, 0});
+	const std::vector<ChunkCoord> dropped = grid.take_light_unloaded();
+	REQUIRE(dropped.size() == 1);
+	CHECK(dropped[0] == ChunkCoord{1, 0});
+	CHECK(grid.take_light_unloaded().empty());
+}
+
+TEST_CASE("spot rects restore the base") {
+	LightArea area{0, 0, 64, 32};
+	for (int scale = 1; scale <= 2; ++scale) {
+		area.scale = scale;
+		CAPTURE(scale);
+		const int tw = light_texel_w(area);
+		const int th = light_texel_h(area);
+		std::vector<LightTexel> base((size_t)tw * th);
+		for (int ty = 0; ty < th; ++ty)
+			for (int tx = 0; tx < tw; ++tx)
+				base[(size_t)ty * tw + tx] = LightTexel{(uint8_t)(tx * 3), (uint8_t)(ty * 5), 7, 200};
+		std::vector<LightTexel> out = base;
+		const float nan = std::numeric_limits<float>::quiet_NaN();
+		const std::vector<LightSpot> spots = {
+		    LightSpot{20.5f, 10.5f, 1.0f, 1.0f, 1.0f, 2.0f, 48.0f},  // a torch
+		    LightSpot{-1.0f, 20.5f, 1.0f, 1.0f, 1.0f, 2.0f, 16.0f},   // half outside
+		    LightSpot{32.5f, 16.5f, 1.0f, 1.0f, 1.0f, 2.0f, 100.0f},  // clipped to the area
+		    LightSpot{nan, 10.5f, 1.0f, 1.0f, 1.0f, 2.0f, 16.0f},     // writes nothing
+		};
+		const std::vector<LightRect> rects = spot_rects(area, spots);
+		REQUIRE(rects.size() == 3);
+		for (const LightRect& r : rects) {
+			CHECK(r.w > 0);
+			CHECK(r.h > 0);
+			CHECK(r.x >= 0);
+			CHECK(r.y >= 0);
+			CHECK(r.x + r.w <= tw);
+			CHECK(r.y + r.h <= th);
+		}
+		add_light_spots(area, spots, out.data());
+		CHECK(std::memcmp(out.data(), base.data(), base.size() * sizeof(LightTexel)) != 0);
+
+		// A texel outside every spot's rect is never touched by the restore.
+		const size_t far = (size_t)(th - 1) * tw;
+		const LightTexel MARK{9, 9, 9, 9};
+		out[far] = MARK;
+		restore_light_rects(area, rects, base.data(), out.data());
+		CHECK(std::memcmp(&out[far], &MARK, sizeof(LightTexel)) == 0);
+
+		// Restoring the rects undoes exactly what the spots wrote.
+		out[far] = base[far];
+		CHECK(std::memcmp(out.data(), base.data(), base.size() * sizeof(LightTexel)) == 0);
+	}
+}

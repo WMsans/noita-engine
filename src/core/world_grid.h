@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <memory>
 #include <unordered_map>
+#include <vector>
 
 #include "chunk.h"
 #include "coords.h"
@@ -21,6 +22,9 @@ public:
 	void unload(ChunkCoord coord);
 	Chunk* find(ChunkCoord coord) const;
 	size_t size() const { return chunks.size(); }
+
+	// Chunks unloaded since the last call: the light inputs repaint them as opaque, dark cells.
+	std::vector<ChunkCoord> take_light_unloaded();
 
 	bool get(int wx, int wy, Cell& out) const;
 	bool set(int wx, int wy, MatId mat);
@@ -46,6 +50,7 @@ private:
 	const MaterialTable& table;
 	uint32_t world_seed;
 	std::unordered_map<int64_t, std::unique_ptr<Chunk>> chunks;
+	std::vector<ChunkCoord> light_unloaded;
 };
 
 // Hot-path accessor: the 3x3 chunks around a centre one, with local coords in [-64, 128).

@@ -52,6 +52,25 @@ struct LightPalette {
 void build_light_inputs(const WorldGrid& grid, const LightPalette& palette,
                         const LightArea& area, LightTexel* out, JobPool* pool);
 
+struct LightRect {
+	int x = 0, y = 0, w = 0, h = 0;  // texels, area-relative
+};
+
+// Texels covering the world-cell rect [cx0, cx1) x [cy0, cy1), expanded outward to whole texel
+// blocks and clipped to the area. Empty when no cell of the rect is inside the area.
+LightRect light_region_rect(const LightArea& area, int cx0, int cy0, int cx1, int cy1);
+
+// Rebuilds only the texels covering world rect [cx0, cx1) x [cy0, cy1), expanded outward to
+// whole texel blocks and clipped to the area. Same bytes as a full build of the area.
+void build_light_region(const WorldGrid& grid, const LightPalette& palette,
+                        const LightArea& area, int cx0, int cy0, int cx1, int cy1,
+                        LightTexel* out, JobPool* pool);
+
+// Rebuilds the texels of every rect in one pool dispatch, so a frame that repaints many chunks
+// pays one handshake instead of one per chunk.
+void build_light_rects(const WorldGrid& grid, const LightPalette& palette, const LightArea& area,
+                       const std::vector<LightRect>& rects, LightTexel* out, JobPool* pool);
+
 struct LightSpot {
 	float x, y, r, g, b, energy, radius;
 };
@@ -63,6 +82,14 @@ int spot_source_radius(float radius);  // clamp(lround(radius / 6), 1, 32)
 // and are divided by the area's scale, so the disc lands in texel space. Clipped to the area;
 // non-finite spots skipped.
 void add_light_spots(const LightArea& area, const std::vector<LightSpot>& spots, LightTexel* out);
+
+// The texels each spot's source disc can write, clipped to the area: the rects of a spot pass,
+// so the next frame can restore them from a base with no spots in it.
+std::vector<LightRect> spot_rects(const LightArea& area, const std::vector<LightSpot>& spots);
+
+// Copies the texels of each rect from `base` into `out`: undoes the spots a previous frame added.
+void restore_light_rects(const LightArea& area, const std::vector<LightRect>& rects,
+                         const LightTexel* base, LightTexel* out);
 
 // Appends one spot per marker in every loaded chunk overlapping the area, at the marker
 // cell's centre, with colour/energy/radius from `defaults`.

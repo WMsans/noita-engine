@@ -23,6 +23,7 @@ Chunk* WorldGrid::insert(std::unique_ptr<Chunk> chunk) {
 	chunk->next.include(CHUNK - 1, CHUNK - 1);
 	chunk->render_dirty.store(true);
 	chunk->shape_dirty.store(true);
+	chunk->light_dirty.store(true);
 
 	Chunk* out = chunk.get();
 	chunks.emplace(chunk_key(coord), std::move(chunk));
@@ -47,7 +48,16 @@ void WorldGrid::wake_neighbour_borders(ChunkCoord coord) {
 		}
 }
 
-void WorldGrid::unload(ChunkCoord coord) { chunks.erase(chunk_key(coord)); }
+void WorldGrid::unload(ChunkCoord coord) {
+	if (chunks.erase(chunk_key(coord))) light_unloaded.push_back(coord);
+}
+
+// Drains the vector: the caller repaints these chunks as unloaded once, then it is empty again.
+std::vector<ChunkCoord> WorldGrid::take_light_unloaded() {
+	std::vector<ChunkCoord> out;
+	out.swap(light_unloaded);
+	return out;
+}
 
 Chunk* WorldGrid::find(ChunkCoord coord) const {
 	auto it = chunks.find(chunk_key(coord));
@@ -80,11 +90,16 @@ bool WorldGrid::put(int wx, int wy, const Cell& cell) {
 	return true;
 }
 
+// wake() writes no render or shape flags: body stamping restores the cells before the light
+// build runs. It still flags the light inputs, which errs on the safe side (a chunk holding a
+// body is repainted once per frame, a dirty region, not the whole area).
 void WorldGrid::wake(int wx, int wy) {
 	for (int dy = -1; dy <= 1; ++dy)
 		for (int dx = -1; dx <= 1; ++dx) {
 			Chunk* chunk = find(chunk_of(wx + dx, wy + dy));
-			if (chunk) chunk->mark_next(floor_mod(wx + dx, CHUNK), floor_mod(wy + dy, CHUNK));
+			if (!chunk) continue;
+			chunk->mark_next(floor_mod(wx + dx, CHUNK), floor_mod(wy + dy, CHUNK));
+			chunk->light_dirty.store(true);
 		}
 }
 
@@ -97,6 +112,7 @@ void WorldGrid::mark_world(int wx, int wy) {
 			chunk->mark_next(floor_mod(x, CHUNK), floor_mod(y, CHUNK));
 			chunk->render_dirty.store(true);
 			chunk->shape_dirty.store(true);
+			chunk->light_dirty.store(true);
 		}
 }
 
@@ -131,5 +147,6 @@ void Neighborhood::mark(int lx, int ly) {
 			chunk->mark_next(floor_mod(tx, CHUNK), floor_mod(ty, CHUNK));
 			chunk->render_dirty.store(true);
 			chunk->shape_dirty.store(true);
+			chunk->light_dirty.store(true);
 		}
 }
