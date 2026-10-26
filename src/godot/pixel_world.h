@@ -8,6 +8,7 @@
 #include <godot_cpp/classes/node2d.hpp>
 #include <godot_cpp/classes/quad_mesh.hpp>
 #include <godot_cpp/classes/ref.hpp>
+#include <godot_cpp/classes/texture2drd.hpp>
 #include <godot_cpp/variant/color.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
 #include <godot_cpp/variant/node_path.hpp>
@@ -27,6 +28,7 @@
 #include "core/simulator.h"
 #include "core/terrain.h"
 #include "core/world_grid.h"
+#include "light_renderer.h"
 #include "pixel_material_set.h"
 #include "pixel_world_generator.h"
 
@@ -122,6 +124,20 @@ class PixelWorld : public Node2D {
 	Color backdrop_painted_color;
 	bool backdrop_painted = false;
 	bool backdrop_visible = false;
+	// The light pass: the renderer lives on the render thread, the overlay on this one.
+	std::shared_ptr<LightRenderer> light_renderer;
+	Ref<Texture2DRD> light_texture;
+	Ref<Texture2DRD> bloom_texture;
+	RID light_canvas_item;
+	RID bloom_canvas_item;
+	RID light_shader;
+	RID bloom_shader;
+	RID light_material;
+	RID bloom_material;
+	LightArea light_overlay_area;
+	int light_texture_generation = -1;
+	bool light_overlay_visible = false;
+	bool light_overlay_broken = false;
 	Ref<Image> upload_image;
 	double upload_ms = 0.0;
 	double first_upload_ms = 0.0;  // texture creation this frame, part of `stream_ms`
@@ -151,6 +167,10 @@ class PixelWorld : public Node2D {
 	void build_light_frame();
 	void update_light_backdrop(const LightArea &p_area);
 	void hide_light_backdrop();
+	void render_light_frame(const LightArea &p_area);
+	void update_light_overlay(const LightArea &p_area);
+	void hide_light_overlay();
+	void free_light_overlay();
 	void reset_light_stats();
 
 protected:

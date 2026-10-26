@@ -3,10 +3,12 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 
 #include <godot_cpp/classes/image.hpp>
 #include <godot_cpp/classes/rendering_server.hpp>
 #include <godot_cpp/classes/scene_tree.hpp>
+#include <godot_cpp/classes/texture2drd.hpp>
 #include <godot_cpp/classes/time.hpp>
 #include <godot_cpp/classes/viewport.hpp>
 #include <godot_cpp/core/class_db.hpp>
@@ -14,6 +16,8 @@
 #include <godot_cpp/variant/utility_functions.hpp>
 
 #include "core/rng.h"
+#include "light_renderer.h"
+#include "light_shaders.h"
 #include "pixel_character.h"
 #include "pixel_light.h"
 #include "pixel_rigid_body.h"
@@ -335,6 +339,14 @@ void PixelWorld::_notification(int p_what) {
 	particle_canvas_item = RID();
 	particle_multimesh = RID();
 	backdrop_canvas_item = RID();
+	free_light_overlay();
+	// The renderer's resources are freed on the render thread, through the same kind of call
+	// that uses them; the job keeps the renderer alive until then.
+	if (light_renderer) {
+		rs->call_on_render_thread(
+		    Callable(memnew(LightRenderJob(light_renderer, PackedByteArray(), LightArea(), 0.0f, true))));
+		light_renderer.reset();
+	}
 }
 
 void PixelWorld::create_particle_view() {
@@ -539,13 +551,23 @@ void PixelWorld::build_light_frame() {
 	if (!lighting_enabled || !rs || !rs->get_rendering_device() || !visible_rect(visible)) {
 		reset_light_stats();
 		hide_light_backdrop();
+		hide_light_overlay();
 		return;
 	}
-	const LightArea area = light_area(visible.position.x, visible.position.y, visible.size.x,
-	                                  visible.size.y, light_margin, LIGHT_SNAP);
+	// Pass the view as a rect with a snapped size and an aligned origin: the lit area's size then
+	// only changes when the view does (zoom, resize), so scrolling never has to hide the overlay
+	// for a frame, while the margin still grows it out to snapped boundaries.
+	const float snap = (float)LIGHT_SNAP;
+	const int vis_w = 2 * LIGHT_SNAP * (int)std::ceil(visible.size.x / (2.0f * LIGHT_SNAP));
+	const int vis_h = 2 * LIGHT_SNAP * (int)std::ceil(visible.size.y / (2.0f * LIGHT_SNAP));
+	const float vis_x = std::floor((visible.position.x + visible.size.x * 0.5f) / snap) * snap - vis_w * 0.5f;
+	const float vis_y = std::floor((visible.position.y + visible.size.y * 0.5f) / snap) * snap - vis_h * 0.5f;
+	const LightArea area =
+	    light_area(vis_x, vis_y, (float)vis_w, (float)vis_h, light_margin, LIGHT_SNAP);
 	if (area.w <= 0 || area.h <= 0) {
 		reset_light_stats();
 		hide_light_backdrop();
+		hide_light_overlay();
 		return;
 	}
 
@@ -576,6 +598,8 @@ void PixelWorld::build_light_frame() {
 	    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
 	light_ran_this_frame = true;
 	update_light_backdrop(area);
+	render_light_frame(area);
+	light_gpu_ms = light_renderer ? light_renderer->gpu_ms() : 0.0;
 }
 
 // The air between the chunks needs something to light: one rect behind everything, redrawn
@@ -612,6 +636,146 @@ void PixelWorld::hide_light_backdrop() {
 	RenderingServer *rs = RenderingServer::get_singleton();
 	if (rs && backdrop_canvas_item.is_valid()) rs->canvas_item_set_visible(backdrop_canvas_item, false);
 	backdrop_visible = false;
+}
+
+// Queues one frame of the GPU pass. The job holds the renderer by shared_ptr and the texels by
+// value, so a queued call stays valid even if this node dies first.
+void PixelWorld::render_light_frame(const LightArea &p_area) {
+	RenderingServer *rs = RenderingServer::get_singleton();
+	if (!rs) return;
+	if (light_overlay_broken) {
+		hide_light_overlay();
+		return;
+	}
+	if (!light_renderer) light_renderer = std::make_shared<LightRenderer>();
+	if (light_renderer->state() == LightRenderer::STATE_FAILED) {
+		light_overlay_broken = true;
+		hide_light_overlay();
+		return;
+	}
+	// light_texels keeps its own allocation; the job's copy is what the render thread reads.
+	PackedByteArray texels;
+	texels.resize(light_texels.size());
+	memcpy(texels.ptrw(), light_texels.ptr(), (size_t)light_texels.size());
+	rs->call_on_render_thread(
+	    Callable(memnew(LightRenderJob(light_renderer, texels, p_area, bloom_threshold, false))));
+	update_light_overlay(p_area);
+}
+
+// Two canvas items over the lit area: one multiplies by ambient + light, one adds bloom. The
+// texture wrappers are re-pointed when the render thread recreates them, and the overlay is
+// hidden for that one frame so a stale texture is never stretched over a new area.
+void PixelWorld::update_light_overlay(const LightArea &p_area) {
+	RenderingServer *rs = RenderingServer::get_singleton();
+	if (!rs || !light_renderer) return;
+
+	if (!light_texture.is_valid()) {
+		light_texture.instantiate();
+		bloom_texture.instantiate();
+		light_shader = rs->shader_create();
+		rs->shader_set_code(light_shader, LIGHT_OVERLAY_SHADER);
+		light_material = rs->material_create();
+		rs->material_set_shader(light_material, light_shader);
+		bloom_shader = rs->shader_create();
+		rs->shader_set_code(bloom_shader, BLOOM_OVERLAY_SHADER);
+		bloom_material = rs->material_create();
+		rs->material_set_shader(bloom_material, bloom_shader);
+		for (bool bloom : { false, true }) {
+			const RID item = rs->canvas_item_create();
+			rs->canvas_item_set_parent(item, get_canvas_item());
+			rs->canvas_item_set_z_index(item, bloom ? 4001 : 4000);
+			rs->canvas_item_set_z_as_relative_to_parent(item, false);
+			rs->canvas_item_set_default_texture_filter(item, RenderingServer::CANVAS_ITEM_TEXTURE_FILTER_LINEAR);
+			rs->canvas_item_set_material(item, bloom ? bloom_material : light_material);
+			rs->canvas_item_set_visible(item, false);
+			if (bloom) {
+				bloom_canvas_item = item;
+			} else {
+				light_canvas_item = item;
+			}
+		}
+	}
+
+	const int generation = light_renderer->texture_generation();
+	const bool new_textures = generation != light_texture_generation;
+	if (new_textures) {
+		light_texture_generation = generation;
+		if (generation <= 0) {  // the render thread has not made the textures yet
+			hide_light_overlay();
+			return;
+		}
+		light_texture->set_texture_rd_rid(light_renderer->light_rd());
+		bloom_texture->set_texture_rd_rid(light_renderer->bloom_rd());
+	}
+
+	// The rects map the lit area in world cells onto the textures: the world-local rect times the
+	// canvas transform is exactly one texel per cell.
+	const auto rebuild_rects = [&]() {
+		const Rect2 rect((float)p_area.x0, (float)p_area.y0, (float)p_area.w, (float)p_area.h);
+		const Rect2 light_region(0.0f, 0.0f, (float)p_area.w, (float)p_area.h);
+		// The bloom texture is the light output at a quarter resolution.
+		const Rect2 bloom_region(0.0f, 0.0f, (float)((p_area.w + 3) / 4), (float)((p_area.h + 3) / 4));
+		rs->canvas_item_clear(light_canvas_item);
+		rs->canvas_item_add_texture_rect_region(light_canvas_item, rect, light_texture->get_rid(), light_region);
+		rs->canvas_item_clear(bloom_canvas_item);
+		rs->canvas_item_add_texture_rect_region(bloom_canvas_item, rect, bloom_texture->get_rid(), bloom_region);
+	};
+
+	// A new lit-area size has not been rendered into the texture yet, so the overlay is hidden for
+	// this frame: a stale texture is never stretched over a different area. In practice the render
+	// thread has already recreated the textures by now (same frame), so this is the one frame the
+	// plan allows; it also covers the race where it has not.
+	const bool resized = p_area.w != light_overlay_area.w || p_area.h != light_overlay_area.h;
+	if (new_textures || resized) {
+		light_overlay_area = p_area;
+		rebuild_rects();
+		hide_light_overlay();
+		return;
+	}
+
+	rs->material_set_param(light_material, "ambient", ambient);
+	rs->material_set_param(light_material, "light_exposure", light_exposure);
+	rs->material_set_param(bloom_material, "bloom_strength", bloom_strength);
+	if (p_area.x0 != light_overlay_area.x0 || p_area.y0 != light_overlay_area.y0) {
+		light_overlay_area = p_area;
+		rebuild_rects();
+	}
+	if (!light_overlay_visible) {
+		rs->canvas_item_set_visible(light_canvas_item, true);
+		rs->canvas_item_set_visible(bloom_canvas_item, true);
+		light_overlay_visible = true;
+	}
+}
+
+void PixelWorld::hide_light_overlay() {
+	if (!light_overlay_visible) return;
+	RenderingServer *rs = RenderingServer::get_singleton();
+	if (rs) {
+		if (light_canvas_item.is_valid()) rs->canvas_item_set_visible(light_canvas_item, false);
+		if (bloom_canvas_item.is_valid()) rs->canvas_item_set_visible(bloom_canvas_item, false);
+	}
+	light_overlay_visible = false;
+}
+
+void PixelWorld::free_light_overlay() {
+	RenderingServer *rs = RenderingServer::get_singleton();
+	if (rs) {
+		for (RID *item : { &light_canvas_item, &bloom_canvas_item, &light_material, &bloom_material,
+		                   &light_shader, &bloom_shader })
+			if (item->is_valid()) rs->free_rid(*item);
+	}
+	light_canvas_item = RID();
+	bloom_canvas_item = RID();
+	light_material = RID();
+	bloom_material = RID();
+	light_shader = RID();
+	bloom_shader = RID();
+	if (light_texture.is_valid()) light_texture->set_texture_rd_rid(RID());
+	if (bloom_texture.is_valid()) bloom_texture->set_texture_rd_rid(RID());
+	light_texture.unref();
+	bloom_texture.unref();
+	light_overlay_visible = false;
+	light_texture_generation = -1;
 }
 
 void PixelWorld::upload_dirty_chunks() {
