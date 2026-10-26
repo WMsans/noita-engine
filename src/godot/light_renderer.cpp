@@ -30,6 +30,8 @@ int pow4(int p_level) {
 }
 
 // Rays per direction quadruple per cascade, capped where the march stops paying for itself.
+// shortcut: 64 rays per direction at the finest cascades; raise it if near-field shadow noise
+// is worth the extra GPU time.
 int rays_for_level(int p_level) {
 	if (p_level == 0) return 0;
 	return MIN(pow4(p_level - 1), 64);
@@ -429,9 +431,9 @@ void LightRenderer::render(const PackedByteArray &p_texels, const LightArea &p_a
 			return;
 		}
 	}
+	rd->capture_timestamp("light_begin");
 	rd->texture_update(input_texture, 0, p_texels);
 
-	rd->capture_timestamp("light_begin");
 	const int64_t list = rd->compute_list_begin();
 	if (list == RenderingDevice::INVALID_ID) {
 		rd->capture_timestamp("light_end");

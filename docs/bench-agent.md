@@ -122,7 +122,7 @@ Plan 6 on this M1 (the committed `bench/results/macos-m1-plan6.json`; **red** on
 see the status section — do not copy it as a target):
 
 ```
-bench world: 1680 frames (+120 warm-up) | sim 4.46 ms mean / 7.44 p99 | frame 11.25 / 20.89 ms | stream 0.08 / 0.39 ms | gen 0.66 ms | chunks 6099 | cells 345357 | view-missing 0 frames | particles 312 / visual 43, 0.033 ms mean / 0.075 p99, dropped 1883 | bodies 53 (awake 42), physics 0.15 + shapes 0.82 + stamp 0.41 = 1.38 ms mean / 2.60 p99, 3.8 builds | creatures 43, 0.159 ms mean / 0.230 p99 | light 0.62 ms cpu mean / 1.00 p99 | light 0.000 ms gpu mean / 0.000 p99 (timestamps stubbed), spots 5.3 | budget FAIL | bench/results/...
+bench world: 1680 frames (+120 warm-up) | sim 4.45 ms mean / 7.42 p99 | frame 11.22 / 20.83 ms | stream 0.08 / 0.38 ms | gen 0.67 ms | chunks 6099 | cells 345006 | view-missing 0 frames | particles 314 / visual 42, 0.032 ms mean / 0.076 p99, dropped 1777 | bodies 53 (awake 42), physics 0.15 + shapes 0.82 + stamp 0.41 = 1.38 ms mean / 2.65 p99, 3.8 builds | creatures 43, 0.158 ms mean / 0.231 p99 | light 0.63 ms cpu mean / 1.01 p99 | light 0.000 ms gpu mean / 0.000 p99 (timestamps stubbed), spots 5.3 | budget FAIL | bench/results/...
 ```
 
 For reference, the same scene with `lighting_enabled = false` reproduces Plan 5's committed run
@@ -265,26 +265,28 @@ Plan 5 — `bench/results/macos-m1-plan5.json`: `budget_pass: true`, `sim_ms_mea
 run predates the lighting pass.
 
 Plan 6 — `bench/results/macos-m1-plan6.json`: **`budget_pass: false`** on this M1, and it is the
-one guardrail this plan did not clear. Every gate passes except `frame_ms_p99`: 20.89 ms against
-the 16.6 ms budget (three runs: 20.75, 21.16, 20.89). The lighting gates themselves pass —
-`light_cpu_ms_mean` 0.62 ms (budget 1.0, p99 1.00), `light_spots_mean` 5.3 (floor 1), and
+one guardrail this plan did not clear. Every gate passes except `frame_ms_p99`: 20.83 ms against
+the 16.6 ms budget (earlier runs: 20.75, 21.16, 20.89). The lighting gates themselves pass —
+`light_cpu_ms_mean` 0.63 ms (budget 1.0, p99 1.01), `light_spots_mean` 5.3 (floor 1), and
 `light_gpu_ms_supported: false` with `light_gpu_ms_stubbed: true` because Metal cannot report GPU
-time, so the only GPU signal is the frame time. `sim_ms_mean` 4.46, `stream_ms_mean` 0.08,
-`frame_ms_mean` 11.25, `cells_updated_mean` 345357, `view_missing_frames` 0, `body_ms_mean` 1.38,
-`creature_ms_mean` 0.159.
+time, so the only GPU signal is the frame time. `sim_ms_mean` 4.45, `stream_ms_mean` 0.08,
+`frame_ms_mean` 11.22, `cells_updated_mean` 345006, `view_missing_frames` 0, `body_ms_mean` 1.38,
+`creature_ms_mean` 0.158.
 
 The light pass is the whole difference: the same scene with `lighting_enabled = false` reproduces
 Plan 5 (frame 9.98 / 15.01), and the pass alone — bench workload, torch and lava removed — gives
 frame 11.22 / 20.95. It scales with the lit area, which is the view plus `light_margin` 240
 (992×768 at the default window): `light_margin = 0` (480×256) gives 10.31 / 16.61, `light_margin =
-120` gives 10.68 / 18.25. So the pass costs about 1.3 ms of frame time on average (inside the
-plan's 3 ms light + bloom GPU budget) but adds ~6 ms at p99, and Plan 5's baseline was already at
-15.1 ms of the 16.6 ms budget. Plan 5's numbers were measured before the light pass existed, so
-this is new GPU work, not a regression in the simulator.
+120` gives 10.68 / 18.25. So the pass adds about 1.3 ms of frame time on average, but that delta
+is unmeasured GPU time on Metal: the frame time cannot separate the light pass from everything
+else the GPU does, so the plan's 3 ms light + bloom GPU budget cannot be checked there. It adds
+~6 ms at p99, and Plan 5's baseline was already at 15.1 ms of the 16.6 ms budget. Plan 5's
+numbers were measured before the light pass existed, so this is new GPU work, not a regression in
+the simulator.
 
 The plan's fallbacks for a GPU budget miss (half resolution, per-dirty-chunk inputs, then a
 GPU-side input pass) each need the user's go-ahead and none is implemented. Note that the first
-two fallbacks cut the CPU input cost (already 0.62 ms of the 1 ms budget, upload copy included)
+two fallbacks cut the CPU input cost (already 0.63 ms of the 1 ms budget, upload copy included)
 and half resolution is the one that would touch this failure: at a quarter of the texels
 (`light_margin = 0`) the p99 lands at 16.6 ms, right on the budget.
 

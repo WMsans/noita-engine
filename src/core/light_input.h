@@ -24,6 +24,14 @@ struct LightArea {
 // The visible rect grown by `margin` on every side, then outward to multiples of `snap`.
 LightArea light_area(float vis_x, float vis_y, float vis_w, float vis_h, int margin, int snap);
 
+// The lit area is view + margin, so a far zoom-out asks for an unbounded buffer. 1440p with the
+// default margin is 3040x1920 (5.8M cells), so this cap covers it.
+// shortcut: 8M cells (32 MB RGBA8 input) / 8192 per side; raise these if a game needs 4K or a
+// wider default margin.
+constexpr int64_t LIGHT_AREA_MAX_CELLS = 8 * 1024 * 1024;
+constexpr int LIGHT_AREA_MAX_SIDE = 8192;
+bool light_area_fits(const LightArea& area);
+
 struct LightPalette {
 	std::vector<LightTexel> mats;  // index = MatId
 	LightTexel fire;               // a unused
@@ -39,7 +47,7 @@ struct LightSpot {
 	float x, y, r, g, b, energy, radius;
 };
 
-int spot_source_radius(float radius);  // clamp(lround(radius / 6), 1, 8)
+int spot_source_radius(float radius);  // clamp(lround(radius / 6), 1, 32)
 
 // Adds colour·energy (packed) to rgb of every texel within the source radius of the spot,
 // saturating at 255; opacity untouched. Clipped to the area; non-finite spots skipped.

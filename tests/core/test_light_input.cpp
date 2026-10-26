@@ -81,6 +81,14 @@ TEST_CASE("light area covers view plus margin, snapped") {
 	CHECK(b.h == a.h);
 }
 
+TEST_CASE("lit area is capped") {
+	CHECK(light_area_fits({0, 0, 992, 768}));
+	CHECK(light_area_fits({0, 0, 3040, 1920}));  // 1440p plus the default margin
+	CHECK_FALSE(light_area_fits({0, 0, 0, 768}));
+	CHECK_FALSE(light_area_fits({0, 0, 8193, 1}));
+	CHECK_FALSE(light_area_fits({0, 0, 8192, 8192}));  // 67M cells, over the total cap
+}
+
 TEST_CASE("materials pack emission and opacity") {
 	LightTable lt;
 	WorldGrid grid(lt.table, 1);
@@ -199,7 +207,8 @@ TEST_CASE("spots at the edge or nonsense are safe") {
 
 	CHECK(spot_source_radius(16.0f) == 3);
 	CHECK(spot_source_radius(0.0f) == 1);
-	CHECK(spot_source_radius(1e6f) == 8);
+	CHECK(spot_source_radius(48.0f) == 8);  // the tuned torch look
+	CHECK(spot_source_radius(1e6f) == 32);  // larger radii keep reaching farther
 	CHECK(spot_source_radius(-4.0f) == 1);
 
 	// Half outside: only the part inside the area is lit.
@@ -213,8 +222,8 @@ TEST_CASE("spots at the edge or nonsense are safe") {
 	add_light_spots(area, {LightSpot{20.5f, (float)area.y0 - 100.0f, 1, 1, 1, 2.0f, 16.0f}}, out);
 	CHECK(std::memcmp(out, snapshot.data(), n * sizeof(LightTexel)) == 0);
 
-	// A radius of 10^6 clamps to a source disc of 8 cells.
-	add_light_spots(area, {LightSpot{32.5f, 16.5f, 1, 1, 1, 2.0f, 1e6f}}, out);
+	// The default radius 48 maps to a source disc of 8 cells.
+	add_light_spots(area, {LightSpot{32.5f, 16.5f, 1, 1, 1, 2.0f, 48.0f}}, out);
 	CHECK(out[(size_t)16 * area.w + 32].r > 0);
 	CHECK(out[(size_t)16 * area.w + 20].r == 0);  // 12 cells away, outside the 8 cell disc
 

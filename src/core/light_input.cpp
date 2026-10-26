@@ -70,6 +70,12 @@ LightArea light_area(float vis_x, float vis_y, float vis_w, float vis_h, int mar
 	return a;
 }
 
+bool light_area_fits(const LightArea& area) {
+	return area.w > 0 && area.h > 0 && area.w <= LIGHT_AREA_MAX_SIDE &&
+	       area.h <= LIGHT_AREA_MAX_SIDE &&
+	       (int64_t)area.w * area.h <= LIGHT_AREA_MAX_CELLS;
+}
+
 LightPalette LightPalette::build(const MaterialTable& table, float fire_r, float fire_g,
                                 float fire_b, float fire_energy) {
 	LightPalette pal;
@@ -105,11 +111,12 @@ void build_light_inputs(const WorldGrid& grid, const LightPalette& palette,
 
 // ponytail: radius -> source disc is a tuning knob, not physics. In 2D radiance cascades a
 // bigger source reaches farther; tuned at the Task 5 checkpoint against "a torch at the default
-// radius (48) lights a cave room about 40 cells across".
+// radius (48) lights a cave room about 40 cells across". The 32 cap keeps radii above ~192
+// meaningful instead of all collapsing onto one disc.
 int spot_source_radius(float radius) {
 	float r = radius / 6.0f;
 	if (!(r >= 1.0f)) r = 1.0f;  // also catches NaN
-	if (r > 8.0f) r = 8.0f;
+	if (r > 32.0f) r = 32.0f;
 	return (int)std::lround(r);
 }
 

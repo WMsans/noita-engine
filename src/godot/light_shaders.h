@@ -71,6 +71,8 @@ layout(set = 0, binding = 0) uniform sampler2D input_tex;
 layout(rgba16f, set = 0, binding = 1) uniform image2D dst;
 layout(rgba16f, set = 0, binding = 2) uniform image2D upper;
 
+// Must match EMISSION_RANGE in src/core/light_input.h: the CPU packs e / EMISSION_RANGE and
+// this shader multiplies the texel back up.
 const float EMISSION_RANGE = 4.0;
 const float PI = 3.14159265358979;
 

@@ -564,7 +564,17 @@ void PixelWorld::build_light_frame() {
 	const float vis_y = std::floor((visible.position.y + visible.size.y * 0.5f) / snap) * snap - vis_h * 0.5f;
 	const LightArea area =
 	    light_area(vis_x, vis_y, (float)vis_w, (float)vis_h, light_margin, LIGHT_SNAP);
-	if (area.w <= 0 || area.h <= 0) {
+	if (!light_area_fits(area)) {
+		reset_light_stats();
+		hide_light_backdrop();
+		hide_light_overlay();
+		return;
+	}
+
+	light_area_now = area;
+	const int64_t bytes = (int64_t)area.w * area.h * 4;
+	light_texels.resize(bytes);
+	if (light_texels.size() != bytes) {  // resize failed: never write through a null pointer
 		reset_light_stats();
 		hide_light_backdrop();
 		hide_light_overlay();
@@ -572,8 +582,6 @@ void PixelWorld::build_light_frame() {
 	}
 
 	const auto start = std::chrono::steady_clock::now();
-	light_area_now = area;
-	light_texels.resize((int64_t)area.w * area.h * 4);
 	LightTexel *texels = reinterpret_cast<LightTexel *>(light_texels.ptrw());
 	build_light_inputs(*grid, light_palette, area, texels, pool.get());
 
@@ -667,7 +675,8 @@ void PixelWorld::render_light_frame(const LightArea &p_area, const PackedByteArr
 
 // Two canvas items over the lit area: one multiplies by ambient + light, one adds bloom. The
 // texture wrappers are re-pointed when the render thread recreates them, and the overlay is
-// hidden for that one frame so a stale texture is never stretched over a new area.
+// hidden until the renderer has rendered this exact area, so a stale texture is never stretched
+// over a new area.
 void PixelWorld::update_light_overlay(const LightArea &p_area) {
 	RenderingServer *rs = RenderingServer::get_singleton();
 	if (!rs || !light_renderer) return;
@@ -725,9 +734,10 @@ void PixelWorld::update_light_overlay(const LightArea &p_area) {
 		rs->canvas_item_add_texture_rect_region(bloom_canvas_item, rect, bloom_texture->get_rid(), bloom_region);
 	};
 
-	// Show only a texture the render thread rendered for this exact area: a resize or zoom costs
-	// one hidden frame, and a stale texture can never be stretched over a different area because
-	// the render is what makes the areas match (one atomic check, no frame counting).
+	// Show only a texture the render thread rendered for this exact area: a resize or zoom is
+	// hidden until the renderer has rendered this exact area, and a stale texture can never be
+	// stretched over a different area because the render is what makes the areas match (one
+	// atomic check, no frame counting).
 	if (generation <= 0 || !rendered) {
 		hide_light_overlay();
 		return;
