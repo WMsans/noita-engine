@@ -5,7 +5,8 @@ commands are the same on both platforms; `./build.sh` picks `macos`/`linux` and 
 from `uname` and passes them to `scons` explicitly. Copy-pasteable.
 
 Checkpoints: `bench/results/macos-m1-plan1.json` through `macos-m1-plan6.json` are done on
-the Apple M1 machine (Plan 6 is red on the frame gate; see the status section). The Linux Iris Xe
+the Apple M1 machine (Plan 6 was red on the frame gate until the 2026-10-26 fixes; see the status
+section). The Linux Iris Xe
 machine owes `linux-irisxe-plan1.json` and `linux-irisxe-plan6.json`. Each plan's `bench_world`
 run replaces the one before: same scene, same camera path, the earlier workload plus the new one
 (Plan 3 explosions, Plan 4 bodies, Plan 5 creatures, Plan 6 lighting), and the earlier gates plus
@@ -127,16 +128,14 @@ bench: 1680 frames (+120 warm-up) | sim 3.53 ms mean / 5.09 p99 | frame 8.35 / 1
 That line is the committed artifact, so a fresh run is compared against it; a re-run on an
 otherwise idle M1 lands within noise (sim p99 5.14, frame p99 10.56, upload 1.04).
 
-Plan 6 on this M1 (the committed `bench/results/macos-m1-plan6.json`; **red** on the frame gate,
-see the status section — do not copy it as a target):
+Plan 6 on this M1 (the committed `bench/results/macos-m1-plan6.json`):
 
 ```
-bench world: 1680 frames (+120 warm-up) | sim 4.45 ms mean / 7.44 p99 | frame 11.21 / 20.96 ms | stream 0.08 / 0.40 ms | gen 0.65 ms | chunks 6099 | cells 345160 | view-missing 0 frames | particles 316 / visual 43, 0.033 ms mean / 0.077 p99, dropped 1920 | bodies 53 (awake 42), physics 0.15 + shapes 0.82 + stamp 0.41 = 1.38 ms mean / 2.53 p99, 3.8 builds | creatures 43, 0.158 ms mean / 0.233 p99 | light 0.52 ms cpu mean / 0.90 p99 | light 0.000 ms gpu mean / 0.000 p99 (timestamps stubbed), spots 5.3 | budget FAIL | bench/results/...
+bench world: 1680 frames (+120 warm-up) | sim 3.12 ms mean / 5.15 p99 | frame 8.80 / 11.05 ms | stream 0.09 / 0.41 ms | gen 0.89 ms | chunks 6098 | cells 344807 | view-missing 0 frames | particles 319 / visual 43, 0.037 ms mean / 0.081 p99, dropped 1819 | bodies 53 (awake 42), physics 0.16 + shapes 0.79 + stamp 0.43 = 1.37 ms mean / 2.61 p99, 3.8 builds | creatures 43, 0.170 ms mean / 0.255 p99 | light 0.55 ms cpu mean / 0.92 p99 | light 0.000 ms gpu mean / 0.000 p99 (timestamps stubbed), spots 5.3 | budget pass | bench/results/...
 ```
 
-For reference, the same scene with `lighting_enabled = false` reproduces Plan 5's committed run
-(frame 9.98 / 15.01), so the lighting pass is the whole difference: about +1.3 ms of frame time on
-average and +6 ms at p99 on this machine.
+`--light-resolution=2` (the committed `macos-m1-plan6-halfres.json`) lands at frame 8.68 / 11.08 ms.
+Two runs of each agreed within 0.1 ms at p99.
 
 `frames` in the JSON is the number of sampled frames, i.e. `--frames` minus the 120 warm-up
 frames. `frame`/`sim`/`upload`/`stream` `*_ms_mean` and `*_p99` are over those samples; p99 is
@@ -144,7 +143,7 @@ the nearest-rank 99th percentile, not the maximum. `gen_ms_mean` is the mean ove
 that generated anything, `chunks_generated` is cumulative, `chunks_simulated_mean` is how many
 chunks were awake per frame, and `view_missing_frames` counts frames with a hole in the view.
 `worker_threads` is the node's configured value; `-1` means auto (`JobPool::default_workers()`:
-`min(4, hardware_concurrency - 1)`). `particle_ms_*` is the particle step per tick,
+`min(8, hardware_concurrency - 1)`, so 7 on the M1). `particle_ms_*` is the particle step per tick,
 `particles_material_mean` / `particles_visual_mean` the particles in flight per frame, and
 `particles_dropped` the cumulative material particles that found nowhere to land.
 `bodies_mean` / `bodies_awake_mean` are rigid bodies alive / awake per frame;
@@ -242,11 +241,17 @@ The branch was already checked out here and is not pushed, so step 1's `git fetc
 `173 | 173 passed`, `Status: SUCCESS!`,
 `OK: ALL GODOT TESTS PASSED.` (Plan 6 re-ran it; Plans 1–5 saw 152 core cases, Plan 6 161, the
 half-resolution follow-up added 4 core cases and 1 Godot case, the half-resolution review fix
-added 2 more, the per-dirty-chunk inputs added 4, and their review fix added 1 — 173.)
+added 2 more, the per-dirty-chunk inputs added 4, and their review fix added 1 — 173. The
+2026-10-26 frame-gate fix added 1 Godot case, `test_body_texture_change_rebuilds`.)
 
 Plan 1 — `bench/results/macos-m1-plan1.json`: `budget_pass: true`, `sim_ms_mean` 3.53 ms
 (budget 6.0), `sim_ms_p99` 5.09 ms, `frame_ms_mean` 8.35 ms, `upload_ms_mean` 1.02 ms,
 `cells_updated_mean` 108384. Three runs spread 3.48–3.55 ms, so this is inside run-to-run noise.
+That JSON predates the 2026-10-26 changes and was not re-committed. On the current code the arena
+reads `sim_ms_mean` 3.80–3.87 and `upload_ms_mean` 0.29, against 3.69–3.72 and 0.66 for the
+unchanged code re-run the same day, so sim + upload went from 4.34–4.39 to 4.09–4.17 ms. The
+chunk colour conversion now runs on the sim's pool right after the tick, and part of its cost shows
+up in the next tick's `sim_ms` (a serial table conversion reads 3.63–3.66 sim / 0.54 upload).
 
 Plan 2 — `bench/results/macos-m1-plan2.json`: `budget_pass: true`, `sim_ms_mean` 4.39 ms
 (budget 6.0), `sim_ms_p99` 7.22 ms, `stream_ms_mean` 0.07 ms and `stream_ms_p99` 0.36 ms
@@ -278,8 +283,14 @@ Plan 5 — `bench/results/macos-m1-plan5.json`: `budget_pass: true`, `sim_ms_mea
 `particles_dropped` 1640 (creatures knocking sand out of piles add particles; not gated). That
 run predates the lighting pass.
 
-Plan 6 — `bench/results/macos-m1-plan6.json`: **`budget_pass: false`** on this M1, and it is the
-one guardrail this plan did not clear. Every gate passes except `frame_ms_p99`: 20.96 ms against
+Plan 6 — `bench/results/macos-m1-plan6.json`: **`budget_pass: true`** since the 2026-10-26
+frame-gate fix (the last section below), at frame 8.80 / 11.05 ms, sim 3.12 / 5.15 ms, upload 0.60
+ms, `light_cpu_ms_mean` 0.55. The paragraphs from here up to that section are the history of the
+red run and its first two fallbacks. **Their "GPU-bound" diagnosis was wrong**: that section
+has the measurements.
+
+Before the fix, Plan 6 was **`budget_pass: false`** on this M1. Every gate passed except
+`frame_ms_p99`: 20.96 ms against
 the 16.6 ms budget (earlier runs: 20.83, 20.75, 21.16, 20.89, 20.91, 21.14, 21.08). The lighting
 gates themselves pass — `light_cpu_ms_mean` 0.52 ms (budget 1.0, p99 0.90), `light_spots_mean` 5.3
 (floor 1), and `light_gpu_ms_supported: false` with `light_gpu_ms_stubbed: true` because Metal
@@ -339,11 +350,51 @@ creatures already dirty most of the ~192 chunks in view, so the repaint covers c
 area anyway. A frame whose dirty chunks cover half the area or more costs about the same either way.
 The upload copy is gone from the steady state, which is where the p99 gain comes from.
 
-This fallback does not clear the failing gate on its own, and it is not meant to: `frame_ms_p99`
-is **GPU-bound** (the frame time cannot separate the light pass from the rest of the GPU work on
-Metal), so shaving CPU input-build time leaves it where it was: 20.85 ms default, 17.22 ms at half
-resolution, both over the 16.6 ms budget. The frame means do not move either (11.21 and 10.68 ms).
-What would move that number is the third fallback, the GPU-side input pass.
+This fallback did not clear the failing gate on its own: 20.85 ms default, 17.22 ms at half
+resolution, both over the 16.6 ms budget. The conclusion drawn at the time, that `frame_ms_p99`
+was GPU-bound and needed the GPU-side input pass, was an inference from Metal's missing timestamps
+and turned out to be wrong; see the next section.
+
+Plan 6 frame-gate fix (2026-10-26). Measured first, with a temporary per-frame trace of the main
+loop phases (script + sim step, `PixelWorld._process`, draw, Godot's physics step) and a GPU
+microbench of the real light shaders on a local `RenderingDevice` (submit + sync around 20
+repeated dispatches per stage, since Metal stubs timestamps):
+
+- The light pass is not GPU-bound. Its GPU time is about 1.3–1.8 ms at half resolution (496×384:
+  0.9–1.4 ms compute from caves to open air, plus 0.3–0.5 ms input upload) and 5–7 ms at full
+  resolution (992×768), with cascade 4 the costliest stage. It runs alongside a ~10 ms CPU frame,
+  and the draw phase showed no waiting for the GPU. On the CPU it costs `light_cpu_ms` plus about
+  0.08 ms to record and submit.
+- The p99 frames were Godot physics steps right after a body spawn (bench_world drops 10 every
+  10 frames). Each new `PixelRigidBody` joins on its first physics tick, and `build_def` called
+  `Texture2D::get_image()`, which on an RD texture is a GPU readback that waits for every frame in
+  flight: 0.45–0.5 ms each at half resolution, 1.26 ms mean (p90 3.2) at full, so 3–6 ms per spawn
+  frame, longer when the light pass is queued. Every one of the 23 frames over 16.6 ms at half
+  resolution was such a frame; taking that step out of the trace gave p99 14.17 ms and none over.
+
+Fixes, each measured on its own at half resolution, frame mean / p99 in ms:
+
+1. `PixelRigidBody` decodes each texture to RGBA8 once (keyed by the texture instance) and again
+   only after the texture emits `changed`: 10.70 / 17.2 → 10.39 / 14.1, and full resolution
+   11.25 / 21.0 → 10.58 / 14.4. The first body of each texture still pays one readback.
+2. Chunk uploads: about 160 chunks are dirty per frame, and the float `cell_color` conversion was
+   1.34 of the 1.6 ms (`texture_2d_update` only 0.18, so batching the RenderingServer calls into
+   an atlas could save at most that). The conversion is now a precomputed RGBA8 table per
+   (material, burning, shade), byte-identical to `cell_color` (checked over 304 659 chunk
+   uploads), run over the pool: `upload_ms_mean` 1.62 → 0.48, frame 10.41 / 14.09 → 9.63 / 13.15.
+3. Sim tail: the tick's wall time tracks its total cell work (correlation 1.00), parallel
+   efficiency was already 0.91–0.96 and no single chunk serialised a phase. The tail ticks simply
+   visit more cells (about 550k against a 345k mean, on two stretches of the camera path), at about
+   46 ns of thread time per visited cell. Profiling showed `Neighborhood::cell`/`mark` and
+   `MaterialTable::get`/`reaction` as separate, non-inlined calls in that loop (about 43% of busy
+   samples). Moving them into their headers took sim from 4.45 / 7.44 to 3.70 / 6.2. Raising
+   `JobPool::default_workers()` from `min(4, n - 1)` to `min(8, n - 1)` (the M1's efficiency cores
+   still help: 4 → 7 workers was 3.70 → 3.12 mean) gives 3.12 / 5.08. The stream gates hold
+   (0.08 / 0.33 ms, `view_missing` 0); `gen_ms_mean` rises from 0.83 to about 0.95 with more
+   threads sharing the cores.
+
+Result: 8.80 / 11.05 ms at default resolution and 8.68 / 11.08 ms at half, both `budget_pass:
+true`, against 11.21 / 20.96 and 10.68 / 17.22 before. The GPU-side input pass is not needed.
 
 The Linux Iris Xe numbers are still an open hand-off: `bench/results/linux-irisxe-plan1.json`
 and `linux-irisxe-plan6.json` do not exist yet. Its 20 hardware threads and its GPU are the two
