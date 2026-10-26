@@ -27,10 +27,11 @@ protected:
 	void _notification(int p_what);
 	virtual int join(PixelWorld &p_world) = 0;  // the handle, or -1 after reporting why
 	b2BodyId body() const;  // b2_nullBodyId unless joined to a live world
+	// Joining runs on the internal physics tick: a script extending the node with its own
+	// _physics_process replaces the virtual one, so it must not live there.
+	void try_join();
 
 public:
-	void _ready() override;
-	void _physics_process(double p_delta) override;
 
 	int get_handle() const { return handle; }
 	PixelWorld *get_world() const;

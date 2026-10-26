@@ -274,3 +274,71 @@ TEST_CASE("a creature walks down a staircase") {
 	CHECK(std::fabs(p.y + 8 - (102 + 2 * std::min(step, 9))) <= 2.5f);  // on the stair under it
 	CHECK(physics.creature_state(c).floor);
 }
+
+// --- review fixes ------------------------------------------------------------------------------
+
+TEST_CASE("a creature pushed into a wall by another creature is not overlapped") {
+	Arena a;
+	phystest::fill(a.grid, 150, 0, 152, 100, a.id("rock"));
+	PhysicsWorld physics(a.grid, GRAVITY);
+	const int enemy = physics.add_creature(creature_at(140, 92));
+	const int player = physics.add_creature(creature_at(110, 92));
+	phystest::run(physics, 10);
+	for (int i = 0; i < 120; ++i) {
+		drive(physics, player, 80);
+		phystest::run(physics, 1);
+	}
+	CHECK(phystest::pos(physics, enemy).x - phystest::pos(physics, player).x >= 7.5f);
+	CHECK(phystest::pos(physics, enemy).x <= 146.01f);
+}
+
+TEST_CASE("a driven crate stops against a creature at a wall") {
+	Arena a;
+	phystest::fill(a.grid, 150, 0, 152, 100, a.id("rock"));
+	PhysicsWorld physics(a.grid, GRAVITY);
+	const int c = physics.add_creature(creature_at(140, 92));
+	const int crate = physics.add_body(phystest::box(a.t, "wood", 12, 12, 100, 94));
+	phystest::run(physics, 10);
+	for (int i = 0; i < 120; ++i) {
+		drive(physics, crate, 60);
+		phystest::run(physics, 1);
+	}
+	// crate right edge vs creature left edge
+	CHECK(phystest::pos(physics, crate).x + 6 - (phystest::pos(physics, c).x - 4) <= 0.5f);
+}
+
+TEST_CASE("walking down a slope stays on the floor") {
+	Arena a(0, 0, 256, 256, 200);
+	for (int x = 0; x < 256; ++x) phystest::fill(a.grid, x, 100 + std::max(0, x - 60), x + 1, 200, a.id("rock"));
+	PhysicsWorld physics(a.grid, GRAVITY);
+	const int c = physics.add_creature(creature_at(40, 92));
+	phystest::run(physics, 20);
+	int on_floor = 0;
+	for (int i = 0; i < 64; ++i) {
+		drive(physics, c, 60);
+		phystest::run(physics, 1);
+		on_floor += physics.creature_state(c).floor;
+	}
+	CHECK(phystest::pos(physics, c).x > 90);
+	CHECK(on_floor >= 58);
+}
+
+TEST_CASE("game code can accelerate a creature on the ground") {
+	Arena a;
+	PhysicsWorld physics(a.grid, GRAVITY);
+	const int c = physics.add_creature(creature_at(60, 92));
+	phystest::run(physics, 20);
+	for (int i = 0; i < 60; ++i) {
+		const b2Vec2 v = b2Body_GetLinearVelocity(physics.body_id(c));
+		drive(physics, c, std::min(80.0f, v.x + 300.0f / 60.0f));  // move_toward(vx, 80, 300 * dt)
+		phystest::run(physics, 1);
+	}
+	CHECK(b2Body_GetLinearVelocity(physics.body_id(c)).x >= 75.0f);
+}
+
+TEST_CASE("a creature buried deep in rock is freed") {
+	Arena a;
+	phystest::fill(a.grid, 50, 50, 70, 100, a.id("rock"));  // 34 cells above the box top
+	const GridPass r = pass(a, 60, 92, 60, 92);
+	CHECK(r.y <= 42.0f);
+}

@@ -103,13 +103,32 @@ GridPass creature_grid_pass(WorldGrid& grid, ParticlePool* pool, float x0, float
 		break;
 	}
 
-	// Buried in solid (painted over, or shoved in): rise out, up to the box's height.
-	if (any_cell(x, y, w, h, [&](int cx, int cy) { return is_solid(grid, cx, cy); }))
-		for (int k = 1; k <= h; ++k)
-			if (!any_cell(x, y - k, w, h, [&](int cx, int cy) { return is_solid(grid, cx, cy); })) {
-				y -= k;
-				break;
-			}
+	// Walking down a slope or a small drop: keep to the floor, like CharacterBody2D's floor
+	// snap, if it was on the floor and isn't moving up.
+	if (!r.floor && can_step && y1 >= y0) {
+		const int below = last_cell(y + h * 0.5f) + 1;
+		for (int row = below; row < below + step_height && !r.floor; ++row)
+			for (int cx = first_cell(x - w * 0.5f); cx <= last_cell(x + w * 0.5f) && !r.floor; ++cx)
+				if (creature_blocks(grid, cx, row)) {
+					y = (float)row - h * 0.5f;
+					r.floor = true;
+				}
+	}
+
+	// Buried in solid (painted over, or shoved in): rise out, or failing that move sideways.
+	// ponytail: bounded search (UNSTICK_UP cells up, UNSTICK_SIDE each way), linear per cell.
+	auto buried = [&](float bx, float by) {
+		return any_cell(bx, by, w, h, [&](int cx, int cy) { return is_solid(grid, cx, cy); });
+	};
+	if (buried(x, y)) {
+		constexpr int UNSTICK_UP = 64, UNSTICK_SIDE = 32;
+		bool freed = false;
+		for (int k = 1; k <= UNSTICK_UP && !freed; ++k)
+			if (!buried(x, y - k)) y -= k, freed = true;
+		for (int k = 1; k <= UNSTICK_SIDE && !freed; ++k)
+			for (int side : {-1, 1})
+				if (!freed && !buried(x + side * k, y)) x += side * k, freed = true;
+	}
 
 	// Powder inside the box (it fell in, or the box was shoved into a pile) is knocked out.
 	const MaterialTable& mt = grid.materials();

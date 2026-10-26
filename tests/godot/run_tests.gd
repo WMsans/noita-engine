@@ -473,6 +473,39 @@ func _make_character(at: Vector2) -> PixelCharacter:
 	return character
 
 
+# A script extending the node with its own _physics_process (the CharacterBody2D way) still
+# joins the world: joining must not live in the overridable callback.
+func _scripted(base: String) -> GDScript:
+	var script := GDScript.new()
+	script.source_code = "extends %s\nvar ticks := 0\nfunc _physics_process(_delta: float) -> void:\n\tticks += 1\n" % base
+	script.reload()
+	return script
+
+
+func test_script_subclasses_join_the_world() -> bool:
+	var world: PixelWorld = await _make_world()
+	var character := PixelCharacter.new()
+	character.set_script(_scripted("PixelCharacter"))
+	character.position = Vector2(0, 200)
+	root.add_child(character)
+	var body := PixelRigidBody.new()
+	body.set_script(_scripted("PixelRigidBody"))
+	body.texture = _body_texture(8, 8)
+	body.pixel_material = &"wood"
+	body.position = Vector2(40, 200)
+	root.add_child(body)
+	await _register()
+	var stats: Dictionary = world.get_stats()
+	var ticked: bool = character.ticks > 0 and body.ticks > 0
+	world.free()
+	character.free()
+	body.free()
+	if stats.creatures != 1 or stats.bodies != 1 or not ticked:
+		printerr("  scripted nodes: %d creatures, %d bodies (expected 1 and 1), scripts ticked %s" % [stats.creatures, stats.bodies, ticked])
+		return false
+	return true
+
+
 func test_character_walks_and_lands() -> bool:
 	var world: PixelWorld = await _make_world()
 	world.simulating = false

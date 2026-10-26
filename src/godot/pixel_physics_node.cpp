@@ -17,13 +17,23 @@ void PixelPhysicsNode::_bind_methods() {
 	ADD_SIGNAL(MethodInfo("left_world"));
 }
 
-void PixelPhysicsNode::_ready() { set_physics_process(true); }
-
 void PixelPhysicsNode::_notification(int p_what) {
-	if (p_what != NOTIFICATION_EXIT_TREE) return;
-	PixelWorld *world = get_world();
-	if (world && handle >= 0) world->unregister_body(handle);
-	detach();
+	switch (p_what) {
+		case NOTIFICATION_READY:
+			set_physics_process_internal(true);
+			break;
+		case NOTIFICATION_INTERNAL_PHYSICS_PROCESS:
+			try_join();
+			break;
+		case NOTIFICATION_EXIT_TREE: {
+			PixelWorld *world = get_world();
+			if (world && handle >= 0) world->unregister_body(handle);
+			detach();
+			break;
+		}
+		default:
+			break;
+	}
 }
 
 PixelWorld *PixelPhysicsNode::get_world() const {
@@ -35,7 +45,7 @@ void PixelPhysicsNode::detach() {
 	world_id = ObjectID();
 }
 
-void PixelPhysicsNode::_physics_process(double) {
+void PixelPhysicsNode::try_join() {
 	if (handle >= 0 || refused) return;
 	PixelWorld *world = nullptr;
 	if (!world_path.is_empty()) {

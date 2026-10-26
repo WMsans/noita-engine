@@ -58,7 +58,7 @@ also redirects the XDG dirs into `build/` so a sandboxed machine cannot crash Go
 ```
 ==> Build OK: ... libnoita_engine.<platform>.template_debug.<arch>.<ext>
 ==> Build OK: ... libnoita_engine.<platform>.template_release.<arch>.<ext>
-[doctest] test cases:    147 |    147 passed | 0 failed | 0 skipped
+[doctest] test cases:    152 |    152 passed | 0 failed | 0 skipped
 [doctest] Status: SUCCESS!
 
 ==> Running Godot-side tests (headless)...
@@ -112,7 +112,7 @@ otherwise idle M1 lands within noise (sim p99 5.14, frame p99 10.56, upload 1.04
 Plan 5 (Plan 4's committed line, without creatures, was sim 4.40 / 7.31, frame 9.70 / 14.48):
 
 ```
-bench world: 1680 frames (+120 warm-up) | sim 4.40 ms mean / 7.38 p99 | frame 9.94 / 15.27 ms | stream 0.08 / 0.31 ms | gen 0.68 ms | chunks 6099 | cells 343296 | view-missing 0 frames | particles 298 / visual 43, 0.028 ms mean / 0.068 p99, dropped 615 | bodies 53 (awake 42), physics 0.16 + shapes 0.80 + stamp 0.42 = 1.38 ms mean / 2.58 p99, 3.8 builds | creatures 43, 0.097 ms mean / 0.179 p99 | budget pass | bench/results/...
+bench world: 1680 frames (+120 warm-up) | sim 4.40 ms mean / 7.37 p99 | frame 9.98 / 15.13 ms | stream 0.08 / 0.31 ms | gen 0.68 ms | chunks 6099 | cells 343782 | view-missing 0 frames | particles 314 / visual 43, 0.032 ms mean / 0.075 p99, dropped 1640 | bodies 53 (awake 42), physics 0.15 + shapes 0.80 + stamp 0.42 = 1.37 ms mean / 2.56 p99, 3.8 builds | creatures 43, 0.155 ms mean / 0.225 p99 | budget pass | bench/results/...
 ```
 
 `frames` in the JSON is the number of sampled frames, i.e. `--frames` minus the 120 warm-up
@@ -186,7 +186,7 @@ Executed on 2026-10-25 on the Apple M1 machine (Apple M1, 8 cores, macOS 26.4.1,
 The branch was already checked out here and is not pushed, so step 1's `git fetch` /
 `git pull --ff-only` was **not** run — that part is for whoever runs this doc next.
 `./build.sh --release --test --verify` passed: both libraries OK,
-`147 | 147 passed`, `Status: SUCCESS!`,
+`152 | 152 passed`, `Status: SUCCESS!`,
 `OK: ALL GODOT TESTS PASSED.`
 
 Plan 1 — `bench/results/macos-m1-plan1.json`: `budget_pass: true`, `sim_ms_mean` 3.53 ms
@@ -218,9 +218,9 @@ rebuilds are rate-limited to one per chunk every 4 ticks, which is what brings s
 1.55 ms to about 0.75 ms.
 
 Plan 5 — `bench/results/macos-m1-plan5.json`: `budget_pass: true`, `sim_ms_mean` 4.40 ms,
-`frame_ms_p99` 15.27 ms (budget 16.6: the tightest margin now), `creatures_mean` 43,
-`creature_ms_mean` 0.097 ms (budget 1.0), p99 0.179 ms, `body_ms_mean` 1.38 ms,
-`particles_dropped` 615 (creatures knocking sand out of piles add particles).
+`frame_ms_p99` 15.13 ms (budget 16.6: the tightest margin now), `creatures_mean` 43,
+`creature_ms_mean` 0.155 ms (budget 1.0), p99 0.225 ms, `body_ms_mean` 1.37 ms,
+`particles_dropped` 1640 (creatures knocking sand out of piles add particles; not gated).
 
 The Linux Iris Xe numbers are still an open hand-off: `bench/results/linux-irisxe-plan1.json`
 and `linux-irisxe-plan5.json` do not exist yet. Its 20 hardware threads and its GPU are the two

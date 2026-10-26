@@ -134,7 +134,8 @@ void PhysicsWorld::remove_body(int handle) {
 	if (!has_body(handle)) return;
 	wake_footprint(*bodies[(size_t)handle]);
 	const bool creature = bodies[(size_t)handle]->creature;
-	if (creature) b2DestroyBody(bodies[(size_t)handle]->foot);
+	if (creature)
+		for (b2BodyId proxy : bodies[(size_t)handle]->proxy) b2DestroyBody(proxy);
 	b2DestroyBody(bodies[(size_t)handle]->id);
 	bodies[(size_t)handle].reset();
 	--(creature ? stats_.creatures : stats_.bodies);
@@ -156,33 +157,38 @@ int PhysicsWorld::add_creature(const CreatureDef& def) {
 	sd.material.friction = def.friction;
 	sd.filter.categoryBits = CAT_CREATURE;
 	sd.filter.maskBits = CAT_BODY | CAT_CREATURE;  // terrain is the grid pass's job
-	sd.filter.groupIndex = handle + 1;              // ...except its own foot (below)
+	sd.filter.groupIndex = handle + 1;              // ...except its own proxies (below)
 	sd.enableHitEvents = true;
 	const b2Polygon box = b2MakeBox(def.w * 0.5f, def.h * 0.5f);
 	b2CreatePolygonShape(id, &sd, &box);
 
-	// The foot: a kinematic segment as wide as the creature, parked under it at the grid floor
-	// by place_foot. Same positive group as its creature (always collide), mask 0 (nothing else).
-	b2BodyDef fd = b2DefaultBodyDef();
-	fd.type = b2_kinematicBody;
-	fd.position = {def.x, def.y + def.h * 0.5f};
-	fd.isEnabled = false;
-	const b2BodyId foot = b2CreateBody(world, &fd);
-	b2ShapeDef fs = b2DefaultShapeDef();
-	fs.material.friction = def.friction;
-	fs.filter.categoryBits = CAT_FOOT;
-	fs.filter.maskBits = 0;
-	fs.filter.groupIndex = handle + 1;
-	const b2Segment segment = {{-def.w * 0.5f, 0.0f}, {def.w * 0.5f, 0.0f}};
-	b2CreateSegmentShape(foot, &fs, &segment);
-
 	auto body = std::make_unique<Body>();
+	// The proxies: kinematic segments parked by place_proxies. Same positive group as their
+	// creature (always collide), mask 0 (nothing else), no friction (game code owns movement
+	// feel). Walls cover the box above step height, so a ledge it can step up stays a ledge.
+	const float half_w = def.w * 0.5f, half_h = def.h * 0.5f;
+	const float wall_bottom = std::max(-half_h + 1.0f, half_h - (float)def.step_height);
+	const b2Segment segments[4] = {{{-half_w, 0}, {half_w, 0}}, {{-half_w, 0}, {half_w, 0}},
+	                               {{0, -half_h}, {0, wall_bottom}}, {{0, -half_h}, {0, wall_bottom}}};
+	for (int side = 0; side < 4; ++side) {
+		b2BodyDef pd = b2DefaultBodyDef();
+		pd.type = b2_kinematicBody;
+		pd.position = {def.x, def.y};
+		pd.isEnabled = false;
+		body->proxy[side] = b2CreateBody(world, &pd);
+		b2ShapeDef ps = b2DefaultShapeDef();
+		ps.material.friction = 0.0f;
+		ps.filter.categoryBits = CAT_PROXY;
+		ps.filter.maskBits = 0;
+		ps.filter.groupIndex = handle + 1;
+		b2CreateSegmentShape(body->proxy[side], &ps, &segments[side]);
+	}
+
 	body->id = id;
 	body->w = def.w;
 	body->h = def.h;
 	body->creature = true;
 	body->step_height = def.step_height;
-	body->foot = foot;
 	bodies.push_back(std::move(body));
 	++stats_.creatures;
 	return handle;
@@ -341,10 +347,8 @@ void PhysicsWorld::step() {
 		if (want != b2Body_IsEnabled(body->id)) {
 			if (want) b2Body_Enable(body->id);
 			else b2Body_Disable(body->id);
-			if (body->creature && !want && body->foot_on) {
-				b2Body_Disable(body->foot);
-				body->foot_on = false;
-			}
+			if (body->creature && !want)
+				for (int side = 0; side < 4; ++side) set_proxy(*body, side, false, 0, 0);
 		}
 		if (want) {
 			body->left = false;
@@ -424,28 +428,48 @@ void PhysicsWorld::creature_pass(Body& body) {
 	body.state.wall = r.wall;
 	body.state.submerged_fraction = (float)r.submerged / (float)(body.w * body.h);
 	body.state.liquid = r.liquid;
-	place_foot(body);
+	place_proxies(body);
 }
 
-// The highest blocking cell within FOOT_REACH under any of the box's columns; the foot goes on
-// its top edge, or away when there is none (airborne). It sits at the real floor, not at the
-// creature's feet, so walking down a slope or off a ledge still falls to the ground.
-void PhysicsWorld::place_foot(Body& body) {
-	constexpr int FOOT_REACH = 4;
+// The nearest blocking cells around the box: the highest floor within FOOT_REACH under any
+// column, the lowest ceiling and the nearest wall column within PROXY_REACH (walls only count
+// above step height). The floor proxy sits at the real floor, not at the creature's feet, so
+// walking down a slope or off a ledge still falls to the ground.
+void PhysicsWorld::place_proxies(Body& body) {
+	constexpr int FOOT_REACH = 4, PROXY_REACH = 2;
 	const b2Vec2 p = b2Body_GetPosition(body.id);
 	const int x0 = (int)std::floor(p.x - body.w * 0.5f + 1e-4f), x1 = (int)std::floor(p.x + body.w * 0.5f - 1e-4f);
-	const int below = (int)std::floor(p.y + body.h * 0.5f - 1e-4f) + 1;
-	int floor_row = INT32_MAX;
-	for (int x = x0; x <= x1; ++x)
-		for (int y = below; y < below + FOOT_REACH && y < floor_row; ++y)
-			if (creature_blocks(grid, x, y)) floor_row = y;
-	const bool on = floor_row != INT32_MAX;
-	if (on) b2Body_SetTransform(body.foot, {p.x, (float)floor_row}, b2Rot_identity);
-	if (on != body.foot_on) {
-		if (on) b2Body_Enable(body.foot);
-		else b2Body_Disable(body.foot);
-		body.foot_on = on;
-	}
+	const int y0 = (int)std::floor(p.y - body.h * 0.5f + 1e-4f), y1 = (int)std::floor(p.y + body.h * 0.5f - 1e-4f);
+	auto row_blocked = [&](int y) {
+		for (int x = x0; x <= x1; ++x)
+			if (creature_blocks(grid, x, y)) return true;
+		return false;
+	};
+	auto column_blocked = [&](int x) {
+		for (int y = y0; y <= y1 - body.step_height; ++y)
+			if (creature_blocks(grid, x, y)) return true;
+		return false;
+	};
+	int floor_row = y1 + 1;
+	while (floor_row <= y1 + FOOT_REACH && !row_blocked(floor_row)) ++floor_row;
+	set_proxy(body, 0, floor_row <= y1 + FOOT_REACH, p.x, (float)floor_row);
+	int ceiling_row = y0 - 1;
+	while (ceiling_row >= y0 - PROXY_REACH && !row_blocked(ceiling_row)) --ceiling_row;
+	set_proxy(body, 1, ceiling_row >= y0 - PROXY_REACH, p.x, (float)(ceiling_row + 1));
+	int left_col = x0 - 1;
+	while (left_col >= x0 - PROXY_REACH && !column_blocked(left_col)) --left_col;
+	set_proxy(body, 2, left_col >= x0 - PROXY_REACH, (float)(left_col + 1), p.y);
+	int right_col = x1 + 1;
+	while (right_col <= x1 + PROXY_REACH && !column_blocked(right_col)) ++right_col;
+	set_proxy(body, 3, right_col <= x1 + PROXY_REACH, (float)right_col, p.y);
+}
+
+void PhysicsWorld::set_proxy(Body& body, int side, bool on, float x, float y) {
+	if (on) b2Body_SetTransform(body.proxy[side], {x, y}, b2Rot_identity);
+	if (on == body.proxy_on[side]) return;
+	if (on) b2Body_Enable(body.proxy[side]);
+	else b2Body_Disable(body.proxy[side]);
+	body.proxy_on[side] = on;
 }
 
 // Archimedes on the liquid the last stamp covered, at its centroid (so a tipped crate rights

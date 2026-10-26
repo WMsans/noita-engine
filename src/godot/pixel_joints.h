@@ -29,10 +29,9 @@ protected:
 	// Creates the Box2D joint; the anchor is in the world's cell space.
 	virtual b2JointId create(PhysicsWorld &p_physics, int p_a, int p_b, Vector2 p_anchor) = 0;
 	b2JointId live() const;  // the joint if it and its world are alive, else null
+	void try_join();         // on the internal physics tick, so a script can't shadow it
 
 public:
-	void _ready() override;
-	void _physics_process(double p_delta) override;
 
 	void set_body_a(const NodePath &p_value) { body_a = p_value; }
 	NodePath get_body_a() const { return body_a; }

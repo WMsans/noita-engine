@@ -16,9 +16,9 @@ void PixelJoint::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::NODE_PATH, "body_b", PROPERTY_HINT_NODE_PATH_VALID_TYPES, "PixelRigidBody"), "set_body_b", "get_body_b");
 }
 
-void PixelJoint::_ready() { set_physics_process(true); }
-
 void PixelJoint::_notification(int p_what) {
+	if (p_what == NOTIFICATION_READY) set_physics_process_internal(true);
+	if (p_what == NOTIFICATION_INTERNAL_PHYSICS_PROCESS) try_join();
 	if (p_what != NOTIFICATION_EXIT_TREE) return;
 	const b2JointId id = live();
 	PixelWorld *world = Object::cast_to<PixelWorld>(ObjectDB::get_instance(world_id));
@@ -35,7 +35,7 @@ b2JointId PixelJoint::live() const {
 
 // Waits for both bodies to join the same world, then makes the joint (again, if a body was
 // freed and replaced).
-void PixelJoint::_physics_process(double) {
+void PixelJoint::try_join() {
 	if (!B2_IS_NULL(live())) return;
 	PixelRigidBody *a = Object::cast_to<PixelRigidBody>(get_node_or_null(body_a));
 	PixelRigidBody *b = Object::cast_to<PixelRigidBody>(get_node_or_null(body_b));

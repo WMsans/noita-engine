@@ -67,7 +67,7 @@ struct WheelParams {
 constexpr uint64_t CAT_TERRAIN = 1;
 constexpr uint64_t CAT_BODY = 2;
 constexpr uint64_t CAT_CREATURE = 4;
-constexpr uint64_t CAT_FOOT = 8;  // a creature's floor proxy; meets only its own creature (group)
+constexpr uint64_t CAT_PROXY = 8;  // a creature's grid proxies; meet only their own creature (group)
 constexpr float TERRAIN_FRICTION = 0.8f;
 // A chunk's shapes rebuild at most this often (ticks): terrain collision may lag the pixels by
 // up to 50 ms, and a chunk under a sand faucet costs a quarter of the builds.
@@ -133,10 +133,11 @@ private:
 		int step_height = 0;
 		float prev_x = 0, prev_y = 0;  // before this tick's Box2D step
 		CreatureState state;
-		// The grid floor under it, told to Box2D, so a crate on its head or a creature on its
-		// shoulders rests on it instead of pressing it into the ground.
-		b2BodyId foot = b2_nullBodyId;
-		bool foot_on = false;
+		// The blocking cells next to it, told to Box2D as frictionless kinematic segments (floor,
+		// ceiling, left, right), so a crate on its head or a creature pushing it into a wall is
+		// stopped by it instead of pressing it into the cells the grid pass then pulls it out of.
+		b2BodyId proxy[4] = {b2_nullBodyId, b2_nullBodyId, b2_nullBodyId, b2_nullBodyId};
+		bool proxy_on[4] = {false, false, false, false};
 		struct Held {
 			int x, y;
 			Cell cell;
@@ -160,7 +161,8 @@ private:
 
 	void apply_buoyancy(Body& body);
 	void creature_pass(Body& body);
-	void place_foot(Body& body);
+	void place_proxies(Body& body);
+	void set_proxy(Body& body, int side, bool on, float x, float y);
 
 	WorldGrid& grid;
 	float gravity;
