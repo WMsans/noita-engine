@@ -232,6 +232,10 @@ void main() {
 	                    imageLoad(src, clamp(p + ivec2(-1, 1), ivec2(0), hi)).rgb),
 	                max(imageLoad(src, clamp(p + ivec2(1, -1), ivec2(0), hi)).rgb,
 	                    imageLoad(src, clamp(p + ivec2(-1, -1), ivec2(0), hi)).rgb));
+	// The spread source is capped at 1 (the overlay saturates there anyway): HDR light next to lava
+	// would otherwise still be bright at the last pass and end the skin in a hard contour.
+	edge = min(edge, vec3(1.0));
+	diag = min(diag, vec3(1.0));
 	vec3 lit = max(c.rgb, max(edge * params.falloff, diag * params.falloff_diag));
 	imageStore(dst, p, vec4(lit, 1.0));
 }
