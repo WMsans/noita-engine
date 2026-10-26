@@ -164,12 +164,20 @@ TEST_CASE("parallel build matches serial") {
 		}
 
 	const LightPalette pal = fire_palette(lt.table);
-	const LightArea area{-32, -32, 192, 192};  // reaches past the loaded chunks
+	LightArea area{-32, -32, 192, 192};  // reaches past the loaded chunks
 	JobPool pool(4);
 	const std::vector<LightTexel> par = build(grid, pal, area, &pool);
 	const std::vector<LightTexel> ser = build(grid, pal, area, nullptr);
 	REQUIRE(par.size() == ser.size());
 	CHECK(std::memcmp(par.data(), ser.data(), par.size() * sizeof(LightTexel)) == 0);
+
+	// 96 texel rows at scale 2 is six bands, so the block path is parallel too.
+	area.scale = 2;
+	REQUIRE(light_texel_h(area) == 96);
+	const std::vector<LightTexel> par2 = build(grid, pal, area, &pool);
+	const std::vector<LightTexel> ser2 = build(grid, pal, area, nullptr);
+	REQUIRE(par2.size() == ser2.size());
+	CHECK(std::memcmp(par2.data(), ser2.data(), par2.size() * sizeof(LightTexel)) == 0);
 }
 
 TEST_CASE("spots add a disc and saturate") {
@@ -272,6 +280,8 @@ TEST_CASE("half resolution packs 2x2 blocks") {
 	chunk.at(0, 0).mat = lt.lava;  // one lava cell in the first block
 	for (int y = 0; y < 2; ++y)
 		for (int x = 2; x < 4; ++x) chunk.at(x, y).mat = lt.rock;  // the second block solid
+	chunk.at(1, 2).mat = lt.wood;  // a burning cell in the third block: fire before the max
+	chunk.at(1, 2).flags |= FLAG_BURNING;
 
 	LightArea area{0, 0, 4, 4};  // world cells
 	area.scale = 2;              // world cells per texel
@@ -288,8 +298,64 @@ TEST_CASE("half resolution packs 2x2 blocks") {
 	CHECK(std::memcmp(&out[0], &lava, sizeof(LightTexel)) == 0);
 	const LightTexel rock{0, 0, 0, 255};
 	CHECK(std::memcmp(&out[1], &rock, sizeof(LightTexel)) == 0);
-	CHECK(std::memcmp(&out[2], &CLEAR, sizeof(LightTexel)) == 0);  // block of air
-	CHECK(std::memcmp(&out[3], &CLEAR, sizeof(LightTexel)) == 0);
+	const LightTexel fire{96, 57, 19, 64};  // one burning wood cell, mean over four
+	CHECK(std::memcmp(&out[2], &fire, sizeof(LightTexel)) == 0);
+	CHECK(std::memcmp(&out[3], &CLEAR, sizeof(LightTexel)) == 0);  // block of air
+}
+
+TEST_CASE("partial blocks average opacity over the cells they cover") {
+	LightTable lt;
+	WorldGrid grid(lt.table, 1);
+	Chunk& chunk = *grid.insert(empty_chunk({0, 0}));
+	chunk.at(0, 0).mat = lt.rock;  // full 3x3 block
+	chunk.at(3, 3).mat = lt.rock;  // the area is 4x4, so this block covers one cell
+
+	LightArea area{0, 0, 4, 4};
+	area.scale = 3;
+	REQUIRE(light_texel_w(area) == 2);
+	REQUIRE(light_texel_h(area) == 2);
+	std::vector<LightTexel> buf((size_t)light_texel_w(area) * light_texel_h(area) + 64, CLEAR);
+	build_light_inputs(grid, fire_palette(lt.table), area, buf.data(), nullptr);
+
+	// One cell in a nine-cell block is a ninth opaque; a one-cell edge block is fully opaque.
+	// Dividing by the scale squared instead would leave the edge wall at 28 and leak light.
+	const LightTexel ninth{0, 0, 0, 28};
+	CHECK(std::memcmp(&buf[0], &ninth, sizeof(LightTexel)) == 0);
+	const LightTexel solid{0, 0, 0, 255};
+	CHECK(std::memcmp(&buf[3], &solid, sizeof(LightTexel)) == 0);
+	CHECK(std::memcmp(&buf[1], &CLEAR, sizeof(LightTexel)) == 0);
+	CHECK(std::memcmp(&buf[2], &CLEAR, sizeof(LightTexel)) == 0);
+}
+
+TEST_CASE("odd area builds inside its texel rect") {
+	LightTable lt;
+	WorldGrid grid(lt.table, 1);
+	Chunk& chunk = *grid.insert(empty_chunk({0, 0}));
+	chunk.at(0, 0).mat = lt.lava;
+	chunk.at(6, 4).mat = lt.rock;  // the last cell: a 1x1 block at the partial edge
+
+	LightArea area{0, 0, 7, 5};  // 4x3 texels at scale 2: the right and bottom edges are partial
+	area.scale = 2;
+	const int tw = light_texel_w(area);
+	const int th = light_texel_h(area);
+	REQUIRE(tw == 4);
+	REQUIRE(th == 3);
+	const LightTexel SENTINEL{17, 34, 51, 68};
+	// Slack on both sides, smaller than a cell-major build would write, so writing one texel per
+	// cell instead of one per block fails the sentinel checks below.
+	std::vector<LightTexel> buf((size_t)tw * th + 16, SENTINEL);
+	LightTexel* const out = buf.data() + 8;
+	build_light_inputs(grid, fire_palette(lt.table), area, out, nullptr);
+
+	const LightTexel lava{128, 57, 13, 19};  // a lone lava cell in a 2x2 block
+	CHECK(std::memcmp(&out[0], &lava, sizeof(LightTexel)) == 0);
+	const LightTexel solid{0, 0, 0, 255};  // the partial corner block covers exactly one cell
+	CHECK(std::memcmp(&out[(size_t)2 * tw + 3], &solid, sizeof(LightTexel)) == 0);
+	CHECK(std::memcmp(&out[1], &CLEAR, sizeof(LightTexel)) == 0);
+	for (size_t i = 0; i < 8; ++i) {
+		CHECK(std::memcmp(&buf[i], &SENTINEL, sizeof(LightTexel)) == 0);
+		CHECK(std::memcmp(&buf[(size_t)tw * th + 8 + i], &SENTINEL, sizeof(LightTexel)) == 0);
+	}
 }
 
 TEST_CASE("half resolution opacity is the block mean") {

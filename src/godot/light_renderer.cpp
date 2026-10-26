@@ -405,7 +405,7 @@ void LightRenderer::render(const PackedByteArray &p_texels, const LightArea &p_a
 		}
 	}
 	if (state_now.load(std::memory_order_acquire) != STATE_READY) return;
-	if (rd == nullptr || p_area.w <= 0 || p_area.h <= 0) return;
+	if (rd == nullptr || p_area.w <= 0 || p_area.h <= 0 || p_area.scale < 1) return;
 	const int texel_w = light_texel_w(p_area);
 	const int texel_h = light_texel_h(p_area);
 	if ((int64_t)p_texels.size() < (int64_t)texel_w * texel_h * 4) return;
@@ -416,11 +416,12 @@ void LightRenderer::render(const PackedByteArray &p_texels, const LightArea &p_a
 	// The texel size only changes when the view, the margin or light_resolution does (PixelWorld
 	// passes a view rect with a snapped size), so recreating everything here costs nothing while
 	// scrolling.
-	if (texel_w != area_w || texel_h != area_h) {
+	if (texel_w != area_w || texel_h != area_h || p_area.scale != area_scale) {
 		// Publish "nothing rendered" before the old textures go: the overlay checks this from the
 		// main thread and must not draw the previous area's texture into this one.
 		rendered_w.store(0, std::memory_order_release);
 		rendered_h.store(0, std::memory_order_release);
+		rendered_scale.store(0, std::memory_order_release);
 		if (!create_textures(texel_w, texel_h)) {
 			UtilityFunctions::push_error("PixelWorld: the light pass could not create its textures");
 			state_now.store(STATE_FAILED, std::memory_order_release);
@@ -428,6 +429,7 @@ void LightRenderer::render(const PackedByteArray &p_texels, const LightArea &p_a
 		}
 		area_w = texel_w;
 		area_h = texel_h;
+		area_scale = p_area.scale;
 		bloom_w = (area_w + 3) / 4;
 		bloom_h = (area_h + 3) / 4;
 		if (!create_input_texture(area_w, area_h)) {
@@ -531,6 +533,7 @@ void LightRenderer::render(const PackedByteArray &p_texels, const LightArea &p_a
 	rd->capture_timestamp("light_end");
 	rendered_w.store(area_w, std::memory_order_release);
 	rendered_h.store(area_h, std::memory_order_release);
+	rendered_scale.store(area_scale, std::memory_order_release);
 }
 
 void LightRenderer::update_timestamps() {

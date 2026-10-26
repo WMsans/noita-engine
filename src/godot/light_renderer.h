@@ -69,11 +69,14 @@ public:
 	RID bloom_rd() const { return bloom_texture; }
 	// Bumped whenever light_rd()/bloom_rd() change, so the overlay can re-point and skip a frame.
 	int texture_generation() const { return generation.load(std::memory_order_acquire); }
-	// True once a render has completed for exactly this texel size, so the overlay never stretches
-	// a texture that was rendered for a different one.
-	bool has_rendered_area(int p_w, int p_h) const {
-		return p_w > 0 && rendered_w.load(std::memory_order_acquire) == p_w &&
-		       rendered_h.load(std::memory_order_acquire) == p_h;
+	// True once a render has completed for exactly this area, so the overlay never stretches a
+	// texture that was rendered for a different one. The scale is part of the identity as well as
+	// the texel size: a resolution change that lands on equal texel dims is still a different world
+	// area.
+	bool has_rendered_area(int p_w, int p_h, int p_scale) const {
+		return p_w > 0 && p_scale > 0 && rendered_w.load(std::memory_order_acquire) == p_w &&
+		       rendered_h.load(std::memory_order_acquire) == p_h &&
+		       rendered_scale.load(std::memory_order_acquire) == p_scale;
 	}
 	// Light + bloom GPU milliseconds, from the newest frame whose timestamps were readable.
 	double gpu_ms() const { return gpu_ms_now.load(std::memory_order_acquire); }
@@ -121,6 +124,7 @@ private:
 	std::atomic<int> generation{ 0 };
 	std::atomic<int> rendered_w{ 0 };
 	std::atomic<int> rendered_h{ 0 };
+	std::atomic<int> rendered_scale{ 0 };
 	std::atomic<double> gpu_ms_now{ 0.0 };
 
 	RID sampler;
@@ -137,6 +141,7 @@ private:
 
 	int area_w = 0;
 	int area_h = 0;
+	int area_scale = 0;
 	int input_w = 0;
 	int input_h = 0;
 	int bloom_w = 0;  // the lit area's quarter resolution

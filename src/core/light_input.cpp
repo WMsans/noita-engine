@@ -14,6 +14,18 @@ namespace {
 // Rows per job: each row walks chunk by chunk, so one find() per 64 cells.
 constexpr int LIGHT_ROW_BAND = 16;
 
+// One cell's light texel: its material's emission and opacity, plus the fire glow when it burns.
+// Both the scale-1 row and the block path pack a cell through here, so they cannot drift apart.
+static inline LightTexel cell_texel(const Cell& cell, const LightPalette& palette) {
+	LightTexel t = cell.mat < palette.mats.size() ? palette.mats[cell.mat] : LightTexel{0, 0, 0, 0};
+	if (cell.flags & FLAG_BURNING) {  // per-channel max of material and fire
+		if (palette.fire.r > t.r) t.r = palette.fire.r;
+		if (palette.fire.g > t.g) t.g = palette.fire.g;
+		if (palette.fire.b > t.b) t.b = palette.fire.b;
+	}
+	return t;
+}
+
 uint8_t pack_emission(float e) {
 	return (uint8_t)std::lround(std::min(std::max(e / EMISSION_RANGE, 0.0f), 1.0f) * 255.0f);
 }
@@ -34,17 +46,7 @@ void build_row(const WorldGrid& grid, const LightPalette& palette, const LightAr
 		const int n = std::min(CHUNK - lx, wx_end - wx);
 		if (chunk) {
 			const Cell* src = &chunk->cells[(size_t)ly * CHUNK + lx];
-			for (int i = 0; i < n; ++i) {
-				const Cell& cell = src[i];
-				LightTexel t = cell.mat < palette.mats.size() ? palette.mats[cell.mat]
-				                                              : LightTexel{0, 0, 0, 0};
-				if (cell.flags & FLAG_BURNING) {  // per-channel max of material and fire
-					if (palette.fire.r > t.r) t.r = palette.fire.r;
-					if (palette.fire.g > t.g) t.g = palette.fire.g;
-					if (palette.fire.b > t.b) t.b = palette.fire.b;
-				}
-				dst[i] = t;
-			}
+			for (int i = 0; i < n; ++i) dst[i] = cell_texel(src[i], palette);
 		} else {
 			const LightTexel dark{0, 0, 0, 255};  // unloaded chunks are opaque and dark
 			for (int i = 0; i < n; ++i) dst[i] = dark;
@@ -75,17 +77,8 @@ void build_texel_row(const WorldGrid& grid, const LightPalette& palette, const L
 			const int n = std::min(CHUNK - lx, x_end - wx);
 			const Cell* src = chunk ? &chunk->cells[(size_t)ly * CHUNK + lx] : nullptr;
 			for (int i = 0; i < n; ++i) {
-				LightTexel t{0, 0, 0, 255};  // unloaded chunks are opaque and dark
-				if (src) {
-					const Cell& cell = src[i];
-					t = cell.mat < palette.mats.size() ? palette.mats[cell.mat]
-					                                   : LightTexel{0, 0, 0, 0};
-					if (cell.flags & FLAG_BURNING) {  // per-channel max of material and fire
-						if (palette.fire.r > t.r) t.r = palette.fire.r;
-						if (palette.fire.g > t.g) t.g = palette.fire.g;
-						if (palette.fire.b > t.b) t.b = palette.fire.b;
-					}
-				}
+				// Unloaded chunks are opaque and dark.
+				const LightTexel t = src ? cell_texel(src[i], palette) : LightTexel{0, 0, 0, 255};
 				LightTexel& d = dst[tx];
 				if (t.r > d.r) d.r = t.r;
 				if (t.g > d.g) d.g = t.g;
@@ -99,7 +92,8 @@ void build_texel_row(const WorldGrid& grid, const LightPalette& palette, const L
 			wx += n;
 		}
 	}
-	// Opacity is the mean over the cells the block covers: a 1-cell wall blocks half at scale 2.
+	// Opacity is the mean over the cells the block covers, not over scale x scale: a partial block
+	// at the area's right or bottom edge keeps a wall opaque instead of diluting it into a leak.
 	const int rows = y1 - y0;
 	for (int tx = 0; tx < texel_w; ++tx) {
 		const int cols = std::min(scale, area.w - tx * scale);
@@ -156,16 +150,20 @@ void build_light_inputs(const WorldGrid& grid, const LightPalette& palette,
 	const int texel_h = light_texel_h(area);
 	const int texel_w = light_texel_w(area);
 	const int bands = (texel_h + LIGHT_ROW_BAND - 1) / LIGHT_ROW_BAND;
+	// One row of opacity scratch per band, allocated once per build and only above scale 1: the
+	// default path must not allocate per band every frame.
+	std::vector<uint32_t> opacity_sum;
+	if (area.scale > 1) opacity_sum.resize((size_t)texel_w * bands);
 	auto work = [&](int band) {
 		const int r0 = band * LIGHT_ROW_BAND;
 		const int r1 = std::min(r0 + LIGHT_ROW_BAND, texel_h);
-		std::vector<uint32_t> opacity_sum((size_t)texel_w);
+		uint32_t* const sum = opacity_sum.empty() ? nullptr : &opacity_sum[(size_t)band * texel_w];
 		for (int r = r0; r < r1; ++r) {
 			// Scale 1 is the default path and stays one texel per cell, cell for cell.
 			if (area.scale == 1)
 				build_row(grid, palette, area, r, out);
 			else
-				build_texel_row(grid, palette, area, r, out, opacity_sum.data());
+				build_texel_row(grid, palette, area, r, out, sum);
 		}
 	};
 	if (pool)

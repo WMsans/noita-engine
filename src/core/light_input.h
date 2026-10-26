@@ -45,8 +45,10 @@ struct LightPalette {
 };
 
 // out has light_texel_w * light_texel_h texels, row-major from (x0, y0): each covers a
-// scale x scale block of cells, emission is the block max and opacity the block mean. pool may be
-// null.
+// scale x scale block of cells, emission is the block max and opacity the block mean. Opacity is
+// the mean over the cells the block actually covers, not over scale x scale, so a partial block at
+// the area's right or bottom edge stays opaque instead of diluting an edge wall into a light leak.
+// pool may be null.
 void build_light_inputs(const WorldGrid& grid, const LightPalette& palette,
                         const LightArea& area, LightTexel* out, JobPool* pool);
 

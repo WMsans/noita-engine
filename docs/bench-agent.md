@@ -99,11 +99,12 @@ godot --path . res://bench/bench_world.tscn -- --frames=1800 --out=bench/results
 ```
 
 `--light-resolution=N` runs the light pass at 1/N linear resolution: `PixelWorld.light_resolution`
-is "world cells per light texel", 1 (the default) is full resolution, 2 is half, 4 is quarter. It
-trades light detail and shadow sharpness for cost — the input is `1/N²` the texels, the cascade and
-bloom textures shrink with it, and probes are spaced in texels so the cascade reach in world cells
-grows with N. The committed default stays 1 (unchanged look and cost); a value outside 1..4 is
-refused rather than clamped, so a run always measures what it says in its JSON.
+is "world cells per light texel", any value in 1..4, where 1 (the default) is full resolution, 2 is
+half and 4 is quarter. It trades light detail and shadow sharpness for cost — the input is `1/N²`
+the texels, the cascade and bloom textures shrink with it, and probes are spaced in texels so the
+cascade reach in world cells grows with N. The committed default stays 1 (unchanged look and cost);
+a value outside 1..4 is refused rather than clamped, so a run always measures what it says in its
+JSON.
 
 Plan 6 **needs a real GPU**: lighting is the point of the run. Do not pass `--headless`; there is
 no `RenderingDevice` then, lighting is a silent no-op with zeroed stats, and the
@@ -130,7 +131,7 @@ Plan 6 on this M1 (the committed `bench/results/macos-m1-plan6.json`; **red** on
 see the status section — do not copy it as a target):
 
 ```
-bench world: 1680 frames (+120 warm-up) | sim 4.46 ms mean / 7.44 p99 | frame 11.22 / 20.91 ms | stream 0.08 / 0.39 ms | gen 0.66 ms | chunks 6099 | cells 345363 | view-missing 0 frames | particles 314 / visual 42, 0.032 ms mean / 0.075 p99, dropped 1693 | bodies 54 (awake 42), physics 0.15 + shapes 0.82 + stamp 0.41 = 1.38 ms mean / 2.64 p99, 3.8 builds | creatures 43, 0.158 ms mean / 0.230 p99 | light 0.62 ms cpu mean / 0.99 p99 | light 0.000 ms gpu mean / 0.000 p99 (timestamps stubbed), spots 5.3 | budget FAIL | bench/results/...
+bench world: 1680 frames (+120 warm-up) | sim 4.47 ms mean / 7.44 p99 | frame 11.24 / 21.14 ms | stream 0.08 / 0.39 ms | gen 0.66 ms | chunks 6099 | cells 344977 | view-missing 0 frames | particles 318 / visual 43, 0.032 ms mean / 0.074 p99, dropped 1641 | bodies 53 (awake 42), physics 0.15 + shapes 0.82 + stamp 0.41 = 1.38 ms mean / 2.53 p99, 3.8 builds | creatures 43, 0.159 ms mean / 0.232 p99 | light 0.59 ms cpu mean / 1.00 p99 | light 0.000 ms gpu mean / 0.000 p99 (timestamps stubbed), spots 5.3 | budget FAIL | bench/results/...
 ```
 
 For reference, the same scene with `lighting_enabled = false` reproduces Plan 5's committed run
@@ -158,7 +159,7 @@ and spot collection, spot discs, and the copy of those texels into the render jo
 `light_gpu_ms_supported` says whether the driver reported any GPU time at all, and
 `light_gpu_ms_stubbed` says the run was allowed to report none because it is the known Metal stub
 (both are recorded so the exemption is auditable). `light_resolution` is the setting the run used
-(1 full, 2 half, 4 quarter), read back from the node so it cannot disagree with what ran.
+(1..4, i.e. 1 full, 2 half, 4 quarter), read back from the node so it cannot disagree with what ran.
 
 Budgets (`bench.gd` and `bench_world.gd`; do not relax them to make a run pass):
 
@@ -238,7 +239,8 @@ The branch was already checked out here and is not pushed, so step 1's `git fetc
 `./build.sh --release --test --verify` passed: both libraries OK,
 `166 | 166 passed`, `Status: SUCCESS!`,
 `OK: ALL GODOT TESTS PASSED.` (Plan 6 re-ran it; Plans 1–5 saw 152 core cases, Plan 6 161, and
-the half-resolution follow-up added 4 core cases and 1 Godot case.)
+the half-resolution follow-up added 4 core cases and 1 Godot case; the half-resolution review fix
+added 2 more core cases — 168.)
 
 Plan 1 — `bench/results/macos-m1-plan1.json`: `budget_pass: true`, `sim_ms_mean` 3.53 ms
 (budget 6.0), `sim_ms_p99` 5.09 ms, `frame_ms_mean` 8.35 ms, `upload_ms_mean` 1.02 ms,
@@ -275,13 +277,13 @@ Plan 5 — `bench/results/macos-m1-plan5.json`: `budget_pass: true`, `sim_ms_mea
 run predates the lighting pass.
 
 Plan 6 — `bench/results/macos-m1-plan6.json`: **`budget_pass: false`** on this M1, and it is the
-one guardrail this plan did not clear. Every gate passes except `frame_ms_p99`: 20.91 ms against
-the 16.6 ms budget (earlier runs: 20.83, 20.75, 21.16, 20.89). The lighting gates themselves pass —
-`light_cpu_ms_mean` 0.62 ms (budget 1.0, p99 0.99), `light_spots_mean` 5.3 (floor 1), and
-`light_gpu_ms_supported: false` with `light_gpu_ms_stubbed: true` because Metal cannot report GPU
-time, so the only GPU signal is the frame time. `light_resolution` 1, `sim_ms_mean` 4.46,
-`stream_ms_mean` 0.08, `frame_ms_mean` 11.22, `cells_updated_mean` 345363, `view_missing_frames` 0,
-`body_ms_mean` 1.38, `creature_ms_mean` 0.158.
+one guardrail this plan did not clear. Every gate passes except `frame_ms_p99`: 21.14 ms against
+the 16.6 ms budget (earlier runs: 20.83, 20.75, 21.16, 20.89, 20.91, 21.08). The lighting gates
+themselves pass — `light_cpu_ms_mean` 0.59 ms (budget 1.0, p99 1.00), `light_spots_mean` 5.3
+(floor 1), and `light_gpu_ms_supported: false` with `light_gpu_ms_stubbed: true` because Metal
+cannot report GPU time, so the only GPU signal is the frame time. `light_resolution` 1,
+`sim_ms_mean` 4.47, `stream_ms_mean` 0.08, `frame_ms_mean` 11.24, `cells_updated_mean` 344977,
+`view_missing_frames` 0, `body_ms_mean` 1.38, `creature_ms_mean` 0.159.
 
 The light pass is the whole difference: the same scene with `lighting_enabled = false` reproduces
 Plan 5 (frame 9.98 / 15.01), and the pass alone — bench workload, torch and lava removed — gives
@@ -300,17 +302,17 @@ the other two are not implemented. Note that half resolution cuts the upload and
 not the CPU input walk, and it is the one that touches this failure.
 
 Plan 6 half resolution — `bench/results/macos-m1-plan6-halfres.json` (same scene, one build,
-`--light-resolution=2`): **still `budget_pass: false`**, but the frame p99 drops from 20.91 to
-**17.10 ms** (−18%) and the mean from 11.22 to 10.73 ms. A second run of the same settings measured
-17.27 ms p99, so it is a real improvement, not noise — and it is still 0.5 ms over the 16.6 ms
-budget. The other gates are unchanged (`sim_ms_mean` 4.44, `stream_ms_mean` 0.07, `view_missing`
-0, `body_ms_mean` 1.39, `creature_ms_mean` 0.179); `light_cpu_ms_mean` 0.66 (p99 0.74 — the mean
-rises a hair because the block packing walks the same cells with more per-cell work, while the
-upload copy that p99 sees drops to a quarter). `light_spots_mean` 5.3, `light_gpu_ms_stubbed`
-`true`, `light_resolution` 2. What it costs in looks: light is 2-cell blocks everywhere (softened
-by the overlay's linear filter), shadow edges are chunkier, and the source disc is divided by the
-scale, so the torch glow is smaller and dimmer (the capture harness's torch/far-dark ratio drops
-from 19.8x to 10.5x). Coarser probes also mean the cascade reach in world cells doubles per step,
+`--light-resolution=2`): **still `budget_pass: false`**, but the frame p99 drops from 21.14 to
+**17.26 ms** (−18%) and the mean from 11.24 to 10.71 ms. A second run of the same settings measured
+17.37 ms p99 (and a second default run 21.08 ms), so it is a real improvement, not noise — and it
+is still about 0.7 ms over the 16.6 ms budget. The other gates are unchanged (`sim_ms_mean` 4.44,
+`stream_ms_mean` 0.08, `view_missing` 0, `body_ms_mean` 1.40, `creature_ms_mean` 0.162);
+`light_cpu_ms_mean` 0.66 (p99 0.76 — the mean rises a hair because the block packing walks the same
+cells with more per-cell work, while the upload copy that p99 sees drops to a quarter).
+`light_spots_mean` 5.3, `light_gpu_ms_stubbed` `true`, `light_resolution` 2. What it costs in
+looks: light is 2-cell blocks everywhere (softened by the overlay's linear filter), shadow edges
+are chunkier, and the source disc is divided by the scale, so the torch glow is smaller and dimmer
+(the capture harness's torch/far-dark ratio drops from 19.8x to 10.5x). Coarser probes also mean the cascade reach in world cells doubles per step,
 so distant light travels farther than the rays' near field resolves. It
 is opt-in: the committed default is `light_resolution = 1`.
 

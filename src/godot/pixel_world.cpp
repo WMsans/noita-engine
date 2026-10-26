@@ -685,7 +685,7 @@ void PixelWorld::render_light_frame(const LightArea &p_area, const PackedByteArr
 // over a new area.
 void PixelWorld::update_light_overlay(const LightArea &p_area) {
 	RenderingServer *rs = RenderingServer::get_singleton();
-	if (!rs || !light_renderer) return;
+	if (!rs || !light_renderer || p_area.scale < 1) return;
 
 	if (!light_texture.is_valid()) {
 		light_texture.instantiate();
@@ -719,7 +719,7 @@ void PixelWorld::update_light_overlay(const LightArea &p_area) {
 	// texture is wrapped).
 	const int texel_w = light_texel_w(p_area);
 	const int texel_h = light_texel_h(p_area);
-	const bool rendered = light_renderer->has_rendered_area(texel_w, texel_h);
+	const bool rendered = light_renderer->has_rendered_area(texel_w, texel_h, p_area.scale);
 	const int generation = light_renderer->texture_generation();
 	const bool new_textures = generation != light_texture_generation;
 	if (new_textures) {

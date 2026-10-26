@@ -70,7 +70,7 @@ class PixelWorld : public Node2D {
 	float ambient = 0.05f;
 	float light_exposure = 1.0f;
 	int light_margin = 240;
-	int light_resolution = 1;  // world cells per light texel: 1 = full, 2 = half, 4 = quarter
+	int light_resolution = 1;  // world cells per light texel, 1..4: 1 = full, 2 = half, 4 = quarter
 	Color backdrop_color = Color(0.07f, 0.05f, 0.04f);
 	Color fire_glow_color = Color(1.0f, 0.6f, 0.2f);
 	float fire_glow_energy = 1.5f;
