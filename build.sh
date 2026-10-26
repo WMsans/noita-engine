@@ -100,12 +100,19 @@ if [ "${#missing[@]}" -gt 0 ]; then
 	exit 1
 fi
 
-# --- submodule -------------------------------------------------------------
-# godot-cpp is a git submodule; fetch it if it has not been checked out. Every
-# scons invocation (including `scons tests`) reads its SConstruct.
-if [ ! -f "$ROOT/thirdparty/godot-cpp/SConstruct" ] || [ ! -e "$ROOT/thirdparty/godot-cpp/.git" ]; then
-	echo "==> Initializing godot-cpp submodule..."
-	git -C "$ROOT" submodule update --init --recursive thirdparty/godot-cpp
+# --- submodules ------------------------------------------------------------
+# godot-cpp and box2d are git submodules (`git submodule update --init` fetches
+# both). Every scons invocation reads godot-cpp/SConstruct, and both the
+# extension and the test binary compile box2d/src/*.c. doctest and
+# FastNoiseLite are plain tracked files, so nothing to fetch for them.
+submodules_missing=0
+for check in thirdparty/godot-cpp/SConstruct thirdparty/godot-cpp/.git \
+	thirdparty/box2d/include/box2d/box2d.h thirdparty/box2d/src/CMakeLists.txt; do
+	[ -e "$ROOT/$check" ] || submodules_missing=1
+done
+if [ "$submodules_missing" -eq 1 ]; then
+	echo "==> Fetching git submodules (godot-cpp, box2d)..."
+	git -C "$ROOT" submodule update --init --recursive
 fi
 
 # --- build -----------------------------------------------------------------
