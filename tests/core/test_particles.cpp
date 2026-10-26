@@ -203,3 +203,102 @@ TEST_CASE("full pool writes back or drops") {
 	CHECK(simtest::mat_at(grid, 50, 50) == table.id_of("rock"));
 	CHECK(pool.stats().dropped == 1);
 }
+
+namespace {
+
+int non_air_in_disc(WorldGrid& grid, int cx, int cy, int r) {
+	int n = 0;
+	for (int dy = -r; dy <= r; ++dy)
+		for (int dx = -r; dx <= r; ++dx)
+			if (dx * dx + dy * dy <= r * r && simtest::mat_at(grid, cx + dx, cy + dy) != MAT_AIR) ++n;
+	return n;
+}
+
+void sand_block_in_rock(WorldGrid& grid, const MaterialTable& table) {
+	arena(grid, table);
+	simtest::paint(grid, {{0, 0, ARENA, ARENA, table.id_of("rock")}, {40, 40, 80, 80, table.id_of("sand")}});
+}
+
+}  // namespace
+
+TEST_CASE("explode clears the radius and conserves the count") {
+	MaterialTable table = simtest::movement_table();
+	WorldGrid grid(table, 1);
+	sand_block_in_rock(grid, table);
+	ParticlePool pool(grid, DEFAULT_PARTICLE_CAPACITY);
+	const int before = non_air_in_disc(grid, 60, 60, 10);
+
+	const ExplodeResult r = explode(grid, pool, 60, 60, 10, 8.0f, 1);
+
+	CHECK(non_air_in_disc(grid, 60, 60, 10) == 0);
+	CHECK(r.removed == before);
+	CHECK(r.removed == r.thrown + r.vanished);
+	CHECK(r.thrown == (int)pool.material().size());
+	CHECK(r.thrown > 0);
+}
+
+TEST_CASE("explode with a full pool still conserves") {
+	MaterialTable table = simtest::movement_table();
+	WorldGrid grid(table, 1);
+	sand_block_in_rock(grid, table);
+	ParticlePool pool(grid, 5);
+
+	const ExplodeResult r = explode(grid, pool, 60, 60, 10, 8.0f, 1);
+
+	CHECK(r.removed == r.thrown + r.vanished);
+	CHECK(r.thrown <= 5);
+	CHECK(r.thrown == (int)pool.material().size());
+}
+
+TEST_CASE("explode leaves body pixels and solids outside alone") {
+	MaterialTable table = simtest::movement_table();
+	const MatId rock = table.id_of("rock");
+	WorldGrid grid(table, 1);
+	sand_block_in_rock(grid, table);
+	Cell body = spawn_cell(rock, table, 1, 62, 60);
+	body.flags |= FLAG_BODY;
+	REQUIRE(grid.put(62, 60, body));
+	ParticlePool pool(grid, DEFAULT_PARTICLE_CAPACITY);
+
+	explode(grid, pool, 60, 60, 10, 8.0f, 1);
+
+	Cell out{};
+	REQUIRE(grid.get(62, 60, out));
+	CHECK(out.mat == rock);
+	CHECK((out.flags & FLAG_BODY) != 0);
+	CHECK(simtest::mat_at(grid, 71, 60) == table.id_of("sand"));  // radius + 1, inside the block
+	CHECK(simtest::mat_at(grid, 60, 29) == rock);                  // well outside
+}
+
+TEST_CASE("explode radius zero is a no-op") {
+	MaterialTable table = simtest::movement_table();
+	WorldGrid grid(table, 1);
+	sand_block_in_rock(grid, table);
+	ParticlePool pool(grid, DEFAULT_PARTICLE_CAPACITY);
+	const int sand = simtest::count_mat(grid, table.id_of("sand"));
+
+	for (int radius : {0, -3}) {
+		const ExplodeResult r = explode(grid, pool, 60, 60, radius, 8.0f, 1);
+		CHECK(r.removed == 0);
+		CHECK(r.thrown == 0);
+		CHECK(r.vanished == 0);
+	}
+	CHECK(simtest::count_mat(grid, table.id_of("sand")) == sand);
+	CHECK(pool.material().empty());
+}
+
+TEST_CASE("explode across the origin") {
+	MaterialTable table = simtest::movement_table();
+	WorldGrid grid(table, 1);
+	simtest::load_arena(grid, table, -64, -64, 64, 64, table.id_of("rock"));
+	simtest::paint(grid, {{-64, -64, 64, 64, table.id_of("sand")}});
+	ParticlePool pool(grid, DEFAULT_PARTICLE_CAPACITY);
+
+	explode(grid, pool, 0, 0, 8, 8.0f, 1);
+
+	CHECK(simtest::mat_at(grid, -8, 0) == MAT_AIR);
+	CHECK(simtest::mat_at(grid, 7, 0) == MAT_AIR);
+	CHECK(simtest::mat_at(grid, 0, -8) == MAT_AIR);
+	CHECK(simtest::mat_at(grid, 0, 7) == MAT_AIR);
+	CHECK(simtest::mat_at(grid, 9, 0) == table.id_of("sand"));
+}

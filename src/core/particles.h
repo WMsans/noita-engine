@@ -65,3 +65,14 @@ private:
 	std::vector<VisualParticle> visual_;
 	ParticleStats stats_{};
 };
+
+struct ExplodeResult {
+	int removed = 0, thrown = 0, vanished = 0;  // removed == thrown + vanished
+};
+
+// Removes every loaded, non-air, non-body cell within `radius` of (cx, cy). Solids and gases
+// vanish; powders and liquids are thrown with EXPLODE_THROW_CHANCE, outward at up to `power`
+// cells/tick (full at the centre, none at the rim) plus a lift, else vanish. Pixels only:
+// nothing else is pushed. `salt` varies the dice per call. radius <= 0 does nothing.
+ExplodeResult explode(WorldGrid& grid, ParticlePool& pool, int cx, int cy, int radius,
+                      float power, uint32_t salt);

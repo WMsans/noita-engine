@@ -4,9 +4,15 @@
 #include <chrono>
 #include <cmath>
 
+#include "rng.h"
 #include "world_grid.h"
 
 namespace {
+
+// Hash salts for explode's dice, distinct from the sim's.
+constexpr uint32_t SALT_THROW = 101;
+constexpr uint32_t SALT_SPEED = 102;
+constexpr uint32_t SALT_ANGLE = 103;
 
 float finite(float v) { return std::isfinite(v) ? v : 0.0f; }
 float clamp_speed(float v) { return std::clamp(finite(v), -MAX_PARTICLE_SPEED, MAX_PARTICLE_SPEED); }
@@ -124,4 +130,58 @@ void ParticlePool::step() {
 	stats_.visual = (int)visual_.size();
 	stats_.particle_ms =
 	    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+}
+
+ExplodeResult explode(WorldGrid& grid, ParticlePool& pool, int cx, int cy, int radius,
+                      float power, uint32_t salt) {
+	ExplodeResult result;
+	if (radius <= 0) return result;
+	const MaterialTable& mt = grid.materials();
+	const uint32_t seed = grid.seed();
+
+	// Clear everything first and throw afterwards, so a full pool's write-back lands in the
+	// crater rather than being cleared again.
+	struct Loose {
+		int dx, dy;
+		Cell cell;
+	};
+	std::vector<Loose> loose;
+	for (int dy = -radius; dy <= radius; ++dy)
+		for (int dx = -radius; dx <= radius; ++dx) {
+			if (dx * dx + dy * dy > radius * radius) continue;
+			const int x = cx + dx, y = cy + dy;
+			Cell c{};
+			if (!grid.get(x, y, c) || c.mat == MAT_AIR || (c.flags & FLAG_BODY)) continue;
+			++result.removed;
+			grid.set(x, y, MAT_AIR);
+			const MatClass cls = mt.get(c.mat).cls;
+			const bool is_loose = cls == MatClass::Powder || cls == MatClass::Liquid;
+			if (is_loose && hash_unit(hash5(seed, salt, x, y, SALT_THROW)) < EXPLODE_THROW_CHANCE) {
+				loose.push_back({dx, dy, c});
+			} else {
+				++result.vanished;
+			}
+		}
+
+	for (const Loose& l : loose) {
+		const int x = cx + l.dx, y = cy + l.dy;
+		const float d = std::sqrt((float)(l.dx * l.dx + l.dy * l.dy));
+		float ux, uy;
+		if (d > 0) {
+			ux = l.dx / d;
+			uy = l.dy / d;
+		} else {
+			const float angle = hash_unit(hash5(seed, salt, x, y, SALT_ANGLE)) * 6.2831853f;
+			ux = std::cos(angle);
+			uy = std::sin(angle);
+		}
+		const float speed =
+		    power * (1.0f - d / radius) * (0.5f + 0.5f * hash_unit(hash5(seed, salt, x, y, SALT_SPEED)));
+		if (pool.emit(x + 0.5f, y + 0.5f, ux * speed, uy * speed - 0.25f * power, l.cell)) {
+			++result.thrown;
+		} else {
+			++result.vanished;
+		}
+	}
+	return result;
 }
