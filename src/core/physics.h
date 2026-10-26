@@ -50,6 +50,7 @@ struct WheelParams {
 constexpr uint64_t CAT_TERRAIN = 1;
 constexpr uint64_t CAT_BODY = 2;
 constexpr uint64_t CAT_CREATURE = 4;  // reserved for Plan 5
+constexpr float TERRAIN_FRICTION = 0.8f;
 constexpr int BODY_SHAPE_MARGIN = 16;  // cells around a body whose chunks keep terrain shapes
 constexpr float PHYSICS_DT = 1.0f / 60.0f;
 constexpr int PHYSICS_SUBSTEPS = 4;

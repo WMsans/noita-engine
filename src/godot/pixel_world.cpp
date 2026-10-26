@@ -11,6 +11,7 @@
 #include <godot_cpp/variant/utility_functions.hpp>
 
 #include "core/rng.h"
+#include "pixel_rigid_body.h"
 
 namespace godot {
 
@@ -45,11 +46,12 @@ void PixelWorld::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("spawn_particles", "material", "position", "velocity", "count", "spread"), &PixelWorld::spawn_particles);
 	ClassDB::bind_method(D_METHOD("spawn_visual_particles", "color", "position", "velocity", "count", "spread", "lifetime", "gravity_scale", "collides"), &PixelWorld::spawn_visual_particles, DEFVAL(1.0f), DEFVAL(true));
 	ClassDB::bind_method(D_METHOD("explode", "position", "radius", "power"), &PixelWorld::explode);
-	ClassDB::bind_method(D_METHOD("raycast", "from", "to", "mask"), &PixelWorld::raycast, DEFVAL(RAY_SOLID | RAY_POWDER));
+	ClassDB::bind_method(D_METHOD("raycast", "from", "to", "mask"), &PixelWorld::raycast, DEFVAL(RAY_SOLID | RAY_POWDER | RAY_BODIES));
 	BIND_CONSTANT(RAY_SOLID);
 	BIND_CONSTANT(RAY_POWDER);
 	BIND_CONSTANT(RAY_LIQUID);
 	BIND_CONSTANT(RAY_GAS);
+	BIND_CONSTANT(RAY_BODIES);
 
 	ClassDB::bind_method(D_METHOD("set_material_set", "value"), &PixelWorld::set_material_set);
 	ClassDB::bind_method(D_METHOD("get_material_set"), &PixelWorld::get_material_set);
@@ -79,6 +81,8 @@ void PixelWorld::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_simulating"), &PixelWorld::get_simulating);
 	ClassDB::bind_method(D_METHOD("set_max_particles", "value"), &PixelWorld::set_max_particles);
 	ClassDB::bind_method(D_METHOD("get_max_particles"), &PixelWorld::get_max_particles);
+	ClassDB::bind_method(D_METHOD("set_body_gravity", "value"), &PixelWorld::set_body_gravity);
+	ClassDB::bind_method(D_METHOD("get_body_gravity"), &PixelWorld::get_body_gravity);
 
 	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "material_set", PROPERTY_HINT_RESOURCE_TYPE, "PixelMaterialSet"), "set_material_set", "get_material_set");
 	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "generator", PROPERTY_HINT_RESOURCE_TYPE, "PixelWorldGenerator"), "set_generator", "get_generator");
@@ -94,6 +98,7 @@ void PixelWorld::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::RECT2I, "arena"), "set_arena", "get_arena");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "simulating"), "set_simulating", "get_simulating");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "max_particles"), "set_max_particles", "get_max_particles");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "body_gravity"), "set_body_gravity", "get_body_gravity");
 }
 
 void PixelWorld::_ready() {
@@ -138,6 +143,8 @@ void PixelWorld::_ready() {
 	sim = std::make_unique<Simulator>(*grid, pool.get());
 	particles = std::make_unique<ParticlePool>(*grid, max_particles);
 	create_particle_view();
+	physics = std::make_unique<PhysicsWorld>(*grid, body_gravity);
+	add_to_group("pixel_world");
 
 	pixels.resize(CHUNK * CHUNK * 4);
 	upload_image = Image::create_from_data(CHUNK, CHUNK, false, Image::FORMAT_RGBA8, pixels);
@@ -182,13 +189,79 @@ void PixelWorld::_physics_process(double) {
 	if (simulating && sim) tick_world();
 }
 
+// Terrain shapes and Box2D first, then the bodies are stamped into the grid for the cell sim
+// (sand piles on them, water flows around them) and lifted out again before particles move.
 void PixelWorld::tick_world() {
+	physics->update_terrain();
+	physics->step();
+	physics->stamp();
 	sim->tick();
+	physics->unstamp();
 	particles->step();
+	sync_bodies();
+}
+
+// Moves every registered node to its Box2D pose, then reports hits and departures. Nodes are
+// looked up by ObjectID each time: a signal handler may free any of them.
+void PixelWorld::sync_bodies() {
+	const Transform2D to_global = get_global_transform();
+	auto node_of = [&](int p_handle) -> PixelRigidBody * {
+		if (p_handle < 0 || (size_t)p_handle >= body_nodes.size() || !physics->has_body(p_handle)) return nullptr;
+		return Object::cast_to<PixelRigidBody>(ObjectDB::get_instance(body_nodes[(size_t)p_handle]));
+	};
+	for (size_t h = 0; h < body_nodes.size(); ++h) {
+		PixelRigidBody *node = node_of((int)h);
+		if (!node) continue;
+		const b2BodyId id = physics->body_id((int)h);
+		if (!b2Body_IsEnabled(id)) continue;
+		const b2Vec2 p = b2Body_GetPosition(id);
+		node->set_global_transform(to_global * Transform2D(b2Rot_GetAngle(b2Body_GetRotation(id)), Vector2(p.x, p.y)));
+	}
+	const std::vector<BodyHit> hits = physics->hits();  // a copy: handlers may remove bodies
+	for (const BodyHit &hit : hits) {
+		const Vector2 point = to_global.xform(Vector2(hit.x, hit.y));
+		const Vector2 normal = to_global.basis_xform(Vector2(hit.nx, hit.ny)).normalized();
+		PixelRigidBody *a = node_of(hit.a);
+		PixelRigidBody *b = node_of(hit.b);
+		if (a) a->emit_signal("hit", b ? Variant(b) : Variant(), point, normal, hit.speed);
+		a = node_of(hit.a);
+		if (b && node_of(hit.b)) b->emit_signal("hit", a ? Variant(a) : Variant(), point, -normal, hit.speed);
+	}
+	for (int h : physics->take_left_world())
+		if (PixelRigidBody *node = node_of(h)) node->emit_signal("left_world");
+}
+
+int PixelWorld::register_body(PixelRigidBody *p_body) {
+	if (!physics) return -1;
+	BodyDef def;
+	String error;
+	if (!p_body->build_def(table, get_global_transform().affine_inverse(), def, error)) {
+		UtilityFunctions::push_error("PixelRigidBody " + String(p_body->get_path()) + ": " + error);
+		return -1;
+	}
+	const int handle = physics->add_body(def);
+	if (handle < 0) {
+		UtilityFunctions::push_error("PixelRigidBody " + String(p_body->get_path()) + ": texture has no opaque pixels");
+		return -1;
+	}
+	if (body_nodes.size() <= (size_t)handle) body_nodes.resize((size_t)handle + 1);
+	body_nodes[(size_t)handle] = p_body->get_instance_id();
+	return handle;
+}
+
+void PixelWorld::unregister_body(int p_handle) {
+	if (!physics) return;
+	physics->remove_body(p_handle);
+	if (p_handle >= 0 && (size_t)p_handle < body_nodes.size()) body_nodes[(size_t)p_handle] = ObjectID();
 }
 
 void PixelWorld::_notification(int p_what) {
 	if (p_what != NOTIFICATION_PREDELETE) return;
+	// Bodies and joints may outlive the world: they must forget their Box2D ids first.
+	for (const ObjectID &id : body_nodes)
+		if (PixelRigidBody *node = Object::cast_to<PixelRigidBody>(ObjectDB::get_instance(id))) node->detach();
+	body_nodes.clear();
+	physics.reset();
 	RenderingServer *rs = RenderingServer::get_singleton();
 	if (!rs) return;
 	for (const auto &kv : views) {
@@ -312,6 +385,7 @@ void PixelWorld::stream_generated_chunks() {
 	    ChunkRect::around(centre, ax + margin + hysteresis, ay + margin + hysteresis);
 
 	sim->set_active_rect(active);
+	physics->set_active_rect(active);
 
 	std::vector<ChunkCoord> missing;
 	for (int y = loaded_rect.y0; y <= loaded_rect.y1; ++y)
@@ -567,11 +641,28 @@ int PixelWorld::explode(const Vector2i &p_position, int p_radius, float p_power)
 Dictionary PixelWorld::raycast(const Vector2 &p_from, const Vector2 &p_to, int p_mask) const {
 	Dictionary out;
 	if (!grid || !p_from.is_finite() || !p_to.is_finite()) return out;
-	const RayHit hit = ::raycast(*grid, p_from.x, p_from.y, p_to.x, p_to.y, (uint32_t)p_mask);
+	const Transform2D to_world = get_global_transform().affine_inverse();
+	const Vector2 from = to_world.xform(p_from), to = to_world.xform(p_to);
+	const RayHit hit = ::raycast(*grid, from.x, from.y, to.x, to.y, (uint32_t)p_mask & 15u);
+	const float grid_distance =
+	    hit.hit ? (Vector2(hit.x + 0.5f, hit.y + 0.5f) - from).length() - 0.5f : INFINITY;
+
+	int handle = -1;
+	float hx, hy, nx, ny;
+	if ((p_mask & RAY_BODIES) && physics && physics->raycast(from.x, from.y, to.x, to.y, handle, hx, hy, nx, ny) &&
+	    (Vector2(hx, hy) - from).length() < grid_distance && (size_t)handle < body_nodes.size()) {
+		out["position"] = Vector2i((int)std::floor(hx), (int)std::floor(hy));
+		out["point"] = get_global_transform().xform(Vector2(hx, hy));
+		out["material"] = StringName();
+		out["normal"] = Vector2i((int)std::lround(nx), (int)std::lround(ny));
+		out["collider"] = ObjectDB::get_instance(body_nodes[(size_t)handle]);
+		return out;
+	}
 	if (!hit.hit) return out;
 	out["position"] = Vector2i(hit.x, hit.y);
 	out["material"] = hit.unloaded ? StringName() : StringName(table.name_of(hit.mat).c_str());
 	out["normal"] = Vector2i(hit.nx, hit.ny);
+	out["collider"] = Variant();
 	return out;
 }
 
@@ -619,6 +710,14 @@ Dictionary PixelWorld::get_stats() const {
 	stats["particles_visual"] = particles ? (int64_t)particles->visual().size() : (int64_t)0;
 	stats["particles_dropped"] = particles ? particles->stats().dropped : (int64_t)0;
 	stats["particle_ms"] = particles ? particles->stats().particle_ms : 0.0;
+	const PhysicsStats physics_stats = physics ? physics->stats() : PhysicsStats{};
+	stats["bodies"] = physics_stats.bodies;
+	stats["bodies_awake"] = physics_stats.awake;
+	stats["terrain_bodies"] = physics_stats.terrain_bodies;
+	stats["shape_builds"] = physics_stats.shape_builds;
+	stats["physics_ms"] = physics_stats.physics_ms;
+	stats["shape_ms"] = physics_stats.shape_ms;
+	stats["stamp_ms"] = physics_stats.stamp_ms;
 	return stats;
 }
 

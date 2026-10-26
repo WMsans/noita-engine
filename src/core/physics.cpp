@@ -198,7 +198,13 @@ void PhysicsWorld::build_terrain(ChunkCoord coord, Mask&& mask) {
 	b2BodyDef bd = b2DefaultBodyDef();
 	bd.position = {(float)(coord.x * CHUNK), (float)(coord.y * CHUNK)};
 	const b2BodyId id = b2CreateBody(world, &bd);
+	// Grippier than Box2D's 0.6: sand settles at 45 degrees, and a wheel with rubber-like
+	// friction (1.5) needs about 1.0 combined to climb that.
+	b2SurfaceMaterial ground = b2DefaultSurfaceMaterial();
+	ground.friction = TERRAIN_FRICTION;
 	b2ChainDef cd = b2DefaultChainDef();
+	cd.materials = &ground;
+	cd.materialCount = 1;
 	cd.isLoop = true;
 	cd.filter.categoryBits = CAT_TERRAIN;
 	cd.filter.maskBits = CAT_BODY | CAT_CREATURE;

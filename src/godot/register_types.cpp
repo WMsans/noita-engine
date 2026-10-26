@@ -5,9 +5,11 @@
 #include <godot_cpp/godot.hpp>
 
 #include "pixel_biome.h"
+#include "pixel_joints.h"
 #include "pixel_material.h"
 #include "pixel_material_set.h"
 #include "pixel_reaction.h"
+#include "pixel_rigid_body.h"
 #include "pixel_room.h"
 #include "pixel_room_palette.h"
 #include "pixel_world.h"
@@ -28,6 +30,10 @@ static void initialize_noita_engine_module(ModuleInitializationLevel p_level) {
 	GDREGISTER_CLASS(PixelRoom);
 	GDREGISTER_CLASS(PixelWorldGenerator);
 	GDREGISTER_CLASS(PixelWorld);
+	GDREGISTER_CLASS(PixelRigidBody);
+	GDREGISTER_ABSTRACT_CLASS(PixelJoint);
+	GDREGISTER_CLASS(PixelRevoluteJoint);
+	GDREGISTER_CLASS(PixelWheelJoint);
 }
 
 static void uninitialize_noita_engine_module(ModuleInitializationLevel p_level) {

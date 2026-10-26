@@ -21,6 +21,7 @@
 #include "core/generator.h"
 #include "core/job_pool.h"
 #include "core/particles.h"
+#include "core/physics.h"
 #include "core/raycast.h"
 #include "core/simulator.h"
 #include "core/terrain.h"
@@ -29,6 +30,8 @@
 #include "pixel_world_generator.h"
 
 namespace godot {
+
+class PixelRigidBody;
 
 // Hosts one box world: streams chunks around the follow target, ticks the simulator once per
 // physics frame and draws every chunk as one 64x64 RGBA8 texture. 1 world cell = 1 unit.
@@ -62,8 +65,9 @@ class PixelWorld : public Node2D {
 	Rect2i arena = Rect2i(-512, -256, 1024, 512);
 	bool simulating = true;
 	int max_particles = DEFAULT_PARTICLE_CAPACITY;
+	float body_gravity = 600.0f;  // cells/s^2
 	// material_set, generator, world_seed, worker_threads, generator_threads,
-	// max_inserts_per_frame, max_particles and arena are read once in _ready (set them before adding the node
+	// max_inserts_per_frame, max_particles, body_gravity and arena are read once in _ready (set them before adding the node
 	// to the tree); load_radius, follow_target, simulating, active_radius, loaded_margin and
 	// discard_hysteresis are live.
 
@@ -72,6 +76,8 @@ class PixelWorld : public Node2D {
 	std::unique_ptr<WorldGrid> grid;
 	std::unique_ptr<Simulator> sim;
 	std::unique_ptr<ParticlePool> particles;  // after `grid`, so it is destroyed first
+	std::unique_ptr<PhysicsWorld> physics;     // ditto
+	std::vector<ObjectID> body_nodes;          // index = body handle
 	std::unique_ptr<BoxGenerator> arena_generator;  // holds a reference to `table`
 	std::unique_ptr<TerrainGenerator> generator;    // ditto; null on the arena path
 	// Declared last so it is destroyed first: its workers join before the generator and the
@@ -98,6 +104,7 @@ class PixelWorld : public Node2D {
 	MatId material_id(const StringName &p_material) const;
 	Color cell_color(const Cell &p_cell) const;
 	void tick_world();
+	void sync_bodies();
 	void create_particle_view();
 	void draw_particles();
 	Vector2 jittered(const Vector2 &p_velocity, float p_spread, int p_index, int p_count) const;
@@ -163,6 +170,16 @@ public:
 	void set_max_particles(int p_value) { max_particles = p_value; }
 	int get_max_particles() const { return max_particles; }
 
+	void set_body_gravity(float p_value) { body_gravity = p_value; }
+	float get_body_gravity() const { return body_gravity; }
+
+	static constexpr int RAY_BODIES = 16;  // with the core's RAY_SOLID..RAY_GAS
+
+	// For PixelRigidBody and the joints (not bound): null until _ready has run.
+	PhysicsWorld *get_physics() const { return physics.get(); }
+	int register_body(PixelRigidBody *p_body);  // handle, or -1 after reporting why
+	void unregister_body(int p_handle);
+
 	bool set_cell(const Vector2i &p_pos, const StringName &p_material);
 	StringName get_material_at(const Vector2i &p_pos) const;
 	bool is_area_ready(const Rect2i &p_rect) const;
@@ -181,7 +198,9 @@ public:
 	                           int p_count, float p_spread, float p_lifetime, float p_gravity_scale = 1.0f,
 	                           bool p_collides = true);
 	int explode(const Vector2i &p_position, int p_radius, float p_power);
-	Dictionary raycast(const Vector2 &p_from, const Vector2 &p_to, int p_mask = RAY_SOLID | RAY_POWDER) const;
+	// Hits on terrain carry "position", "material", "normal" (cells) and a null "collider";
+	// hits on a body carry the body as "collider" and the exact "point".
+	Dictionary raycast(const Vector2 &p_from, const Vector2 &p_to, int p_mask = RAY_SOLID | RAY_POWDER | RAY_BODIES) const;
 };
 
 } // namespace godot

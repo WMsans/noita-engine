@@ -261,6 +261,186 @@ func test_particle_api_rejects_unbounded_input() -> bool:
 	return true
 
 
+# --- rigid bodies (Plan 4) -------------------------------------------------------------------
+
+# A w x h texture, opaque everywhere, or a disc of that diameter when `disc` is set.
+func _body_texture(w: int, h: int, colour: Color = Color.WHITE, disc: bool = false) -> ImageTexture:
+	var image := Image.create(w, h, false, Image.FORMAT_RGBA8)
+	for y: int in h:
+		for x: int in w:
+			var inside := true
+			if disc:
+				var dx := x + 0.5 - w / 2.0
+				var dy := y + 0.5 - h / 2.0
+				inside = dx * dx + dy * dy <= (w / 2.0) * (w / 2.0)
+			image.set_pixel(x, y, colour if inside else Color(0, 0, 0, 0))
+	return ImageTexture.create_from_image(image)
+
+
+func _make_body(w: int, h: int, material: StringName, at: Vector2, disc: bool = false) -> PixelRigidBody:
+	var body := PixelRigidBody.new()
+	body.texture = _body_texture(w, h, Color.WHITE, disc)
+	body.pixel_material = material
+	if disc:
+		body.shape = PixelRigidBody.SHAPE_CIRCLE
+	body.position = at
+	root.add_child(body)
+	return body
+
+
+# Bodies and joints register on their first physics frame.
+func _register() -> void:
+	await physics_frame
+	await physics_frame
+
+
+func test_body_falls_and_rests() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	var body := _make_body(12, 12, &"wood", Vector2(0, 200))
+	var hits := [0]
+	body.hit.connect(func(_other: Node, _point: Vector2, _normal: Vector2, _speed: float) -> void: hits[0] += 1)
+	await _register()
+	world.step(240)
+	var y := body.position.y
+	var bodies: int = world.get_stats().bodies
+	world.free()
+	body.free()
+	if absf(y - 250.0) > 2.0 or hits[0] == 0 or bodies != 1:
+		printerr("  body rests at y %.2f (expected 250), %d hits, %d bodies" % [y, hits[0], bodies])
+		return false
+	return true
+
+
+func test_body_bad_definitions() -> bool:
+	var world: PixelWorld = await _make_world()
+	var nodes: Array[PixelRigidBody] = []
+	var no_texture := PixelRigidBody.new()
+	no_texture.pixel_material = &"wood"
+	nodes.append(no_texture)
+	var empty := PixelRigidBody.new()
+	empty.texture = _body_texture(4, 4, Color(0, 0, 0, 0))
+	empty.pixel_material = &"wood"
+	nodes.append(empty)
+	var unmapped := PixelRigidBody.new()
+	unmapped.texture = _body_texture(4, 4, Color.RED)
+	unmapped.palette = PixelRoomPalette.new()
+	unmapped.palette.entries = {Color.BLUE: &"wood"}
+	nodes.append(unmapped)
+	var unknown := PixelRigidBody.new()
+	unknown.texture = _body_texture(4, 4)
+	unknown.pixel_material = &"unobtainium"
+	nodes.append(unknown)
+	for node: PixelRigidBody in nodes:
+		root.add_child(node)
+	# The errors these push are the expected behaviour, not test failures.
+	await _register()
+	var bodies: int = world.get_stats().bodies
+	world.free()
+	for node: PixelRigidBody in nodes:
+		node.free()
+	if bodies != 0:
+		printerr("  %d bodies registered from bad definitions, expected 0" % bodies)
+		return false
+	return true
+
+
+func test_body_free_order() -> bool:
+	var world: PixelWorld = await _make_world()
+	var body := _make_body(12, 12, &"wood", Vector2(0, 100))
+	await _register()
+	world.step(10)
+	body.free()
+	world.step(10)
+	var left: int = world.get_stats().bodies
+
+	# Now the world goes first, with a body and a joint still alive.
+	var a := _make_body(12, 12, &"wood", Vector2(-6, 100))
+	var b := _make_body(12, 12, &"wood", Vector2(6, 100))
+	var joint := PixelRevoluteJoint.new()
+	root.add_child(joint)
+	joint.body_a = joint.get_path_to(a)
+	joint.body_b = joint.get_path_to(b)
+	await _register()
+	world.free()
+	await _register()
+	a.linear_velocity = Vector2(10, 0)
+	a.apply_impulse(Vector2(1, 0))
+	joint.free()
+	a.free()
+	b.free()
+	if left != 0:
+		printerr("  %d bodies left after freeing the only one" % left)
+		return false
+	return true
+
+
+func test_raycast_reports_body() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	var body := _make_body(12, 12, &"wood", Vector2(0, 200))
+	await _register()
+	world.step(240)
+	var hit: Dictionary = world.raycast(Vector2(-100, 250), Vector2(100, 250))
+	world.free()
+	var ok: bool = not hit.is_empty() and hit.collider == body and absf(hit.position.x + 6.0) <= 1.0
+	body.free()
+	if not ok:
+		printerr("  raycast returned %s" % hit)
+	return ok
+
+
+func test_left_world() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	var body := _make_body(12, 12, &"wood", Vector2(0, 100))
+	var left := [0]
+	body.left_world.connect(func() -> void: left[0] += 1)
+	await _register()
+	world.step(2)
+	body.teleport(Vector2(100000, 0), 0.0)
+	world.step(2)
+	var once: int = left[0]
+	world.step(5)
+	var still: int = left[0]
+	world.free()
+	body.free()
+	if once != 1 or still != 1:
+		printerr("  left_world fired %d then %d times, expected 1 and 1" % [once, still])
+		return false
+	return true
+
+
+func test_wheel_joint_motor() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	var chassis := _make_body(40, 8, &"rock", Vector2(0, 220))
+	var wheels: Array[PixelRigidBody] = [_make_body(10, 10, &"rock", Vector2(-14, 232), true), _make_body(10, 10, &"rock", Vector2(14, 232), true)]
+	var joints: Array[PixelWheelJoint] = []
+	for wheel: PixelRigidBody in wheels:
+		var joint := PixelWheelJoint.new()
+		joint.position = wheel.position
+		root.add_child(joint)
+		joint.body_a = joint.get_path_to(chassis)
+		joint.body_b = joint.get_path_to(wheel)
+		joint.enable_motor = true
+		joint.motor_speed = 5.0
+		joint.max_motor_torque = 1e6
+		joints.append(joint)
+	await _register()
+	await _register()
+	var start := chassis.position.x
+	world.step(180)
+	var moved := chassis.position.x - start
+	world.free()
+	for node: Node in [chassis, wheels[0], wheels[1], joints[0], joints[1]]:
+		node.free()
+	if moved < 40.0:
+		printerr("  the car moved %.1f cells, expected >= 40" % moved)
+		return false
+	return true
+
+
 # --- generated world (Plan 2) --------------------------------------------------------------
 
 # `target` must already be in the tree; the world's _ready blocks once to fill the active zone.
