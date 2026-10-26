@@ -496,6 +496,84 @@ TEST_CASE("region rebuild matches a full build") {
 	}
 }
 
+TEST_CASE("adjacent chunk rows never share a texel row in one dispatch") {
+	LightTable lt;
+	WorldGrid grid(lt.table, 3);
+	const MatId cycle[3] = {lt.rock, lt.lava, lt.wood};
+	for (int cy = 0; cy <= 1; ++cy)
+		for (int cx = 0; cx <= 1; ++cx) {
+			Chunk& chunk = *grid.insert(empty_chunk({cx, cy}));
+			for (int ly = 0; ly < CHUNK; ++ly)
+				for (int lx = 0; lx < CHUNK; ++lx) {
+					const uint32_t h = (uint32_t)(lx * 29 + ly * 13 + cx * 7 + cy * 5);
+					chunk.at(lx, ly).mat = cycle[h % 3];
+					if (h % 9 == 0) chunk.at(lx, ly).flags |= FLAG_BURNING;
+				}
+		}
+
+	// A 64-cell chunk is not a whole number of 3-cell blocks, so the two chunk rows expand to
+	// rows [0, 22) and [21, 43): row 21 is in both.
+	LightArea area{0, 0, 2 * CHUNK, 2 * CHUNK};
+	area.scale = 3;
+	const int tw = light_texel_w(area);
+	const int th = light_texel_h(area);
+	const LightRect top = light_region_rect(area, 0, 0, 2 * CHUNK, CHUNK);
+	const LightRect bottom = light_region_rect(area, 0, CHUNK, 2 * CHUNK, 2 * CHUNK);
+	REQUIRE(top.y + top.h > bottom.y);
+	REQUIRE(bottom.y + bottom.h > top.y);
+
+	// The dispatch never hands two workers the same row: overlapping rects become their union.
+	const std::vector<LightRect> merged = light_disjoint_rects({top, bottom});
+	REQUIRE(merged.size() == 1);
+	CHECK(merged[0].x == 0);
+	CHECK(merged[0].y == 0);
+	CHECK(merged[0].w == tw);
+	CHECK(merged[0].h == th);
+	// Rects that share no row are left alone.
+	const std::vector<LightRect> apart =
+	    light_disjoint_rects({LightRect{0, 0, 4, 3}, LightRect{0, 3, 4, 3}});
+	REQUIRE(apart.size() == 2);
+	CHECK(apart[0].h == 3);
+	CHECK(apart[1].y == 3);
+
+	// The multi-rect dispatch rebuilds the same bytes as a full build of the same grid.
+	const LightPalette pal = fire_palette(lt.table);
+	JobPool pool(4);
+	std::vector<LightTexel> out = build(grid, pal, area, &pool);
+	for (int ly = 0; ly < CHUNK; ++ly) {
+		grid.find({0, 0})->at(3, ly).mat = MAT_AIR;  // rock -> air, in the top row's chunk
+		grid.find({1, 1})->at(7, ly).flags |= FLAG_BURNING;
+	}
+	grid.find({0, 1})->at(20, 30).mat = lt.lava;  // and in the bottom row's chunk
+	build_light_rects(grid, pal, area, {top, bottom}, out.data(), &pool);
+	const std::vector<LightTexel> fresh = build(grid, pal, area, &pool);
+	REQUIRE(out.size() == fresh.size());
+	CHECK(std::memcmp(out.data(), fresh.data(), out.size() * sizeof(LightTexel)) == 0);
+
+	// An unloaded chunk's rect builds the opaque dark texel. Texels 21 stay out of it: the block
+	// on the chunk's first row and column also covers cells of the loaded neighbours.
+	grid.unload({1, 1});
+	build_light_region(grid, pal, area, CHUNK, CHUNK, 2 * CHUNK, 2 * CHUNK, out.data(), &pool);
+	for (int ty = 22; ty < th; ++ty)
+		for (int tx = 22; tx < tw; ++tx) {
+			CAPTURE(tx);
+			CAPTURE(ty);
+			CHECK(std::memcmp(&out[(size_t)ty * tw + tx], &DARK, sizeof(LightTexel)) == 0);
+		}
+
+	// At scale 1 a chunk's rect is exactly its cells, so every texel of it is the dark texel.
+	const LightArea flat{0, 0, 2 * CHUNK, 2 * CHUNK};
+	const int fw = light_texel_w(flat);
+	std::vector<LightTexel> one = build(grid, pal, flat, &pool);
+	build_light_region(grid, pal, flat, CHUNK, CHUNK, 2 * CHUNK, 2 * CHUNK, one.data(), &pool);
+	const std::vector<LightTexel> dark_row((size_t)CHUNK, DARK);
+	for (int ty = CHUNK; ty < 2 * CHUNK; ++ty) {
+		CAPTURE(ty);
+		CHECK(std::memcmp(&one[(size_t)ty * fw + CHUNK], dark_row.data(),
+		                  dark_row.size() * sizeof(LightTexel)) == 0);
+	}
+}
+
 TEST_CASE("region build clips to the area and to whole texel blocks") {
 	LightTable lt;
 	WorldGrid grid(lt.table, 1);

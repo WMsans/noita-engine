@@ -31,8 +31,9 @@ public:
 	// Writes `cell` verbatim (a landing particle keeps its temperature and shade) and wakes
 	// it like set(). The stamp is cleared so the next tick doesn't take it as already moved.
 	bool put(int wx, int wy, const Cell& cell);
-	// Wakes the 3x3 around a cell for the sim only: no render or shape flags, for cells whose
-	// look did not change for the renderer (body stamping writes and restores them each tick).
+	// Wakes the 3x3 around a cell for the sim and the light input: no render or shape flags, for
+	// cells whose look did not change for the renderer (body stamping writes and restores them each
+	// tick).
 	void wake(int wx, int wy);
 
 	template <class F>

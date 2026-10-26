@@ -239,10 +239,10 @@ Executed on 2026-10-25 on the Apple M1 machine (Apple M1, 8 cores, macOS 26.4.1,
 The branch was already checked out here and is not pushed, so step 1's `git fetch` /
 `git pull --ff-only` was **not** run — that part is for whoever runs this doc next.
 `./build.sh --release --test --verify` passed: both libraries OK,
-`172 | 172 passed`, `Status: SUCCESS!`,
+`173 | 173 passed`, `Status: SUCCESS!`,
 `OK: ALL GODOT TESTS PASSED.` (Plan 6 re-ran it; Plans 1–5 saw 152 core cases, Plan 6 161, the
 half-resolution follow-up added 4 core cases and 1 Godot case, the half-resolution review fix
-added 2 more, and the per-dirty-chunk inputs added 4 — 172.)
+added 2 more, the per-dirty-chunk inputs added 4, and their review fix added 1 — 173.)
 
 Plan 1 — `bench/results/macos-m1-plan1.json`: `budget_pass: true`, `sim_ms_mean` 3.53 ms
 (budget 6.0), `sim_ms_p99` 5.09 ms, `frame_ms_mean` 8.35 ms, `upload_ms_mean` 1.02 ms,
@@ -305,11 +305,11 @@ cascade work but not the CPU input walk, and it is the one that touches this fai
 
 Plan 6 half resolution — `bench/results/macos-m1-plan6-halfres.json` (same scene, one build,
 `--light-resolution=2`): **still `budget_pass: false`**, but the frame p99 drops from 21.14 to
-**17.16 ms** (−18%) and the mean from 11.24 to 10.67 ms. A second run of the same settings measured
+**17.22 ms** (−19%) and the mean from 11.24 to 10.68 ms. A second run of the same settings measured
 17.37 ms p99 (and a second default run 21.08 ms), so it is a real improvement, not noise — and it
 is still about 0.6 ms over the 16.6 ms budget. The other gates are unchanged (`sim_ms_mean` 4.44,
-`stream_ms_mean` 0.08, `view_missing` 0, `body_ms_mean` 1.39, `creature_ms_mean` 0.162);
-`light_cpu_ms_mean` 0.55 (p99 0.70 — the block packing walks the same cells with more per-cell
+`stream_ms_mean` 0.08, `view_missing` 0, `body_ms_mean` 1.39, `creature_ms_mean` 0.161);
+`light_cpu_ms_mean` 0.585 (p99 0.690 — the block packing walks the same cells with more per-cell
 work, while the upload copy that p99 sees drops to a quarter).
 `light_spots_mean` 5.3, `light_gpu_ms_stubbed` `true`, `light_resolution` 2. What it costs in
 looks: light is 2-cell blocks everywhere (softened by the overlay's linear filter), shadow edges
@@ -329,8 +329,9 @@ new lit area, a resolution change, a chunk that loaded or unloaded — still sho
 that same frame: an area or scale change rebuilds the whole base, and an inconsistent base (size or
 scale mismatch, never built) falls back to a full rebuild too.
 
-Measured on this M1, same scene, before → after: default resolution `light_cpu_ms_mean` 0.58 →
-**0.52 ms** and p99 1.02 → **0.90**; half resolution 0.66 → **0.55 ms** and p99 0.79 → **0.70**.
+Measured on this M1, same scene, before → after (before = the committed JSONs at `714a31f`, after =
+the re-run at `25ef088` + the review fix): default resolution `light_cpu_ms_mean` 0.589 → **0.546**
+and p99 1.002 → **0.914**; half resolution 0.655 → **0.585** and p99 0.755 → **0.690**.
 The win is small on this workload for two measured reasons: the bench camera flies at 10 cells per
 frame, so about 43% of the frames land on a new 32-cell-snapped lit area and have to rebuild the
 base in full, and on most of the remaining frames the sim's faucets, explosions, bodies and
@@ -340,8 +341,8 @@ The upload copy is gone from the steady state, which is where the p99 gain comes
 
 This fallback does not clear the failing gate on its own, and it is not meant to: `frame_ms_p99`
 is **GPU-bound** (the frame time cannot separate the light pass from the rest of the GPU work on
-Metal), so shaving CPU input-build time leaves it where it was: 20.96 ms default, 17.16 ms at half
-resolution, both over the 16.6 ms budget. The frame means do not move either (11.21 and 10.67 ms).
+Metal), so shaving CPU input-build time leaves it where it was: 20.85 ms default, 17.22 ms at half
+resolution, both over the 16.6 ms budget. The frame means do not move either (11.21 and 10.68 ms).
 What would move that number is the third fallback, the GPU-side input pass.
 
 The Linux Iris Xe numbers are still an open hand-off: `bench/results/linux-irisxe-plan1.json`

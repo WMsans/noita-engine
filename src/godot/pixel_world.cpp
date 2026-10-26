@@ -551,15 +551,16 @@ void PixelWorld::reset_light_stats() {
 // texels the last frame's spots wrote are restored from it. --headless has no RenderingDevice:
 // lighting is then a no-op with zeroed stats, not an error.
 void PixelWorld::build_light_frame() {
+	// Drained before any early return: a return that leaves the coords queued would grow the grid's
+	// vector without bound (the area cap's zoom-out path returns on most frames). Every path below
+	// that drops them also invalidates the base, so the next lit frame rebuilds the whole area.
+	const std::vector<ChunkCoord> unloaded = grid->take_light_unloaded();
 	RenderingServer *rs = RenderingServer::get_singleton();
 	Rect2 visible;
 	if (!lighting_enabled || !rs || !rs->get_rendering_device() || !visible_rect(visible)) {
 		reset_light_stats();
 		hide_light_backdrop();
 		hide_light_overlay();
-		// Nothing consumed the dirty state. Dropping it is safe because the base is invalidated:
-		// the next lit frame rebuilds the whole area.
-		grid->take_light_unloaded();
 		light_base_area = LightArea();
 		return;
 	}
@@ -577,6 +578,7 @@ void PixelWorld::build_light_frame() {
 		reset_light_stats();
 		hide_light_backdrop();
 		hide_light_overlay();
+		light_base_area = LightArea();  // the drained unloaded coords are dropped: repaint in full
 		return;
 	}
 	area.scale = light_resolution;
@@ -591,6 +593,7 @@ void PixelWorld::build_light_frame() {
 		reset_light_stats();
 		hide_light_backdrop();
 		hide_light_overlay();
+		light_base_area = LightArea();  // the drained unloaded coords are dropped: repaint in full
 		return;
 	}
 
@@ -605,8 +608,7 @@ void PixelWorld::build_light_frame() {
 	// handshake per chunk.
 	std::vector<LightRect> repainted;
 	if (!area_changed) {
-		std::vector<ChunkCoord> dirty;
-		for (const ChunkCoord &coord : grid->take_light_unloaded()) dirty.push_back(coord);
+		std::vector<ChunkCoord> dirty = unloaded;
 		grid->for_each_chunk([&](Chunk &chunk) {
 			if (chunk.light_dirty.exchange(false)) dirty.push_back(chunk.coord);
 		});
@@ -629,10 +631,10 @@ void PixelWorld::build_light_frame() {
 		}
 	}
 	if (area_changed) {
-		// A new area or a base that is inconsistent with it (size, scale, or never built) falls
-		// back to the whole-area build: the first frame after a change must show the new terrain.
+		// A different area on any of its five fields (origin, width, height, scale) falls back to the
+		// whole-area build, which is also what a never-built base hits: its remembered area starts
+		// zeroed. The first frame after a change must show the new terrain.
 		build_light_inputs(*grid, light_palette, area, base, pool.get());
-		grid->take_light_unloaded();
 		grid->for_each_chunk([](Chunk &chunk) { chunk.light_dirty.store(false); });
 		light_spot_rects.clear();
 		memcpy(texels, base, (size_t)bytes);
@@ -665,8 +667,9 @@ void PixelWorld::build_light_frame() {
 	light_spot_rects = spot_rects(area, spots);
 
 	light_spots = (int)spots.size();
-	// The build, the repaints and the spots are all of the input budget; the job takes the texels
-	// by value, so the render thread never reads light_texels, which the next frame overwrites.
+	// The build, the repaints and the spots are all of the input budget. The job stores the same
+	// copy-on-write buffer (there is no packed copy): a ptrw() next frame detaches it into a fresh
+	// copy if the render thread has not consumed this one.
 	light_cpu_ms =
 	    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
 	light_ran_this_frame = true;
@@ -726,8 +729,8 @@ void PixelWorld::render_light_frame(const LightArea &p_area, const PackedByteArr
 		hide_light_overlay();
 		return;
 	}
-	// build_light_frame packed the upload copy already: the job takes that buffer, so the render
-	// thread never reads light_texels, which the next frame overwrites.
+	// The job stores the same copy-on-write buffer as light_texels: the next frame's ptrw() detaches
+	// (copies) it if the render thread has not consumed this one, so the two never share storage.
 	rs->call_on_render_thread(
 	    Callable(memnew(LightRenderJob(light_renderer, p_texels, p_area, bloom_threshold, false))));
 	update_light_overlay(p_area);

@@ -177,17 +177,41 @@ LightPalette LightPalette::build(const MaterialTable& table, float fire_r, float
 	return pal;
 }
 
+std::vector<LightRect> light_disjoint_rects(const std::vector<LightRect>& rects) {
+	std::vector<LightRect> rows;
+	for (const LightRect& r : rects)
+		if (r.w > 0 && r.h > 0) rows.push_back(r);
+	std::sort(rows.begin(), rows.end(), [](const LightRect& a, const LightRect& b) {
+		return a.y != b.y ? a.y < b.y : a.x < b.x;
+	});
+	std::vector<LightRect> out;
+	for (const LightRect& r : rows) {
+		if (!out.empty() && r.y < out.back().y + out.back().h) {
+			LightRect& m = out.back();  // r.y >= m.y, so only the far edges grow
+			const int x1 = std::max(m.x + m.w, r.x + r.w);
+			m.x = std::min(m.x, r.x);
+			m.w = x1 - m.x;
+			m.h = std::max(m.y + m.h, r.y + r.h) - m.y;
+		} else {
+			out.push_back(r);
+		}
+	}
+	return out;
+}
+
 // Rows banded across the pool: the whole-area build is this over every texel, so the incremental
 // path cannot drift from it.
 void build_light_rects(const WorldGrid& grid, const LightPalette& palette, const LightArea& area,
                        const std::vector<LightRect>& rects, LightTexel* out, JobPool* pool) {
 	if (area.w <= 0 || area.h <= 0 || area.scale < 1) return;
 	const int texel_w = light_texel_w(area);
-	std::vector<int> first_band(rects.size());  // the global band index each rect starts at
+	const std::vector<LightRect> jobs = light_disjoint_rects(rects);
+	if (jobs.empty()) return;
+	std::vector<int> first_band(jobs.size());  // the global band index each rect starts at
 	int bands = 0;
-	for (size_t i = 0; i < rects.size(); ++i) {
+	for (size_t i = 0; i < jobs.size(); ++i) {
 		first_band[i] = bands;
-		bands += (rects[i].h + LIGHT_ROW_BAND - 1) / LIGHT_ROW_BAND;
+		bands += (jobs[i].h + LIGHT_ROW_BAND - 1) / LIGHT_ROW_BAND;
 	}
 	// One row of opacity scratch per band, allocated once per build and only above scale 1: the
 	// default path must not allocate per band every frame.
@@ -195,8 +219,8 @@ void build_light_rects(const WorldGrid& grid, const LightPalette& palette, const
 	if (area.scale > 1 && bands > 0) opacity_sum.resize((size_t)texel_w * bands);
 	auto work = [&](int band) {
 		size_t i = 0;  // the rects are few, so a linear scan per band is cheapest
-		while (i + 1 < rects.size() && band >= first_band[i + 1]) ++i;
-		const LightRect& rect = rects[i];
+		while (i + 1 < jobs.size() && band >= first_band[i + 1]) ++i;
+		const LightRect& rect = jobs[i];
 		const int r0 = rect.y + (band - first_band[i]) * LIGHT_ROW_BAND;
 		const int r1 = std::min(r0 + LIGHT_ROW_BAND, rect.y + rect.h);
 		uint32_t* const sum = opacity_sum.empty() ? nullptr : &opacity_sum[(size_t)band * texel_w];

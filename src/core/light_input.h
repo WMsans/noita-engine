@@ -66,8 +66,13 @@ void build_light_region(const WorldGrid& grid, const LightPalette& palette,
                         const LightArea& area, int cx0, int cy0, int cx1, int cy1,
                         LightTexel* out, JobPool* pool);
 
+// Rects that share no texel row: rects overlapping in y are unioned into their bounding box, so
+// two pool workers never write the same row at once. The union stays byte-identical because every
+// texel in it is rebuilt from the grid. Empty rects are dropped.
+std::vector<LightRect> light_disjoint_rects(const std::vector<LightRect>& rects);
+
 // Rebuilds the texels of every rect in one pool dispatch, so a frame that repaints many chunks
-// pays one handshake instead of one per chunk.
+// pays one handshake instead of one per chunk. The rects are made row-disjoint first.
 void build_light_rects(const WorldGrid& grid, const LightPalette& palette, const LightArea& area,
                        const std::vector<LightRect>& rects, LightTexel* out, JobPool* pool);
 
