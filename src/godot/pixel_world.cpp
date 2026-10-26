@@ -696,16 +696,17 @@ void PixelWorld::update_light_overlay(const LightArea &p_area) {
 		}
 	}
 
+	// Read the rendered area before the generation: the area is published last, so a generation
+	// read after it sees the textures that area was rendered into (no stale texture is wrapped).
+	const bool rendered = light_renderer->has_rendered_area(p_area.w, p_area.h);
 	const int generation = light_renderer->texture_generation();
 	const bool new_textures = generation != light_texture_generation;
 	if (new_textures) {
 		light_texture_generation = generation;
-		if (generation <= 0) {  // the render thread has not made the textures yet
-			hide_light_overlay();
-			return;
+		if (generation > 0) {
+			light_texture->set_texture_rd_rid(light_renderer->light_rd());
+			bloom_texture->set_texture_rd_rid(light_renderer->bloom_rd());
 		}
-		light_texture->set_texture_rd_rid(light_renderer->light_rd());
-		bloom_texture->set_texture_rd_rid(light_renderer->bloom_rd());
 	}
 
 	// The rects map the lit area in world cells onto the textures: the world-local rect times the
@@ -721,25 +722,22 @@ void PixelWorld::update_light_overlay(const LightArea &p_area) {
 		rs->canvas_item_add_texture_rect_region(bloom_canvas_item, rect, bloom_texture->get_rid(), bloom_region);
 	};
 
-	// A new lit-area size has not been rendered into the texture yet, so the overlay is hidden for
-	// this frame: a stale texture is never stretched over a different area. In practice the render
-	// thread has already recreated the textures by now (same frame), so this is the one frame the
-	// plan allows; it also covers the race where it has not.
-	const bool resized = p_area.w != light_overlay_area.w || p_area.h != light_overlay_area.h;
-	if (new_textures || resized) {
-		light_overlay_area = p_area;
-		rebuild_rects();
+	// Show only a texture the render thread rendered for this exact area: a resize or zoom costs
+	// one hidden frame, and a stale texture can never be stretched over a different area because
+	// the render is what makes the areas match (one atomic check, no frame counting).
+	if (generation <= 0 || !rendered) {
 		hide_light_overlay();
 		return;
+	}
+	if (new_textures || p_area.x0 != light_overlay_area.x0 || p_area.y0 != light_overlay_area.y0 ||
+	    p_area.w != light_overlay_area.w || p_area.h != light_overlay_area.h) {
+		light_overlay_area = p_area;
+		rebuild_rects();
 	}
 
 	rs->material_set_param(light_material, "ambient", ambient);
 	rs->material_set_param(light_material, "light_exposure", light_exposure);
 	rs->material_set_param(bloom_material, "bloom_strength", bloom_strength);
-	if (p_area.x0 != light_overlay_area.x0 || p_area.y0 != light_overlay_area.y0) {
-		light_overlay_area = p_area;
-		rebuild_rects();
-	}
 	if (!light_overlay_visible) {
 		rs->canvas_item_set_visible(light_canvas_item, true);
 		rs->canvas_item_set_visible(bloom_canvas_item, true);

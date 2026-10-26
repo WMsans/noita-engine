@@ -259,22 +259,10 @@ bool LightRenderer::create_textures(int p_w, int p_h) {
 }
 
 // The input is one texel per lit-area cell and must be uploaded whole, so it is sized to the
-// area. The six cascade sets bind it, so they are rebuilt with it.
+// area. The six cascade sets bind it, so they are rebuilt with it. Only called after
+// create_textures(), which freed the old input, its mips and every set that bound them.
 bool LightRenderer::create_input_texture(int p_w, int p_h) {
 	if (rd == nullptr || p_w <= 0 || p_h <= 0) return false;
-	// Sets first: freeing a texture frees its dependent sets.
-	for (RID &set : cascade_sets)
-		if (set.is_valid()) rd->free_rid(set);
-	for (RID &set : mip_sets)
-		if (set.is_valid()) rd->free_rid(set);
-	for (RID &set : cascade_sets) set = RID();
-	for (RID &set : mip_sets) set = RID();
-	for (int level = 2; level < LIGHT_CASCADES; ++level) {
-		if (mip_textures[level].is_valid()) rd->free_rid(mip_textures[level]);
-		mip_textures[level] = RID();
-	}
-	if (input_texture.is_valid()) rd->free_rid(input_texture);
-	input_texture = RID();
 
 	Ref<RDTextureFormat> format;
 	format.instantiate();
@@ -369,6 +357,8 @@ bool LightRenderer::create_mips() {
 	return true;
 }
 
+// Frees everything an area change replaces. Sets before the textures they bind: free_rid frees a
+// texture's dependent sets, and the other order prints "Attempted to free invalid ID".
 void LightRenderer::destroy_textures() {
 	if (rd == nullptr) return;
 	for (RID &set : cascade_sets)
@@ -386,7 +376,7 @@ void LightRenderer::destroy_textures() {
 	for (RID &set : bloom_blur_sets) set = RID();
 
 	// light_texture and bloom_textures[0] are retired (or freed) by the caller.
-	for (RID *texture : { &mip_textures[2], &mip_textures[3], &mip_textures[4],
+	for (RID *texture : { &input_texture, &mip_textures[2], &mip_textures[3], &mip_textures[4],
 	                      &mip_textures[5], &cascade_textures[0], &cascade_textures[1],
 	                      &bloom_textures[1] }) {
 		if (texture->is_valid()) rd->free_rid(*texture);
@@ -396,6 +386,8 @@ void LightRenderer::destroy_textures() {
 	bloom_textures[0] = RID();
 	bloom_textures[1] = RID();
 	bloom_texture = RID();
+	input_w = 0;
+	input_h = 0;
 }
 
 void LightRenderer::render(const PackedByteArray &p_texels, const LightArea &p_area, float p_bloom_threshold) {
@@ -418,6 +410,10 @@ void LightRenderer::render(const PackedByteArray &p_texels, const LightArea &p_a
 	// The area size only changes when the view does (PixelWorld passes a view rect with a snapped
 	// size), so recreating everything here costs nothing while scrolling.
 	if (p_area.w != area_w || p_area.h != area_h) {
+		// Publish "nothing rendered" before the old textures go: the overlay checks this from the
+		// main thread and must not draw the previous area's texture into this one.
+		rendered_w.store(0, std::memory_order_release);
+		rendered_h.store(0, std::memory_order_release);
 		if (!create_textures(p_area.w, p_area.h)) {
 			UtilityFunctions::push_error("PixelWorld: the light pass could not create its textures");
 			state_now.store(STATE_FAILED, std::memory_order_release);
@@ -526,6 +522,8 @@ void LightRenderer::render(const PackedByteArray &p_texels, const LightArea &p_a
 	}
 	rd->compute_list_end();
 	rd->capture_timestamp("light_end");
+	rendered_w.store(area_w, std::memory_order_release);
+	rendered_h.store(area_h, std::memory_order_release);
 }
 
 void LightRenderer::update_timestamps() {
@@ -556,19 +554,6 @@ void LightRenderer::free_all() {
 	update_timestamps();
 	retire_texture(light_texture);
 	retire_texture(bloom_textures[0]);
-	// Sets before the textures they bind: freeing a texture frees its dependent sets.
-	for (RID &set : cascade_sets)
-		if (set.is_valid()) rd->free_rid(set);
-	for (RID &set : mip_sets)
-		if (set.is_valid()) rd->free_rid(set);
-	for (RID &set : cascade_sets) set = RID();
-	for (RID &set : mip_sets) set = RID();
-	for (int level = 2; level < LIGHT_CASCADES; ++level) {
-		if (mip_textures[level].is_valid()) rd->free_rid(mip_textures[level]);
-		mip_textures[level] = RID();
-	}
-	if (input_texture.is_valid()) rd->free_rid(input_texture);
-	input_texture = RID();
 	destroy_textures();
 	free_retired(true);
 	// Pipelines before shaders: freeing a shader frees its dependent pipelines too.

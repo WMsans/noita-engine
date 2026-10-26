@@ -68,6 +68,12 @@ public:
 	RID bloom_rd() const { return bloom_texture; }
 	// Bumped whenever light_rd()/bloom_rd() change, so the overlay can re-point and skip a frame.
 	int texture_generation() const { return generation.load(std::memory_order_acquire); }
+	// True once a render has completed for exactly this area size, so the overlay never stretches
+	// a texture that was rendered for a different one.
+	bool has_rendered_area(int p_w, int p_h) const {
+		return p_w > 0 && rendered_w.load(std::memory_order_acquire) == p_w &&
+		       rendered_h.load(std::memory_order_acquire) == p_h;
+	}
 	// Light + bloom GPU milliseconds, from the newest frame whose timestamps were readable.
 	double gpu_ms() const { return gpu_ms_now.load(std::memory_order_acquire); }
 	void free_all();
@@ -112,6 +118,8 @@ private:
 	RenderingDevice *rd = nullptr;
 	std::atomic<int> state_now{ STATE_UNINITIALISED };
 	std::atomic<int> generation{ 0 };
+	std::atomic<int> rendered_w{ 0 };
+	std::atomic<int> rendered_h{ 0 };
 	std::atomic<double> gpu_ms_now{ 0.0 };
 
 	RID sampler;
