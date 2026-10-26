@@ -1,7 +1,7 @@
 # Lighting — Design
 
 Date: 2026-10-26
-Status: draft, awaiting approval
+Status: approved
 Parent spec: `docs/superpowers/specs/2026-10-25-noita-engine-design.md` (its "Lighting"
 section, the `PixelLight` line of the game-facing API and the lighting performance budget).
 This doc replaces those parts. Where the two disagree, this one wins. Roadmap: this is
@@ -224,6 +224,13 @@ blown open, and the benchmark still holds 60 fps on the M1 with lighting on.
 - If frame p99 fails while each lighting budget passes on its own, the fallback order is:
   half-resolution light first, then per-dirty-chunk inputs. The bench workload is not
   trimmed to make room (my call).
+- **Last fallback, if half resolution still misses the budget (user):** move input building
+  onto the GPU. A pass on the `RenderingDevice`, run on the render thread before the frame
+  draws, builds the emission and opacity textures from per-chunk data the GPU already has
+  (uploaded only when a chunk is dirty, as chunk colours are today) and a small GPU table
+  of per-material emission and opacity. That removes the per-frame CPU build and most of
+  the copy. Burning cells and `PixelLight` discs still have to reach that pass. Not built
+  unless the benchmark needs it.
 - A lighting demo scene: a dark generated cave, a creature carrying a `PixelLight` torch,
   a lava pool, wood that can be set on fire, and a key to blow holes in a wall so the
   same-frame update is visible.
