@@ -61,23 +61,9 @@ MatId MaterialTable::lookup(std::string_view name) const {
 	return NO_MAT;
 }
 
-const CompiledMaterial& MaterialTable::get(MatId id) const {
-	static const CompiledMaterial kNone{};
-	if (mats.empty()) return kNone;
-	return mats[id < mats.size() ? id : 0];  // unknown id reads as air rather than UB
-}
-
 const std::string& MaterialTable::name_of(MatId id) const {
 	static const std::string kNone;
 	return id < mats.size() ? mats[id].name : kNone;
-}
-
-const Reaction* MaterialTable::reaction(MatId self, MatId other) const {
-	const size_t n = mats.size();
-	if (self >= n || other >= n) return nullptr;
-	if (rxn_index.size() != n * n) return nullptr;  // never trust a table compile did not build
-	const int32_t idx = rxn_index[self * n + other];
-	return idx < 0 ? nullptr : &rxs[(size_t)idx];
 }
 
 bool MaterialTable::compile(const std::vector<MaterialDef>& defs,

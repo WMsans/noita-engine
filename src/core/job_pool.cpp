@@ -18,10 +18,12 @@ JobPool::~JobPool() {
 	for (std::thread& t : threads_) t.join();
 }
 
+// Efficiency cores count too: on the M1 (4P + 4E) bench_world's tick measured 3.70 ms with 4
+// workers and 3.12 ms with 7. The cap bounds the wake-up handshake on wide machines.
 int JobPool::default_workers() {
 	const int hw = (int)std::thread::hardware_concurrency();
 	const int spare = hw > 0 ? hw - 1 : 1;  // hardware_concurrency() may report 0
-	return std::max(1, std::min(4, spare));
+	return std::max(1, std::min(8, spare));
 }
 
 // The generation handshake is the wake/sleep scheme: the caller bumps `generation_` and

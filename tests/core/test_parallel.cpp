@@ -162,8 +162,8 @@ TEST_CASE("parallel_for runs every index once") {
 	}
 }
 
-TEST_CASE("default_workers is at least one and at most four") {
+TEST_CASE("default_workers is at least one and at most eight") {
 	const int n = JobPool::default_workers();
 	CHECK(n >= 1);
-	CHECK(n <= 4);
+	CHECK(n <= 8);
 }

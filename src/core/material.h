@@ -90,10 +90,21 @@ public:
 	MatId id_of(std::string_view name) const;  // NO_MAT if unknown
 	// An out-of-range id (including NO_MAT) reads as the air entry rather than UB, which is
 	// why a cell holding NO_MAT looks harmless here and must be fixed where it is spawned.
-	const CompiledMaterial& get(MatId id) const;
+	// get() and reaction() run per simulated cell, so they live here to inline.
+	const CompiledMaterial& get(MatId id) const {
+		static const CompiledMaterial kNone{};
+		if (mats.empty()) return kNone;
+		return mats[id < mats.size() ? id : 0];  // unknown id reads as air rather than UB
+	}
 	const std::string& name_of(MatId id) const;
 	// Null when the pair has no reaction. Returned orientation has a_into for `self`.
-	const Reaction* reaction(MatId self, MatId other) const;
+	const Reaction* reaction(MatId self, MatId other) const {
+		const size_t n = mats.size();
+		if (self >= n || other >= n) return nullptr;
+		if (rxn_index.size() != n * n) return nullptr;  // never trust a table compile did not build
+		const int32_t idx = rxn_index[self * n + other];
+		return idx < 0 ? nullptr : &rxs[(size_t)idx];
+	}
 	size_t size() const { return mats.size(); }
 
 private:
