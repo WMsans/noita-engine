@@ -183,16 +183,55 @@ TEST_CASE("chunk mask skips body pixels and non-solids") {
 	for (Cell& c : chunk.cells) c = Cell{};
 	chunk.at(0, 0).mat = table.id_of("rock");
 	chunk.at(1, 0).mat = table.id_of("sand");
+	chunk.at(1, 1).mat = table.id_of("rock");  // sand counts only when it rests on solid
 	chunk.at(2, 0).mat = table.id_of("water");
 	chunk.at(3, 0).mat = table.id_of("rock");
 	chunk.at(3, 0).flags |= FLAG_BODY;
 
 	Mask m;
-	chunk_solid_mask(chunk, table, m);
+	chunk_solid_mask(chunk, nullptr, table, m);
 	REQUIRE(m.size() == (size_t)CHUNK * CHUNK);
 	CHECK(m[0] == 1);
 	CHECK(m[1] == 1);
 	CHECK(m[2] == 0);
 	CHECK(m[3] == 0);
 	CHECK(m[4] == 0);
+}
+
+TEST_CASE("chunk mask counts powder only where it rests on solid ground") {
+	std::vector<MaterialDef> defs(2);
+	defs[0].name = "rock";
+	defs[0].cls = MatClass::Solid;
+	defs[0].collision_solid = true;
+	defs[1].name = "sand";
+	defs[1].cls = MatClass::Powder;
+	defs[1].collision_solid = true;
+	MaterialTable table;
+	std::string error;
+	REQUIRE(MaterialTable::compile(defs, {}, table, error));
+	const MatId rock = table.id_of("rock"), sand = table.id_of("sand");
+
+	Chunk chunk;
+	for (Cell& c : chunk.cells) c = Cell{};
+	chunk.at(0, 63).mat = rock;   // sand stack on rock: solid
+	chunk.at(0, 62).mat = sand;
+	chunk.at(0, 61).mat = sand;
+	chunk.at(1, 20).mat = sand;   // sand in mid-air: not solid
+	chunk.at(2, 63).mat = sand;   // bottom row: rests on the chunk below
+
+	Chunk below;
+	for (Cell& c : below.cells) c = Cell{};
+	below.at(2, 0).mat = rock;
+
+	Mask m;
+	chunk_solid_mask(chunk, &below, table, m);
+	CHECK(m[63 * CHUNK + 0] == 1);
+	CHECK(m[62 * CHUNK + 0] == 1);
+	CHECK(m[61 * CHUNK + 0] == 1);
+	CHECK(m[20 * CHUNK + 1] == 0);
+	CHECK(m[63 * CHUNK + 2] == 1);
+
+	below.at(2, 0).mat = MAT_AIR;
+	chunk_solid_mask(chunk, &below, table, m);
+	CHECK(m[63 * CHUNK + 2] == 0);
 }

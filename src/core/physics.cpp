@@ -1,8 +1,10 @@
 #include "physics.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 
+#include "generator.h"
 #include "material.h"
 #include "world_grid.h"
 
@@ -46,7 +48,7 @@ ChunkRect chunks_around(b2AABB box, int margin) {
 
 }  // namespace
 
-PhysicsWorld::PhysicsWorld(WorldGrid& grid, float gravity) : grid(grid) {
+PhysicsWorld::PhysicsWorld(WorldGrid& grid, float gravity) : grid(grid), gravity(gravity) {
 	b2SetLengthUnitsPerMeter(10.0f);  // before b2DefaultWorldDef, which reads it
 	b2WorldDef def = b2DefaultWorldDef();
 	def.gravity = {0.0f, gravity};
@@ -118,6 +120,7 @@ int PhysicsWorld::add_body(const BodyDef& def) {
 	body->w = def.w;
 	body->h = def.h;
 	body->pixels = def.pixels;
+	body->opaque = (int)std::count(mask.begin(), mask.end(), 1);
 	bodies.push_back(std::move(body));
 	++stats_.bodies;
 	return handle;
@@ -178,7 +181,7 @@ void PhysicsWorld::update_terrain() {
 				const auto it = terrain.find(chunk_key({x, y}));
 				if (it != terrain.end() && !chunk->shape_dirty.load()) continue;
 				chunk->shape_dirty.store(false);
-				chunk_solid_mask(*chunk, grid.materials(), mask);
+				chunk_solid_mask(*chunk, grid.find({x, y + 1}), grid.materials(), mask);
 				if (it != terrain.end() && it->second.mask == mask) continue;
 				build_terrain({x, y}, std::move(mask));
 				mask = Mask();
@@ -240,6 +243,9 @@ void PhysicsWorld::step() {
 		}
 	}
 
+	for (const std::unique_ptr<Body>& body : bodies)
+		if (body && body->submerged > 0 && b2Body_IsEnabled(body->id)) apply_buoyancy(*body);
+
 	b2World_Step(world, PHYSICS_DT, PHYSICS_SUBSTEPS);
 
 	hits_.clear();
@@ -262,6 +268,80 @@ void PhysicsWorld::step() {
 		if (body && b2Body_IsEnabled(body->id) && b2Body_IsAwake(body->id)) ++awake;
 	stats_.awake = awake;
 	stats_.physics_ms = ms_since(start);
+}
+
+// Archimedes on the liquid the last stamp covered, at its centroid (so a tipped crate rights
+// itself), plus drag in proportion to how much of the body is under.
+void PhysicsWorld::apply_buoyancy(Body& body) {
+	constexpr float LIQUID_DRAG = 2.0f;  // per second
+	const float fraction = (float)body.submerged / (float)body.opaque;
+	const b2Vec2 centroid = {body.sum_x / body.submerged, body.sum_y / body.submerged};
+	b2Body_ApplyForce(body.id, {0.0f, -body.liquid_density * gravity}, centroid, true);
+	const float mass = b2Body_GetMass(body.id);
+	b2Body_ApplyForceToCenter(body.id, b2MulSV(-LIQUID_DRAG * fraction * mass, b2Body_GetLinearVelocity(body.id)),
+	                          true);
+	b2Body_ApplyTorque(body.id,
+	                   -LIQUID_DRAG * fraction * b2Body_GetRotationalInertia(body.id) * b2Body_GetAngularVelocity(body.id),
+	                   true);
+}
+
+void PhysicsWorld::stamp() {
+	const Clock::time_point start = Clock::now();
+	const MaterialTable& mt = grid.materials();
+	for (const std::unique_ptr<Body>& owned : bodies) {
+		if (!owned || !b2Body_IsEnabled(owned->id)) continue;
+		Body& body = *owned;
+		body.submerged = 0;
+		body.liquid_density = body.sum_x = body.sum_y = 0;
+		body.stamped_awake = b2Body_IsAwake(body.id);
+		// Inverse mapping: every cell in the AABB looks up the pixel under its centre, so a
+		// rotated body has no holes.
+		const b2AABB box = b2Body_ComputeBounds(body.id);
+		const int x0 = (int)std::floor(box.lowerBound.x), x1 = (int)std::ceil(box.upperBound.x);
+		const int y0 = (int)std::floor(box.lowerBound.y), y1 = (int)std::ceil(box.upperBound.y);
+		for (int wy = y0; wy < y1; ++wy)
+			for (int wx = x0; wx < x1; ++wx) {
+				const b2Vec2 local = b2Body_GetLocalPoint(body.id, {wx + 0.5f, wy + 0.5f});
+				const int px = (int)std::floor(local.x + body.w * 0.5f), py = (int)std::floor(local.y + body.h * 0.5f);
+				if (px < 0 || py < 0 || px >= body.w || py >= body.h) continue;
+				const MatId mat = body.pixels[(size_t)py * body.w + px];
+				if (mat == NO_MAT) continue;
+				Chunk* chunk = grid.find(chunk_of(wx, wy));
+				if (!chunk) continue;
+				Cell& cell = chunk->at(floor_mod(wx, CHUNK), floor_mod(wy, CHUNK));
+				if (cell.flags & FLAG_BODY) continue;  // another body got here first
+				const CompiledMaterial& under = mt.get(cell.mat);
+				if (under.cls == MatClass::Solid) continue;  // terrain stays; Box2D separates them
+				if (under.cls == MatClass::Liquid) {
+					++body.submerged;
+					body.liquid_density += under.density;
+					body.sum_x += wx + 0.5f;
+					body.sum_y += wy + 0.5f;
+				}
+				body.held.push_back({wx, wy, cell});
+				cell = spawn_cell(mat, mt, grid.seed(), wx, wy);
+				cell.flags |= FLAG_BODY;
+				if (body.stamped_awake) grid.wake(wx, wy);
+			}
+	}
+	stats_.stamp_ms = ms_since(start);
+}
+
+void PhysicsWorld::unstamp() {
+	const Clock::time_point start = Clock::now();
+	for (const std::unique_ptr<Body>& body : bodies) {
+		if (!body) continue;
+		for (const Body::Held& h : body->held) {
+			Chunk* chunk = grid.find(chunk_of(h.x, h.y));
+			if (!chunk) continue;
+			Cell& cell = chunk->at(floor_mod(h.x, CHUNK), floor_mod(h.y, CHUNK));
+			if (!(cell.flags & FLAG_BODY)) continue;
+			cell = h.cell;
+			if (body->stamped_awake) grid.wake(h.x, h.y);
+		}
+		body->held.clear();
+	}
+	stats_.stamp_ms += ms_since(start);
 }
 
 std::vector<int> PhysicsWorld::take_left_world() {

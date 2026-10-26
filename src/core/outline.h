@@ -9,8 +9,11 @@
 using Mask = std::vector<uint8_t>;  // row-major w*h, 1 = solid
 using Loop = std::vector<b2Vec2>;   // closed; the first point is not repeated at the end
 
-// collision_solid && !FLAG_BODY over the chunk's CHUNK*CHUNK cells.
-void chunk_solid_mask(const Chunk& chunk, const MaterialTable& table, Mask& out);
+// collision_solid && !FLAG_BODY over the chunk's CHUNK*CHUNK cells, except that a powder
+// counts only where it rests on solid ground: the cell below is solid in the mask, or, on the
+// bottom row, collision-solid in `below` (null = unloaded, which counts as solid). Sand piled
+// on a body or falling through the air makes no shapes.
+void chunk_solid_mask(const Chunk& chunk, const Chunk* below, const MaterialTable& table, Mask& out);
 
 // Pixel-edge outlines of the solid cells, in cell coords [0,w]x[0,h]; cells outside the mask
 // are empty. Collinear points are merged. Winding: Box2D's right normal (d.y, -d.x) of every

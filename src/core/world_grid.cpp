@@ -80,6 +80,14 @@ bool WorldGrid::put(int wx, int wy, const Cell& cell) {
 	return true;
 }
 
+void WorldGrid::wake(int wx, int wy) {
+	for (int dy = -1; dy <= 1; ++dy)
+		for (int dx = -1; dx <= 1; ++dx) {
+			Chunk* chunk = find(chunk_of(wx + dx, wy + dy));
+			if (chunk) chunk->mark_next(floor_mod(wx + dx, CHUNK), floor_mod(wy + dy, CHUNK));
+		}
+}
+
 void WorldGrid::mark_world(int wx, int wy) {
 	for (int dy = -1; dy <= 1; ++dy)
 		for (int dx = -1; dx <= 1; ++dx) {

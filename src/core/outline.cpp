@@ -52,12 +52,20 @@ void dp(const Loop& loop, size_t i, size_t j, float eps, std::vector<uint8_t>& k
 
 }  // namespace
 
-void chunk_solid_mask(const Chunk& chunk, const MaterialTable& table, Mask& out) {
+void chunk_solid_mask(const Chunk& chunk, const Chunk* below, const MaterialTable& table, Mask& out) {
 	out.assign((size_t)CHUNK * CHUNK, 0);
-	for (size_t i = 0; i < out.size(); ++i) {
-		const Cell& c = chunk.cells[i];
-		out[i] = table.get(c.mat).collision_solid && !(c.flags & FLAG_BODY);
-	}
+	auto solid = [&](const Cell& c) { return table.get(c.mat).collision_solid && !(c.flags & FLAG_BODY); };
+	for (int x = 0; x < CHUNK; ++x)
+		for (int y = CHUNK - 1; y >= 0; --y) {  // bottom up, so the support below is known
+			const size_t i = (size_t)y * CHUNK + x;
+			const Cell& c = chunk.cells[i];
+			if (!solid(c)) continue;
+			if (table.get(c.mat).cls == MatClass::Powder) {
+				const bool supported = y + 1 < CHUNK ? out[i + CHUNK] != 0 : (!below || solid(below->cells[(size_t)x]));
+				if (!supported) continue;
+			}
+			out[i] = 1;
+		}
 }
 
 std::vector<Loop> trace_loops(const Mask& mask, int w, int h) {

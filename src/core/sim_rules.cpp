@@ -31,6 +31,7 @@ struct Mover {
 // liquid when it is lighter than the mover, and to a gas when it is heavier (gases rise
 // through denser fluids). Solids are never passable.
 bool passable(const Mover& m, const Cell& target) {
+	if (target.flags & FLAG_BODY) return false;  // a stamped body pixel is a wall
 	const CompiledMaterial& t = m.mt.get(target.mat);
 	if (t.cls == MatClass::Empty) return true;
 	if (t.cls != MatClass::Liquid && t.cls != MatClass::Gas) return false;
@@ -178,7 +179,7 @@ void react(Chem& c) {
 	for (int i = 0; i < 4; ++i) {
 		const int nx = c.lx + NDX[i], ny = c.ly + NDY[i];
 		Cell* n = c.nb.cell(nx, ny);
-		if (!n) continue;
+		if (!n || (n->flags & FLAG_BODY)) continue;  // body pixels never react
 		const Reaction* r = c.mt.reaction(c.self.mat, n->mat);
 		if (!r) continue;
 		// The temperature condition is read from the cell being updated, before any change.
@@ -215,7 +216,7 @@ void exchange_heat(Chem& c) {
 	const int i = (int)(hash5(c.seed, c.tick, c.wx, c.wy, SALT_HEAT) & 3u);
 	const int nx = c.lx + NDX[i], ny = c.ly + NDY[i];
 	Cell* n = c.nb.cell(nx, ny);
-	if (!n) return;  // an unloaded chunk holds no heat either
+	if (!n || (n->flags & FLAG_BODY)) return;  // an unloaded chunk holds no heat, nor does a body pixel
 
 	const CompiledMaterial& ndef = c.mt.get(n->mat);
 	if (ndef.cls == MatClass::Empty) {
@@ -313,6 +314,7 @@ void update_cell(Neighborhood& nb, int lx, int ly, uint32_t tick, uint32_t seed,
 	Cell* self = nb.cell(lx, ly);
 	if (!self) return;
 	if (self->mat == MAT_AIR) return;
+	if (self->flags & FLAG_BODY) return;  // stamped body pixels are inert
 	if (self->stamp == (uint8_t)tick) return;  // already moved/updated this tick
 
 	const ChunkCoord centre = nb.c[1][1]->coord;

@@ -59,7 +59,11 @@ public:
 	void set_active_rect(std::optional<ChunkRect> rect) { active_rect = rect; }
 	// Shapes for chunks near bodies that want to be enabled; drops shapes of unloaded chunks.
 	void update_terrain();
-	void step();  // zones, support forces, b2World_Step, hits
+	void step();  // zones, buoyancy from the last stamp, b2World_Step, hits
+	// Writes every enabled body's pixels into the grid with FLAG_BODY, holding the air, gas,
+	// powder or liquid they cover; non-body solids and other bodies' pixels are skipped.
+	void stamp();    // before Simulator::tick
+	void unstamp();  // after it: every cell still carrying FLAG_BODY gets its held cell back
 
 	const std::vector<BodyHit>& hits() const { return hits_; }
 	std::vector<int> take_left_world();  // handles whose chunk unloaded since the last call
@@ -73,7 +77,17 @@ private:
 		b2BodyId id;
 		int w, h;
 		std::vector<MatId> pixels;
+		int opaque = 0;
 		bool left = false;  // reported by take_left_world and not enabled since
+		struct Held {
+			int x, y;
+			Cell cell;
+		};
+		std::vector<Held> held;  // cells under the stamped pixels
+		bool stamped_awake = false;
+		// From the last stamp: liquid pixels under the body, their summed density and position.
+		int submerged = 0;
+		float liquid_density = 0, sum_x = 0, sum_y = 0;
 	};
 	struct Terrain {
 		b2BodyId id;
@@ -84,7 +98,10 @@ private:
 	void build_terrain(ChunkCoord coord, Mask&& mask);
 	void wake_bodies_in(ChunkCoord coord);
 
+	void apply_buoyancy(Body& body);
+
 	WorldGrid& grid;
+	float gravity;
 	b2WorldId world;
 	std::vector<std::unique_ptr<Body>> bodies;  // index = handle; null once removed
 	std::unordered_map<int64_t, Terrain> terrain;
