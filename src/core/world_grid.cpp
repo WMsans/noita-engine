@@ -69,6 +69,16 @@ bool WorldGrid::set(int wx, int wy, MatId mat) {
 	return true;
 }
 
+bool WorldGrid::put(int wx, int wy, const Cell& cell) {
+	Chunk* chunk = find(chunk_of(wx, wy));
+	if (!chunk) return false;
+	Cell& out = chunk->at(floor_mod(wx, CHUNK), floor_mod(wy, CHUNK));
+	out = cell;
+	out.stamp = 0;
+	mark_world(wx, wy);
+	return true;
+}
+
 void WorldGrid::mark_world(int wx, int wy) {
 	for (int dy = -1; dy <= 1; ++dy)
 		for (int dx = -1; dx <= 1; ++dx) {

@@ -24,6 +24,9 @@ public:
 
 	bool get(int wx, int wy, Cell& out) const;
 	bool set(int wx, int wy, MatId mat);
+	// Writes `cell` verbatim (a landing particle keeps its temperature and shade) and wakes
+	// it like set(). The stamp is cleared so the next tick doesn't take it as already moved.
+	bool put(int wx, int wy, const Cell& cell);
 
 	template <class F>
 	void for_each_chunk(F&& f) {
