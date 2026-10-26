@@ -286,6 +286,16 @@ int spot_source_radius(float radius) {
 	return (int)std::lround(r);
 }
 
+int light_surface_passes(int depth_cells, int scale) {
+	if (scale < 1 || depth_cells <= 0) return 0;
+	const int depth = std::min(depth_cells, LIGHT_SURFACE_MAX_DEPTH);
+	return (depth + scale - 1) / scale;
+}
+
+float light_surface_falloff(int passes) {
+	return passes <= 0 ? 1.0f : std::pow(LIGHT_SURFACE_FADE, 1.0f / (float)passes);
+}
+
 void add_light_spots(const LightArea& area, const std::vector<LightSpot>& spots, LightTexel* out) {
 	if (area.w <= 0 || area.h <= 0 || area.scale < 1 || light_texel_w(area) <= 0) return;
 	const int texel_w = light_texel_w(area);
