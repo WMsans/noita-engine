@@ -186,6 +186,18 @@ void PixelWorld::_ready() {
 		palette[i].color = color_from_rgba32(material.color_rgba);
 		palette[i].shade_amount = material.shade_amount;
 	}
+	cell_rgba.assign(palette.size() * 2 * 256, 0u);
+	for (size_t m = 0; m < palette.size(); ++m)
+		for (int burning = 0; burning < 2; ++burning)
+			for (int shade = 0; shade < 256; ++shade) {
+				Cell cell{};
+				cell.mat = (MatId)m;
+				cell.flags = burning ? FLAG_BURNING : 0;
+				cell.shade = (uint8_t)shade;
+				const Color color = cell_color(cell);
+				const uint8_t px[4] = {to_byte(color.r), to_byte(color.g), to_byte(color.b), to_byte(color.a)};
+				memcpy(&cell_rgba[(m * 2 + burning) * 256 + shade], px, sizeof(px));
+			}
 	rebuild_light_palette();
 
 	// The pool must outlive the simulator, which is why the node owns both.
@@ -862,10 +874,24 @@ void PixelWorld::upload_dirty_chunks() {
 	const auto start = std::chrono::steady_clock::now();
 	double first_upload = 0.0;
 
+	upload_chunks.clear();
 	grid->for_each_chunk([&](Chunk &chunk) {
-		if (!chunk.render_dirty.exchange(false)) return;
-		write_chunk_image(chunk, pixels.ptrw());
-		upload_image->set_data(CHUNK, CHUNK, false, Image::FORMAT_RGBA8, pixels);
+		if (chunk.render_dirty.exchange(false)) upload_chunks.push_back(&chunk);
+	});
+	// The colour conversion is most of the upload (about 160 dirty chunks a frame in bench_world)
+	// and the chunks are independent, so it runs over the pool; the RenderingServer calls stay on
+	// this thread.
+	const size_t chunk_texels = (size_t)CHUNK * CHUNK;
+	upload_pixels.resize(upload_chunks.size() * chunk_texels);
+	if (!upload_chunks.empty()) {
+		pool->parallel_for((int)upload_chunks.size(), [&](int i) {
+			write_chunk_image(*upload_chunks[(size_t)i], &upload_pixels[(size_t)i * chunk_texels]);
+		});
+	}
+
+	for (size_t i = 0; i < upload_chunks.size(); ++i) {
+		const Chunk &chunk = *upload_chunks[i];
+		memcpy(upload_image->ptrw(), &upload_pixels[i * chunk_texels], chunk_texels * sizeof(uint32_t));
 
 		ChunkView &view = view_for(chunk.coord);
 		if (view.has_texture) {
@@ -880,7 +906,7 @@ void PixelWorld::upload_dirty_chunks() {
 			    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - create_start)
 			        .count();
 		}
-	});
+	}
 	first_upload_ms = first_upload;
 
 	const auto elapsed = std::chrono::steady_clock::now() - start;
@@ -903,16 +929,14 @@ Color PixelWorld::cell_color(const Cell &p_cell) const {
 	return color;
 }
 
-void PixelWorld::write_chunk_image(const Chunk &chunk, uint8_t *out) const {
-	for (int ly = 0; ly < CHUNK; ++ly)
-		for (int lx = 0; lx < CHUNK; ++lx) {
-			const Color color = cell_color(chunk.cells[(size_t)ly * CHUNK + lx]);
-			uint8_t *px = out + ((size_t)ly * CHUNK + lx) * 4;
-			px[0] = to_byte(color.r);
-			px[1] = to_byte(color.g);
-			px[2] = to_byte(color.b);
-			px[3] = to_byte(color.a);
-		}
+// Runs on the pool: reads only the chunk and cell_rgba. An id past the palette draws nothing,
+// like cell_color().
+void PixelWorld::write_chunk_image(const Chunk &chunk, uint32_t *out) const {
+	const size_t mats = palette.size();
+	for (size_t i = 0; i < (size_t)CHUNK * CHUNK; ++i) {
+		const Cell &cell = chunk.cells[i];
+		out[i] = cell.mat < mats ? cell_rgba[((size_t)cell.mat * 2 + (cell.flags & FLAG_BURNING)) * 256 + cell.shade] : 0u;
+	}
 }
 
 PixelWorld::ChunkView &PixelWorld::view_for(ChunkCoord coord) {

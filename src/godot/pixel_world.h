@@ -105,7 +105,12 @@ class PixelWorld : public Node2D {
 	std::vector<ChunkCoord> loaded;
 	std::unordered_map<int64_t, ChunkView> views;
 	std::vector<PaletteEntry> palette;
+	// RGBA8 bytes per (material, burning, shade): the values cell_color() gives, so a chunk upload
+	// is one table lookup per cell instead of float colour maths.
+	std::vector<uint32_t> cell_rgba;
 	PackedByteArray pixels;
+	std::vector<Chunk *> upload_chunks;   // this frame's dirty chunks
+	std::vector<uint32_t> upload_pixels;  // their RGBA8 pixels, CHUNK * CHUNK per chunk
 	// Every particle is one instance of a 1x1 quad in a MultiMesh on its own canvas item.
 	Ref<QuadMesh> particle_quad;
 	RID particle_multimesh;
@@ -163,7 +168,7 @@ class PixelWorld : public Node2D {
 	void stream_chunks();
 	void stream_generated_chunks();
 	void upload_dirty_chunks();
-	void write_chunk_image(const Chunk &chunk, uint8_t *out) const;
+	void write_chunk_image(const Chunk &chunk, uint32_t *out) const;
 	ChunkView &view_for(ChunkCoord coord);
 	void drop_view(ChunkCoord coord);
 	void evict(ChunkCoord coord);
