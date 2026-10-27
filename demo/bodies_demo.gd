@@ -18,7 +18,7 @@ var wheels: Array[PixelWheelJoint] = []
 
 
 func _ready() -> void:
-	var ground: Dictionary = world.raycast(Vector2(0.5, -150), Vector2(0.5, 300), PixelWorld.RAY_SOLID | PixelWorld.RAY_POWDER)
+	var ground: Dictionary = world.raycast(Vector2(0.5, -150), Vector2(0.5, 450), PixelWorld.RAY_SOLID | PixelWorld.RAY_POWDER)
 	var ground_y: float = ground.position.y if not ground.is_empty() else 0.0
 	_build_car(Vector2(0, ground_y - 30))
 	camera.position = chassis.position

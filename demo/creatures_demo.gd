@@ -16,7 +16,7 @@ var wanderers: Array[PixelCharacter] = []
 
 func _ready() -> void:
 	super()
-	var ground: Dictionary = world.raycast(Vector2(-60.5, -150), Vector2(-60.5, 300), PixelWorld.RAY_SOLID | PixelWorld.RAY_POWDER)
+	var ground: Dictionary = world.raycast(Vector2(-60.5, -150), Vector2(-60.5, 450), PixelWorld.RAY_SOLID | PixelWorld.RAY_POWDER)
 	var ground_y: float = ground.position.y if not ground.is_empty() else 0.0
 	player = add_character(Vector2(-60, ground_y - 20), Color(0.3, 0.6, 1.0))
 	for i: int in WANDERERS:

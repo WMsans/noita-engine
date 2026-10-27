@@ -19,6 +19,15 @@ const EXPLODE_POWER := 300.0  # cells per second at the centre
 var selected := 2  # sand
 
 
+func _ready() -> void:
+	if world.generator == null:
+		return
+	# Start the view on the generated surface, wherever the hills put it.
+	var ground: Dictionary = world.raycast(Vector2(0.5, -150), Vector2(0.5, 450), PixelWorld.RAY_SOLID | PixelWorld.RAY_POWDER)
+	if not ground.is_empty():
+		camera.position = Vector2(0, ground.position.y)
+
+
 func _process(delta: float) -> void:
 	_pan(delta)
 	_paint()
