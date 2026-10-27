@@ -9,6 +9,10 @@
 #include "generator.h"
 #include "material.h"
 
+// How a biome carves its caves. Classic: ridged tunnels plus fBm caverns. Slabs: mostly open
+// space around wide, flat, ragged rock slabs.
+enum class CaveStyle : uint8_t { Classic, Slabs };
+
 struct BiomeDef {
 	std::string name;
 	int min_depth = 0, max_depth = -1;  // [min, max) cells below the local surface; -1 = open
@@ -18,6 +22,7 @@ struct BiomeDef {
 	int surface_depth = 0;
 	// "Amounts" in [0, 1]: 0 = never, larger = more. Blended by biome weight per cell.
 	float pocket_threshold = 0, tunnel_threshold = 0, cavern_threshold = 0, liquid_threshold = 0;
+	CaveStyle cave_style = CaveStyle::Classic;
 };
 
 enum class PaletteKind : uint8_t { Material, Keep, MarkerLight, MarkerBody };
@@ -90,8 +95,11 @@ private:
 		MatId surface = MAT_AIR, base = MAT_AIR, pocket = MAT_AIR, liquid = MAT_AIR;
 	};
 	// Per-cell thresholds: the weights blended "amounts" the fields are tested against.
+	// tunnel and cavern blend over the classic biomes only; classic_weight and slabs_weight
+	// are the shares of the cell's biome weight on each style (they sum to 1).
 	struct Blended {
 		double tunnel = 0, cavern = 0, pocket = 0, liquid = 0, surface_depth = 0;
+		double classic_weight = 0, slabs_weight = 0;
 	};
 
 	TerrainGenerator(const TerrainConfig& cfg, const MaterialTable& table, uint32_t seed)
@@ -106,6 +114,10 @@ private:
 	int pick_from(const BiomeWeights&, int wx, int wy) const;
 	double taper_at(int wx, int depth) const;
 	bool cave_for(int wx, int wy, int depth, const Blended&) const;
+	// Signed cave margins: > 0 is air. Each is floored at -1 so a style that never carves
+	// still mixes with the other at a style border.
+	double classic_margin(int wx, int wy, double taper, const Blended&) const;
+	double slabs_margin(int wx, int wy, double taper, const Blended&) const;
 
 	const MaterialTable& table_;  // must outlive the generator
 	const uint32_t seed_;

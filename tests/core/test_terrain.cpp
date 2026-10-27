@@ -204,6 +204,27 @@ TEST_CASE("no caves at the surface row") {
 		REQUIRE_MESSAGE(!gen->cave_at(x, gen->surface_height(x)), "cave at the surface at x " << x);
 }
 
+// Pins the classic cave shape: these numbers were taken from the generator before cave styles
+// existed, so any change to the classic path shows up here.
+TEST_CASE("classic caves are unchanged") {
+	MaterialTable table = terraintest::terrain_table();
+	std::unique_ptr<TerrainGenerator> gen =
+	    compile_or_fail(terraintest::starter_config(), table);
+
+	uint64_t hash = 1469598103934665603ull;  // FNV-1a 64
+	int caves = 0;
+	for (int x = -512; x < 512; ++x) {
+		const int s = gen->surface_height(x);
+		for (int d = -8; d < 600; ++d) {
+			const bool cave = gen->cave_at(x, s + d);
+			caves += cave;
+			hash = (hash ^ (uint64_t)cave) * 1099511628211ull;
+		}
+	}
+	CHECK(hash == 0xc99e0ec9f0e4e29bull);
+	CHECK(caves == 205590);
+}
+
 TEST_CASE("chunk is independent of load order and threads") {
 	MaterialTable table = terraintest::terrain_table();
 	std::unique_ptr<TerrainGenerator> gen =

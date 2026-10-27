@@ -396,8 +396,13 @@ TerrainGenerator::Blended TerrainGenerator::blend(const BiomeWeights& w) const {
 	if (w.count == 0) return out;
 	if (w.count == 1) {
 		const BiomeDef& def = config_.biomes[w.biome[0]];
-		out.tunnel = def.tunnel_threshold;
-		out.cavern = def.cavern_threshold;
+		if (def.cave_style == CaveStyle::Slabs) {
+			out.slabs_weight = 1.0;
+		} else {
+			out.classic_weight = 1.0;
+			out.tunnel = def.tunnel_threshold;
+			out.cavern = def.cavern_threshold;
+		}
 		out.pocket = def.pocket_threshold;
 		out.liquid = def.liquid_threshold;
 		out.surface_depth = def.surface_depth;
@@ -409,11 +414,22 @@ TerrainGenerator::Blended TerrainGenerator::blend(const BiomeWeights& w) const {
 	for (int i = 0; i < w.count; ++i) {
 		const BiomeDef& def = config_.biomes[w.biome[i]];
 		const double k = (double)w.weight[i] / total;
-		out.tunnel += k * def.tunnel_threshold;
-		out.cavern += k * def.cavern_threshold;
+		if (def.cave_style == CaveStyle::Slabs) {
+			out.slabs_weight += k;
+		} else {
+			out.classic_weight += k;
+			out.tunnel += k * def.tunnel_threshold;
+			out.cavern += k * def.cavern_threshold;
+		}
 		out.pocket += k * def.pocket_threshold;
 		out.liquid += k * def.liquid_threshold;
 		out.surface_depth += k * def.surface_depth;
+	}
+	// Renormalise over the classic biomes. Skipped in an all-classic cell, whose sums are
+	// already today's and must stay bit-for-bit the same.
+	if (out.slabs_weight > 0.0 && out.classic_weight > 0.0) {
+		out.tunnel /= out.classic_weight;
+		out.cavern /= out.classic_weight;
 	}
 	return out;
 }
@@ -447,17 +463,39 @@ double TerrainGenerator::taper_at(int wx, int depth) const {
 	return taper;
 }
 
+double TerrainGenerator::classic_margin(int wx, int wy, double taper,
+                                        const Blended& amounts) const {
+	double margin = -1.0;
+	if (amounts.tunnel > 0.0) {
+		const double n =
+		    std::fabs((double)n_tunnel_.GetNoise((double)wx, (double)wy * (double)config_.cave_stretch));
+		margin = std::max(margin, amounts.tunnel * taper - n);
+	}
+	if (amounts.cavern > 0.0) {
+		const double n = (double)n_cavern_.GetNoise((double)wx, (double)wy);
+		margin = std::max(margin, n - (1.0 - 2.0 * amounts.cavern * taper));
+	}
+	return margin;
+}
+
+double TerrainGenerator::slabs_margin(int wx, int wy, double taper, const Blended& amounts) const {
+	(void)wx;
+	(void)wy;
+	(void)taper;
+	(void)amounts;
+	return -1.0;
+}
+
 bool TerrainGenerator::cave_for(int wx, int wy, int depth, const Blended& amounts) const {
 	const double taper = taper_at(wx, depth);
 	if (taper <= 0.0) return false;
-	if (amounts.tunnel > 0.0 &&
-	    std::fabs((double)n_tunnel_.GetNoise((double)wx, (double)wy * (double)config_.cave_stretch)) <
-	        amounts.tunnel * taper)
-		return true;
-	if (amounts.cavern > 0.0 &&
-	    (double)n_cavern_.GetNoise((double)wx, (double)wy) > 1.0 - 2.0 * amounts.cavern * taper)
-		return true;
-	return false;
+	// Each style's margin weighted by its share of the cell; a style with no share is skipped.
+	double margin = 0.0;
+	if (amounts.classic_weight > 0.0)
+		margin += amounts.classic_weight * classic_margin(wx, wy, taper, amounts);
+	if (amounts.slabs_weight > 0.0)
+		margin += amounts.slabs_weight * slabs_margin(wx, wy, taper, amounts);
+	return margin > 0.0;
 }
 
 bool TerrainGenerator::cave_at(int wx, int wy) const {
