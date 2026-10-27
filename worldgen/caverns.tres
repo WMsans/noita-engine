@@ -2,8 +2,8 @@
 
 [resource]
 name = &"caverns"
-min_depth = 500
-max_depth = 1500
+min_depth = 2000
+max_depth = 6000
 weight = 1.0
 base_material = &"rock"
 pocket_material = &"sand"

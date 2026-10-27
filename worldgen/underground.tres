@@ -2,8 +2,8 @@
 
 [resource]
 name = &"underground"
-min_depth = 120
-max_depth = 500
+min_depth = 480
+max_depth = 2000
 weight = 1.0
 base_material = &"rock"
 pocket_material = &"dirt"

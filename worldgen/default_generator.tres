@@ -12,22 +12,22 @@
 
 [resource]
 surface_y = -80
-surface_amplitude = 48.0
-surface_frequency = 0.004
-band_warp = 24
-region_width = 768
-region_warp = 96
-region_transition = 96
-band_transition = 32
-tunnel_frequency = 0.012
-cave_stretch = 2.5
-cavern_frequency = 0.006
-pocket_frequency = 0.03
-pool_frequency = 0.02
-cave_taper_depth = 40
-entrance_frequency = 0.002
+surface_amplitude = 192.0
+surface_frequency = 0.001
+band_warp = 96
+region_width = 3072
+region_warp = 384
+region_transition = 384
+band_transition = 128
+tunnel_frequency = 0.003
+cave_stretch = 1.2
+cavern_frequency = 0.0015
+pocket_frequency = 0.0075
+pool_frequency = 0.005
+cave_taper_depth = 160
+entrance_frequency = 0.0005
 entrance_threshold = 0.75
-room_cell_size = 128
+room_cell_size = 512
 room_chance = 0.25
 biomes = Array[PixelBiome]([ExtResource("1_forest"), ExtResource("1_desert"), ExtResource("1_underground"), ExtResource("1_caverns"), ExtResource("1_deep")])
 rooms = Array[PixelRoom]([ExtResource("3_hut"), ExtResource("3_shrine"), ExtResource("3_platform")])

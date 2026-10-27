@@ -2,7 +2,7 @@
 
 [resource]
 name = &"deep"
-min_depth = 1500
+min_depth = 6000
 max_depth = -1
 weight = 1.0
 base_material = &"rock"
