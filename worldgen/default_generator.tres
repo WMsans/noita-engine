@@ -14,9 +14,9 @@
 surface_y = 176
 surface_amplitude = 192.0
 surface_frequency = 0.001
-band_warp = 96
+band_warp = 48
 region_width = 3072
-region_warp = 384
+region_warp = 128
 region_transition = 384
 band_transition = 128
 tunnel_frequency = 0.003

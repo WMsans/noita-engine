@@ -18,7 +18,7 @@ simulating = false
 lighting_enabled = true
 
 [node name="Camera2D" type="Camera2D" parent="."]
-position = Vector2(0, -40)
+position = Vector2(0, 216)
 
 [node name="Torch" type="PixelLight" parent="Camera2D"]
 radius = 48.0

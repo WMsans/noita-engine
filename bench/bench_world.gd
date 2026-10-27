@@ -37,15 +37,16 @@ const LIGHT_SPOTS_BUDGET := 1.0
 const CELLS_BUDGET := 54192.0
 
 # The camera is frame-locked, not time-based: 10 cells per frame is 600 cells/s at 60 fps and
-# stricter at higher frame rates. Loops: A -> B along the surface, C the dive through every
-# band, D the cavern run, E back up, then A again over discarded ground.
+# stricter at higher frame rates. Loops: A -> B just under the surface, C the dive down into
+# the caverns band (deep starts 6000 below the surface, past what one loop can reach), D the
+# cavern run, E back up, then A again over discarded ground.
 const CELLS_PER_FRAME := 10.0
 const WAYPOINTS: Array[Vector2] = [
-	Vector2(0, -40),  # A
-	Vector2(2400, -40),  # B
-	Vector2(2400, 2000),  # C
-	Vector2(-600, 1400),  # D
-	Vector2(-600, -40),  # E
+	Vector2(0, 216),  # A
+	Vector2(2400, 320),  # B
+	Vector2(2400, 3000),  # C
+	Vector2(-600, 2600),  # D
+	Vector2(-600, 320),  # E
 ]
 
 # Workload offsets in cells from the camera. Painted every frame, so the workload travels with
