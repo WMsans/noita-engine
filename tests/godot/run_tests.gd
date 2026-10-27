@@ -33,7 +33,7 @@ func test_default_set_validates() -> bool:
 	if mat_set == null:
 		printerr("  default_set.tres did not load")
 		return false
-	if mat_set.materials.size() != 12 or mat_set.reactions.size() != 5:
+	if mat_set.materials.size() != 13 or mat_set.reactions.size() != 5:
 		printerr("  starter set has %d materials, %d reactions" % [mat_set.materials.size(), mat_set.reactions.size()])
 		return false
 	var error: String = mat_set.validate()
@@ -46,7 +46,7 @@ func test_default_set_validates() -> bool:
 # pins the id: rock is 1, water 4, fire 8.
 func test_starter_set_ids_and_fields() -> bool:
 	var mat_set: PixelMaterialSet = load("res://materials/default_set.tres")
-	var expected: Array[StringName] = [&"rock", &"wood", &"sand", &"water", &"oil", &"lava", &"acid", &"fire", &"steam", &"smoke", &"dirt", &"grass"]
+	var expected: Array[StringName] = [&"rock", &"wood", &"sand", &"water", &"oil", &"lava", &"acid", &"fire", &"steam", &"smoke", &"dirt", &"grass", &"sandstone"]
 	for i: int in expected.size():
 		if mat_set.materials[i].name != expected[i]:
 			printerr("  material %d is '%s', expected '%s'" % [i + 1, mat_set.materials[i].name, expected[i]])
@@ -902,6 +902,24 @@ func test_default_generator_validates() -> bool:
 func test_biome_cave_style_defaults_classic() -> bool:
 	var biome: PixelBiome = PixelBiome.new()
 	return biome.cave_style == PixelBiome.CAVE_STYLE_CLASSIC and biome.slab_air == 0.0
+
+
+func test_biome_crust_defaults_none() -> bool:
+	var biome: PixelBiome = PixelBiome.new()
+	return biome.crust_material == &"" and biome.crust_depth == 0
+
+
+func test_desert_ships_sandstone_crust() -> bool:
+	var desert: PixelBiome = load("res://worldgen/desert.tres")
+	if desert.crust_material != &"sandstone" or desert.crust_depth != 6:
+		printerr("  desert crust is '%s' x %d, expected 'sandstone' x 6" % [desert.crust_material, desert.crust_depth])
+		return false
+	var mat_set: PixelMaterialSet = load("res://materials/default_set.tres")
+	for mat: PixelMaterial in mat_set.materials:
+		if mat.name == &"sandstone":
+			return mat.material_class == 1
+	printerr("  default_set.tres has no sandstone")
+	return false
 
 
 func test_shipped_biomes_use_slabs() -> bool:

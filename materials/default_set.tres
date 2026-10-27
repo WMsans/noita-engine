@@ -1,4 +1,4 @@
-[gd_resource type="PixelMaterialSet" load_steps=18 format=3]
+[gd_resource type="PixelMaterialSet" load_steps=19 format=3]
 
 [ext_resource type="PixelMaterial" path="res://materials/rock.tres" id="1_rock"]
 [ext_resource type="PixelMaterial" path="res://materials/wood.tres" id="1_wood"]
@@ -12,6 +12,7 @@
 [ext_resource type="PixelMaterial" path="res://materials/smoke.tres" id="1_smoke"]
 [ext_resource type="PixelMaterial" path="res://materials/dirt.tres" id="1_dirt"]
 [ext_resource type="PixelMaterial" path="res://materials/grass.tres" id="1_grass"]
+[ext_resource type="PixelMaterial" path="res://materials/sandstone.tres" id="1_sandstone"]
 [ext_resource type="PixelReaction" path="res://materials/water_lava.tres" id="2_water_lava"]
 [ext_resource type="PixelReaction" path="res://materials/water_fire.tres" id="2_water_fire"]
 [ext_resource type="PixelReaction" path="res://materials/acid_rock.tres" id="2_acid_rock"]
@@ -19,5 +20,5 @@
 [ext_resource type="PixelReaction" path="res://materials/fire_oil.tres" id="2_fire_oil"]
 
 [resource]
-materials = Array[PixelMaterial]([ExtResource("1_rock"), ExtResource("1_wood"), ExtResource("1_sand"), ExtResource("1_water"), ExtResource("1_oil"), ExtResource("1_lava"), ExtResource("1_acid"), ExtResource("1_fire"), ExtResource("1_steam"), ExtResource("1_smoke"), ExtResource("1_dirt"), ExtResource("1_grass")])
+materials = Array[PixelMaterial]([ExtResource("1_rock"), ExtResource("1_wood"), ExtResource("1_sand"), ExtResource("1_water"), ExtResource("1_oil"), ExtResource("1_lava"), ExtResource("1_acid"), ExtResource("1_fire"), ExtResource("1_steam"), ExtResource("1_smoke"), ExtResource("1_dirt"), ExtResource("1_grass"), ExtResource("1_sandstone")])
 reactions = Array[PixelReaction]([ExtResource("2_water_lava"), ExtResource("2_water_fire"), ExtResource("2_acid_rock"), ExtResource("2_acid_wood"), ExtResource("2_fire_oil")])

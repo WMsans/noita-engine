@@ -30,6 +30,8 @@ private:
 	StringName pocket_material;
 	StringName liquid_material;
 	int surface_depth = 0;
+	StringName crust_material;  // "" = no crust
+	int crust_depth = 0;
 	float pocket_threshold = 0.0f;
 	float tunnel_threshold = 0.0f;
 	float cavern_threshold = 0.0f;
@@ -70,6 +72,12 @@ public:
 
 	void set_surface_depth(int p_value) { surface_depth = p_value; }
 	int get_surface_depth() const { return surface_depth; }
+
+	void set_crust_material(const StringName &p_value) { crust_material = p_value; }
+	StringName get_crust_material() const { return crust_material; }
+
+	void set_crust_depth(int p_value) { crust_depth = p_value; }
+	int get_crust_depth() const { return crust_depth; }
 
 	void set_pocket_threshold(float p_value) { pocket_threshold = p_value; }
 	float get_pocket_threshold() const { return pocket_threshold; }

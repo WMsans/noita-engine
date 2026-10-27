@@ -32,6 +32,10 @@ void PixelBiome::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_liquid_material"), &PixelBiome::get_liquid_material);
 	ClassDB::bind_method(D_METHOD("set_surface_depth", "value"), &PixelBiome::set_surface_depth);
 	ClassDB::bind_method(D_METHOD("get_surface_depth"), &PixelBiome::get_surface_depth);
+	ClassDB::bind_method(D_METHOD("set_crust_material", "value"), &PixelBiome::set_crust_material);
+	ClassDB::bind_method(D_METHOD("get_crust_material"), &PixelBiome::get_crust_material);
+	ClassDB::bind_method(D_METHOD("set_crust_depth", "value"), &PixelBiome::set_crust_depth);
+	ClassDB::bind_method(D_METHOD("get_crust_depth"), &PixelBiome::get_crust_depth);
 	ClassDB::bind_method(D_METHOD("set_pocket_threshold", "value"), &PixelBiome::set_pocket_threshold);
 	ClassDB::bind_method(D_METHOD("get_pocket_threshold"), &PixelBiome::get_pocket_threshold);
 	ClassDB::bind_method(D_METHOD("set_tunnel_threshold", "value"), &PixelBiome::set_tunnel_threshold);
@@ -56,6 +60,8 @@ void PixelBiome::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::STRING_NAME, "pocket_material"), "set_pocket_material", "get_pocket_material");
 	ADD_PROPERTY(PropertyInfo(Variant::STRING_NAME, "liquid_material"), "set_liquid_material", "get_liquid_material");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "surface_depth"), "set_surface_depth", "get_surface_depth");
+	ADD_PROPERTY(PropertyInfo(Variant::STRING_NAME, "crust_material"), "set_crust_material", "get_crust_material");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "crust_depth"), "set_crust_depth", "get_crust_depth");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "pocket_threshold"), "set_pocket_threshold", "get_pocket_threshold");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "tunnel_threshold"), "set_tunnel_threshold", "get_tunnel_threshold");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "cavern_threshold"), "set_cavern_threshold", "get_cavern_threshold");
@@ -76,6 +82,8 @@ BiomeDef PixelBiome::to_def() const {
 	def.pocket_material = to_std(pocket_material);
 	def.liquid_material = to_std(liquid_material);
 	def.surface_depth = surface_depth;
+	def.crust_material = to_std(crust_material);
+	def.crust_depth = crust_depth;
 	def.pocket_threshold = pocket_threshold;
 	def.tunnel_threshold = tunnel_threshold;
 	def.cavern_threshold = cavern_threshold;
