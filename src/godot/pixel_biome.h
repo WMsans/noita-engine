@@ -12,6 +12,13 @@ namespace godot {
 class PixelBiome : public Resource {
 	GDCLASS(PixelBiome, Resource)
 
+public:
+	// Values match CaveStyle; to_def() falls back to Classic for anything out of range.
+	enum CaveStyleKind {
+		CAVE_STYLE_CLASSIC = 0,
+		CAVE_STYLE_SLABS = 1,
+	};
+
 private:
 	// "name" is a Resource method, so the member carries the biome_ prefix (as PixelMaterial).
 	StringName biome_name;
@@ -27,6 +34,9 @@ private:
 	float tunnel_threshold = 0.0f;
 	float cavern_threshold = 0.0f;
 	float liquid_threshold = 0.0f;
+	int cave_style = CAVE_STYLE_CLASSIC;
+	float slab_air = 0.0f;
+	float slab_holes = 0.0f;
 
 protected:
 	static void _bind_methods();
@@ -72,6 +82,17 @@ public:
 
 	void set_liquid_threshold(float p_value) { liquid_threshold = p_value; }
 	float get_liquid_threshold() const { return liquid_threshold; }
+
+	void set_cave_style(int p_value) { cave_style = p_value; }
+	int get_cave_style() const { return cave_style; }
+
+	void set_slab_air(float p_value) { slab_air = p_value; }
+	float get_slab_air() const { return slab_air; }
+
+	void set_slab_holes(float p_value) { slab_holes = p_value; }
+	float get_slab_holes() const { return slab_holes; }
 };
 
 } // namespace godot
+
+VARIANT_ENUM_CAST(godot::PixelBiome::CaveStyleKind);

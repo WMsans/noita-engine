@@ -899,6 +899,17 @@ func test_default_generator_validates() -> bool:
 	return error == ""
 
 
+func test_biome_cave_style_defaults_classic() -> bool:
+	var biome: PixelBiome = PixelBiome.new()
+	return biome.cave_style == PixelBiome.CAVE_STYLE_CLASSIC and biome.slab_air == 0.0
+
+
+func test_generator_slab_defaults() -> bool:
+	var generator: PixelWorldGenerator = PixelWorldGenerator.new()
+	return (generator.slab_stretch == 4.0 and is_equal_approx(generator.slab_frequency, 0.004)
+			and is_equal_approx(generator.slab_seam, 1.2))
+
+
 # The starter biome set keeps the generator's terrain config valid, so a bad room is what
 # compile reports (a lone forest biome would fail its open-ended last band first).
 func _make_room_generator(room: PixelRoom, palette: PixelRoomPalette) -> PixelWorldGenerator:

@@ -11,6 +11,9 @@ std::string to_std(const StringName &p_value) { return String(p_value).utf8().ge
 } // namespace
 
 void PixelBiome::_bind_methods() {
+	BIND_ENUM_CONSTANT(CAVE_STYLE_CLASSIC);
+	BIND_ENUM_CONSTANT(CAVE_STYLE_SLABS);
+
 	ClassDB::bind_method(D_METHOD("set_biome_name", "value"), &PixelBiome::set_biome_name);
 	ClassDB::bind_method(D_METHOD("get_biome_name"), &PixelBiome::get_biome_name);
 	ClassDB::bind_method(D_METHOD("set_min_depth", "value"), &PixelBiome::set_min_depth);
@@ -37,6 +40,12 @@ void PixelBiome::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_cavern_threshold"), &PixelBiome::get_cavern_threshold);
 	ClassDB::bind_method(D_METHOD("set_liquid_threshold", "value"), &PixelBiome::set_liquid_threshold);
 	ClassDB::bind_method(D_METHOD("get_liquid_threshold"), &PixelBiome::get_liquid_threshold);
+	ClassDB::bind_method(D_METHOD("set_cave_style", "value"), &PixelBiome::set_cave_style);
+	ClassDB::bind_method(D_METHOD("get_cave_style"), &PixelBiome::get_cave_style);
+	ClassDB::bind_method(D_METHOD("set_slab_air", "value"), &PixelBiome::set_slab_air);
+	ClassDB::bind_method(D_METHOD("get_slab_air"), &PixelBiome::get_slab_air);
+	ClassDB::bind_method(D_METHOD("set_slab_holes", "value"), &PixelBiome::set_slab_holes);
+	ClassDB::bind_method(D_METHOD("get_slab_holes"), &PixelBiome::get_slab_holes);
 
 	ADD_PROPERTY(PropertyInfo(Variant::STRING_NAME, "name"), "set_biome_name", "get_biome_name");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "min_depth"), "set_min_depth", "get_min_depth");
@@ -51,6 +60,9 @@ void PixelBiome::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "tunnel_threshold"), "set_tunnel_threshold", "get_tunnel_threshold");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "cavern_threshold"), "set_cavern_threshold", "get_cavern_threshold");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "liquid_threshold"), "set_liquid_threshold", "get_liquid_threshold");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "cave_style", PROPERTY_HINT_ENUM, "Classic:0,Slabs:1"), "set_cave_style", "get_cave_style");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "slab_air"), "set_slab_air", "get_slab_air");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "slab_holes"), "set_slab_holes", "get_slab_holes");
 }
 
 BiomeDef PixelBiome::to_def() const {
@@ -68,6 +80,9 @@ BiomeDef PixelBiome::to_def() const {
 	def.tunnel_threshold = tunnel_threshold;
 	def.cavern_threshold = cavern_threshold;
 	def.liquid_threshold = liquid_threshold;
+	def.cave_style = cave_style == CAVE_STYLE_SLABS ? CaveStyle::Slabs : CaveStyle::Classic;
+	def.slab_air = slab_air;
+	def.slab_holes = slab_holes;
 	return def;
 }
 

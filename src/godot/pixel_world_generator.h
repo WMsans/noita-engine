@@ -34,6 +34,13 @@ class PixelWorldGenerator : public Resource {
 	float cavern_frequency = 0.006f;
 	float pocket_frequency = 0.03f;
 	float pool_frequency = 0.02f;
+	float slab_frequency = 0.004f;
+	float slab_stretch = 4.0f;
+	float slab_warp = 24.0f;
+	float slab_rough_frequency = 0.06f;
+	float slab_rough = 0.12f;
+	float slab_hole_frequency = 0.02f;
+	float slab_seam = 1.2f;
 	int cave_taper_depth = 40;
 	float entrance_frequency = 0.002f;
 	float entrance_threshold = 0.75f;  // > 1 disables entrances
@@ -93,6 +100,27 @@ public:
 
 	void set_pool_frequency(float p_value) { pool_frequency = p_value; }
 	float get_pool_frequency() const { return pool_frequency; }
+
+	void set_slab_frequency(float p_value) { slab_frequency = p_value; }
+	float get_slab_frequency() const { return slab_frequency; }
+
+	void set_slab_stretch(float p_value) { slab_stretch = p_value; }
+	float get_slab_stretch() const { return slab_stretch; }
+
+	void set_slab_warp(float p_value) { slab_warp = p_value; }
+	float get_slab_warp() const { return slab_warp; }
+
+	void set_slab_rough_frequency(float p_value) { slab_rough_frequency = p_value; }
+	float get_slab_rough_frequency() const { return slab_rough_frequency; }
+
+	void set_slab_rough(float p_value) { slab_rough = p_value; }
+	float get_slab_rough() const { return slab_rough; }
+
+	void set_slab_hole_frequency(float p_value) { slab_hole_frequency = p_value; }
+	float get_slab_hole_frequency() const { return slab_hole_frequency; }
+
+	void set_slab_seam(float p_value) { slab_seam = p_value; }
+	float get_slab_seam() const { return slab_seam; }
 
 	void set_cave_taper_depth(int p_value) { cave_taper_depth = p_value; }
 	int get_cave_taper_depth() const { return cave_taper_depth; }
