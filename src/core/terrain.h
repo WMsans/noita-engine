@@ -23,6 +23,9 @@ struct BiomeDef {
 	// "Amounts" in [0, 1]: 0 = never, larger = more. Blended by biome weight per cell.
 	float pocket_threshold = 0, tunnel_threshold = 0, cavern_threshold = 0, liquid_threshold = 0;
 	CaveStyle cave_style = CaveStyle::Classic;
+	// Slabs amounts in [0, 1], clamped: slab_air is the air share, slab_holes how often the
+	// rock is punched through.
+	float slab_air = 0, slab_holes = 0;
 };
 
 enum class PaletteKind : uint8_t { Material, Keep, MarkerLight, MarkerBody };
@@ -56,6 +59,11 @@ struct TerrainConfig {
 	    band_transition = 32;
 	float tunnel_frequency = 0.012f, cave_stretch = 2.5f, cavern_frequency = 0.006f;
 	float pocket_frequency = 0.03f, pool_frequency = 0.02f;
+	// Slabs shape: fBm squashed vertically by slab_stretch and domain-warped by slab_warp
+	// cells, roughened by a fine field of strength slab_rough, holed by a sparse field.
+	float slab_frequency = 0.004f, slab_stretch = 4.0f, slab_warp = 24.0f,
+	      slab_rough_frequency = 0.06f, slab_rough = 0.12f, slab_hole_frequency = 0.02f,
+	      slab_seam = 1.2f;  // strength of the channel network that keeps slabs apart
 	int cave_taper_depth = 40;
 	float entrance_frequency = 0.002f, entrance_threshold = 0.75f;  // > 1 disables entrances
 	int room_cell_size = 256;
@@ -100,6 +108,7 @@ private:
 	struct Blended {
 		double tunnel = 0, cavern = 0, pocket = 0, liquid = 0, surface_depth = 0;
 		double classic_weight = 0, slabs_weight = 0;
+		double slab_air = 0, slab_holes = 0;  // blended over the slabs biomes only
 	};
 
 	TerrainGenerator(const TerrainConfig& cfg, const MaterialTable& table, uint32_t seed)
@@ -118,6 +127,8 @@ private:
 	// still mixes with the other at a style border.
 	double classic_margin(int wx, int wy, double taper, const Blended&) const;
 	double slabs_margin(int wx, int wy, double taper, const Blended&) const;
+	double slab_field(double wx, double wy) const;  // without holes
+	double slab_cut(double air) const;              // field level leaving `air` of it above
 
 	const MaterialTable& table_;  // must outlive the generator
 	const uint32_t seed_;
@@ -129,5 +140,7 @@ private:
 	std::vector<BiomeIds> ids_;
 	// One field per noise source, built once. GetNoise is const, so delegates may share them.
 	FastNoiseLite n_surface_, n_band_, n_region_, n_tunnel_, n_cavern_, n_pocket_, n_pool_,
-	    n_entrance_;
+	    n_entrance_, n_slab_, n_slab_warp_, n_slab_rough_, n_slab_hole_, n_slab_seam_;
+	// Sorted samples of slab_field over a fixed grid: slab_cut reads its quantiles.
+	std::vector<float> slab_quantiles_;
 };

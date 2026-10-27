@@ -130,6 +130,16 @@ inline TerrainConfig starter_config() {
 	return config({forest, desert, underground, caverns, deep});
 }
 
+// One open-band rock biome on the slabs cave style, with the generator's core slab defaults.
+inline TerrainConfig slabs_config() {
+	BiomeDef slabby = biome("slabby", 0, -1);
+	slabby.base_material = "rock";
+	slabby.cave_style = CaveStyle::Slabs;
+	slabby.slab_air = 0.55f;
+	slabby.slab_holes = 0.1f;
+	return config({slabby});
+}
+
 // Generates chunks on demand, so a test can address any world cell without a WorldGrid.
 class ChunkCache {
 public:

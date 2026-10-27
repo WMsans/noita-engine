@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -290,6 +291,14 @@ TEST_CASE("far from the origin terrain still varies") {
 			(gen->cave_at(wx, wy) ? cave : solid) = true;
 	CHECK(cave);
 	CHECK(solid);
+
+	std::unique_ptr<TerrainGenerator> slabs = compile_or_fail(terraintest::slabs_config(), table);
+	bool slab_cave = false, slab_solid = false;
+	for (int wx = coord.x * CHUNK; wx < coord.x * CHUNK + CHUNK; ++wx)
+		for (int wy = coord.y * CHUNK; wy < coord.y * CHUNK + CHUNK; ++wy)
+			(slabs->cave_at(wx, wy) ? slab_cave : slab_solid) = true;
+	CHECK(slab_cave);
+	CHECK(slab_solid);
 }
 
 TEST_CASE("config errors name the culprit") {
@@ -361,4 +370,148 @@ TEST_CASE("config errors name the culprit") {
 		CHECK(fails(cfg));
 		CHECK(error.find("biome") != std::string::npos);
 	}
+	{
+		TerrainConfig cfg = terraintest::slabs_config();
+		cfg.slab_stretch = 0.0f;
+		CHECK(fails(cfg));
+		CHECK(error.find("slab_stretch") != std::string::npos);
+	}
+	{
+		TerrainConfig cfg = terraintest::slabs_config();
+		cfg.slab_frequency = -1.0f;
+		CHECK(fails(cfg));
+		CHECK(error.find("slab_frequency") != std::string::npos);
+	}
+}
+
+namespace {
+
+// cave_at over a w x h window from (x0, y0), row-major. The slabs config's surface stays within
+// 48 cells of y 0 and its taper ends 40 below, so windows from y 100 are below the taper.
+std::vector<uint8_t> cave_grid(const TerrainGenerator& gen, int x0, int y0, int w, int h) {
+	std::vector<uint8_t> out((size_t)w * h);
+	for (int y = 0; y < h; ++y)
+		for (int x = 0; x < w; ++x) out[(size_t)y * w + x] = gen.cave_at(x0 + x, y0 + y) ? 1 : 0;
+	return out;
+}
+
+double air_share(const std::vector<uint8_t>& grid) {
+	size_t air = 0;
+	for (uint8_t c : grid) air += c;
+	return (double)air / (double)grid.size();
+}
+
+}  // namespace
+
+TEST_CASE("slabs air share follows slab_air") {
+	MaterialTable table = terraintest::terrain_table();
+	TerrainConfig cfg = terraintest::slabs_config();
+	const double share = air_share(cave_grid(*compile_or_fail(cfg, table), 0, 100, 1024, 1024));
+	CHECK(share >= 0.50);
+	CHECK(share <= 0.62);
+
+	cfg.biomes[0].slab_air = 0.3f;
+	const double less = air_share(cave_grid(*compile_or_fail(cfg, table), 0, 100, 1024, 1024));
+	CHECK(less >= 0.25);
+	CHECK(less <= 0.40);
+}
+
+TEST_CASE("slabs are wide and flat") {
+	MaterialTable table = terraintest::terrain_table();
+	const int w = 1024, h = 1024;
+	const std::vector<uint8_t> grid =
+	    cave_grid(*compile_or_fail(terraintest::slabs_config(), table), 0, 100, w, h);
+	// Rock/air boundaries crossed per step down a column against per step along a row: for
+	// shapes W wide and H tall this is about W / H.
+	long across = 0, down = 0;
+	for (int y = 0; y < h; ++y)
+		for (int x = 0; x < w; ++x) {
+			const uint8_t c = grid[(size_t)y * w + x];
+			if (x + 1 < w) across += c != grid[(size_t)y * w + x + 1];
+			if (y + 1 < h) down += c != grid[(size_t)(y + 1) * w + x];
+		}
+	REQUIRE(across > 0);
+	const double ratio = (double)down / (double)across;
+	CHECK_MESSAGE(ratio >= 2.2, "slabs are only " << ratio << "x wider than tall");
+}
+
+TEST_CASE("slabs open space is connected") {
+	MaterialTable table = terraintest::terrain_table();
+	const int w = 1024, h = 512;
+	const std::vector<uint8_t> grid =
+	    cave_grid(*compile_or_fail(terraintest::slabs_config(), table), 0, 100, w, h);
+	std::vector<int> label(grid.size(), -1);
+	size_t air = 0, largest = 0;
+	std::vector<size_t> stack;
+	for (size_t start = 0; start < grid.size(); ++start) {
+		if (grid[start] == 0 || label[start] >= 0) continue;
+		size_t size = 0;
+		label[start] = 1;
+		stack.push_back(start);
+		while (!stack.empty()) {
+			const size_t i = stack.back();
+			stack.pop_back();
+			++size;
+			const int x = (int)(i % w), y = (int)(i / w);
+			const int nx[4] = {x - 1, x + 1, x, x}, ny[4] = {y, y, y - 1, y + 1};
+			for (int k = 0; k < 4; ++k) {
+				if (nx[k] < 0 || ny[k] < 0 || nx[k] >= w || ny[k] >= h) continue;
+				const size_t j = (size_t)ny[k] * w + nx[k];
+				if (grid[j] == 0 || label[j] >= 0) continue;
+				label[j] = 1;
+				stack.push_back(j);
+			}
+		}
+		air += size;
+		largest = std::max(largest, size);
+	}
+	REQUIRE(air > 0);
+	CHECK_MESSAGE((double)largest >= 0.9 * (double)air, largest << " of " << air << " air cells");
+}
+
+TEST_CASE("slabs cave_at agrees with generate") {
+	MaterialTable table = terraintest::terrain_table();
+	std::unique_ptr<TerrainGenerator> gen = compile_or_fail(terraintest::slabs_config(), table);
+	int mismatches = 0;
+	for (int cy = 2; cy <= 4; ++cy)
+		for (int cx = 0; cx <= 2; ++cx) {
+			const std::unique_ptr<Chunk> chunk = make_chunk({cx, cy}, *gen, test_seed());
+			for (int ly = 0; ly < CHUNK; ++ly)
+				for (int lx = 0; lx < CHUNK; ++lx) {
+					const int wx = cx * CHUNK + lx, wy = cy * CHUNK + ly;
+					if ((chunk->at(lx, ly).mat == MAT_AIR) != gen->cave_at(wx, wy)) ++mismatches;
+				}
+		}
+	CHECK(mismatches == 0);
+}
+
+TEST_CASE("slabs are deterministic per seed") {
+	MaterialTable table = terraintest::terrain_table();
+	const TerrainConfig cfg = terraintest::slabs_config();
+	std::string error;
+	const std::vector<uint8_t> one = cave_grid(*compile_or_fail(cfg, table), 0, 100, 512, 512);
+	const std::vector<uint8_t> two = cave_grid(*compile_or_fail(cfg, table), 0, 100, 512, 512);
+	CHECK(one == two);
+	std::unique_ptr<TerrainGenerator> other =
+	    TerrainGenerator::compile(cfg, table, test_seed() + 1, error);
+	REQUIRE_MESSAGE(other != nullptr, error);
+	const std::vector<uint8_t> three = cave_grid(*other, 0, 100, 512, 512);
+	size_t differ = 0;
+	for (size_t i = 0; i < one.size(); ++i) differ += one[i] != three[i];
+	CHECK((double)differ > 0.1 * (double)one.size());
+}
+
+TEST_CASE("slabs amounts are clamped") {
+	MaterialTable table = terraintest::terrain_table();
+	TerrainConfig full = terraintest::slabs_config();
+	full.biomes[0].slab_air = 1.0f;
+	TerrainConfig over = full;
+	over.biomes[0].slab_air = 1.7f;
+	CHECK(cave_grid(*compile_or_fail(full, table), 0, 100, 256, 256) ==
+	      cave_grid(*compile_or_fail(over, table), 0, 100, 256, 256));
+
+	TerrainConfig under = terraintest::slabs_config();
+	under.biomes[0].slab_air = -0.5f;
+	under.biomes[0].slab_holes = 0.0f;
+	CHECK(air_share(cave_grid(*compile_or_fail(under, table), 0, 100, 256, 256)) == 0.0);
 }

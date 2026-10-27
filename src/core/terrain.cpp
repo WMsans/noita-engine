@@ -29,6 +29,11 @@ constexpr uint32_t SALT_ROOM = 0x5Cu;
 constexpr uint32_t SALT_ROOM_PICK = 0x5Du;
 constexpr uint32_t SALT_ROOM_X = 0x5Eu;
 constexpr uint32_t SALT_ROOM_Y = 0x5Fu;
+constexpr uint32_t SALT_SLAB = 0x60u;
+constexpr uint32_t SALT_SLAB_WARP = 0x61u;
+constexpr uint32_t SALT_SLAB_ROUGH = 0x62u;
+constexpr uint32_t SALT_SLAB_HOLE = 0x63u;
+constexpr uint32_t SALT_SLAB_SEAM = 0x64u;
 
 // Sentinels in a room's resolved pixel table: the palette said keep the generated cell, or
 // stamp a light marker (air plus an entry in Chunk::light_markers).
@@ -39,6 +44,14 @@ constexpr MatId MAT_LIGHT_MARKER = 0xFFFD;
 // region warp over ~1000.
 constexpr float BAND_FREQUENCY = 0.002f;
 constexpr float REGION_FREQUENCY = 0.001f;
+
+// The slab quantile table: slab_field sampled on a QUANTILE_GRID^2 grid QUANTILE_SPACING cells
+// apart (centred on the origin), kept as QUANTILE_STEPS + 1 evenly spaced order statistics.
+constexpr int QUANTILE_GRID = 256;
+constexpr int QUANTILE_SPACING = 37;
+constexpr int QUANTILE_STEPS = 1024;
+// The second warp sample's offset: far enough that the two warp axes are unrelated.
+constexpr double SLAB_WARP_DX = 5413.7, SLAB_WARP_DY = -2971.3;
 
 double smoothstep01(double t) {
 	if (t <= 0.0) return 0.0;
@@ -234,6 +247,15 @@ std::unique_ptr<TerrainGenerator> TerrainGenerator::compile(const TerrainConfig&
 		return nullptr;
 	}
 
+	if (!(cfg.slab_frequency > 0.0f)) {
+		error = "slab_frequency must be positive, not " + std::to_string(cfg.slab_frequency);
+		return nullptr;
+	}
+	if (!(cfg.slab_stretch > 0.0f)) {
+		error = "slab_stretch must be positive, not " + std::to_string(cfg.slab_stretch);
+		return nullptr;
+	}
+
 	gen->region_offset_.resize(gen->bands_.size());
 	for (size_t band = 0; band < gen->bands_.size(); ++band) {
 		gen->region_offset_[band] =
@@ -256,6 +278,31 @@ std::unique_ptr<TerrainGenerator> TerrainGenerator::compile(const TerrainConfig&
 	    field_noise(seed, SALT_POOL, cfg.pool_frequency, 2, FastNoiseLite::FractalType_FBm);
 	gen->n_entrance_ =
 	    field_noise(seed, SALT_ENTRANCE, cfg.entrance_frequency, 1, FastNoiseLite::FractalType_None);
+	gen->n_slab_ = field_noise(seed, SALT_SLAB, cfg.slab_frequency, 4, FastNoiseLite::FractalType_FBm);
+	gen->n_slab_warp_ = field_noise(seed, SALT_SLAB_WARP, 2.0f * cfg.slab_frequency, 2,
+	                                FastNoiseLite::FractalType_FBm);
+	gen->n_slab_rough_ = field_noise(seed, SALT_SLAB_ROUGH, cfg.slab_rough_frequency, 2,
+	                                 FastNoiseLite::FractalType_FBm);
+	gen->n_slab_hole_ = field_noise(seed, SALT_SLAB_HOLE, cfg.slab_hole_frequency, 2,
+	                                FastNoiseLite::FractalType_FBm);
+	gen->n_slab_seam_ =
+	    field_noise(seed, SALT_SLAB_SEAM, cfg.slab_frequency, 2, FastNoiseLite::FractalType_FBm);
+
+	bool any_slabs = false;
+	for (const BiomeDef& def : cfg.biomes) any_slabs |= def.cave_style == CaveStyle::Slabs;
+	if (any_slabs) {
+		std::vector<float> samples;
+		samples.reserve((size_t)QUANTILE_GRID * QUANTILE_GRID);
+		const int start = -QUANTILE_GRID / 2 * QUANTILE_SPACING;
+		for (int j = 0; j < QUANTILE_GRID; ++j)
+			for (int i = 0; i < QUANTILE_GRID; ++i)
+				samples.push_back((float)gen->slab_field(start + i * QUANTILE_SPACING,
+				                                         start + j * QUANTILE_SPACING));
+		std::sort(samples.begin(), samples.end());
+		gen->slab_quantiles_.resize(QUANTILE_STEPS + 1);
+		for (int q = 0; q <= QUANTILE_STEPS; ++q)
+			gen->slab_quantiles_[q] = samples[(size_t)q * (samples.size() - 1) / QUANTILE_STEPS];
+	}
 
 	return gen;
 }
@@ -398,6 +445,8 @@ TerrainGenerator::Blended TerrainGenerator::blend(const BiomeWeights& w) const {
 		const BiomeDef& def = config_.biomes[w.biome[0]];
 		if (def.cave_style == CaveStyle::Slabs) {
 			out.slabs_weight = 1.0;
+			out.slab_air = std::clamp(def.slab_air, 0.0f, 1.0f);
+			out.slab_holes = std::clamp(def.slab_holes, 0.0f, 1.0f);
 		} else {
 			out.classic_weight = 1.0;
 			out.tunnel = def.tunnel_threshold;
@@ -416,6 +465,8 @@ TerrainGenerator::Blended TerrainGenerator::blend(const BiomeWeights& w) const {
 		const double k = (double)w.weight[i] / total;
 		if (def.cave_style == CaveStyle::Slabs) {
 			out.slabs_weight += k;
+			out.slab_air += k * std::clamp(def.slab_air, 0.0f, 1.0f);
+			out.slab_holes += k * std::clamp(def.slab_holes, 0.0f, 1.0f);
 		} else {
 			out.classic_weight += k;
 			out.tunnel += k * def.tunnel_threshold;
@@ -430,6 +481,8 @@ TerrainGenerator::Blended TerrainGenerator::blend(const BiomeWeights& w) const {
 	if (out.slabs_weight > 0.0 && out.classic_weight > 0.0) {
 		out.tunnel /= out.classic_weight;
 		out.cavern /= out.classic_weight;
+		out.slab_air /= out.slabs_weight;
+		out.slab_holes /= out.slabs_weight;
 	}
 	return out;
 }
@@ -478,12 +531,45 @@ double TerrainGenerator::classic_margin(int wx, int wy, double taper,
 	return margin;
 }
 
+double TerrainGenerator::slab_field(double wx, double wy) const {
+	const double stretch = (double)config_.slab_stretch;
+	double x = wx, y = wy;
+	if (config_.slab_warp != 0.0f) {
+		// The vertical warp shrinks with the stretch so it bends slabs without tilting them.
+		const double warp = (double)config_.slab_warp;
+		x += warp * (double)n_slab_warp_.GetNoise(wx, wy);
+		y += warp / stretch * (double)n_slab_warp_.GetNoise(wx + SLAB_WARP_DX, wy + SLAB_WARP_DY);
+	}
+	double f = (double)n_slab_.GetNoise(x, y * stretch);
+	if (config_.slab_seam != 0.0f) {
+		// Ridges along the seam field's zero lines: a connected net of channels between slabs.
+		const double ridge = 1.0 - std::fabs((double)n_slab_seam_.GetNoise(x, y * stretch));
+		f += (double)config_.slab_seam * ridge * ridge * ridge * ridge;
+	}
+	if (config_.slab_rough != 0.0f)
+		f += (double)config_.slab_rough * (double)n_slab_rough_.GetNoise(wx, wy);
+	return f;
+}
+
+double TerrainGenerator::slab_cut(double air) const {
+	if (air <= 0.0) return HUGE_VAL;
+	if (air > 1.0) air = 1.0;
+	const double t = (1.0 - air) * QUANTILE_STEPS;
+	const int i = std::min((int)t, QUANTILE_STEPS - 1);
+	const double frac = t - (double)i;
+	return (double)slab_quantiles_[i] +
+	       frac * ((double)slab_quantiles_[i + 1] - (double)slab_quantiles_[i]);
+}
+
 double TerrainGenerator::slabs_margin(int wx, int wy, double taper, const Blended& amounts) const {
-	(void)wx;
-	(void)wy;
-	(void)taper;
-	(void)amounts;
-	return -1.0;
+	double margin = -1.0;
+	if (amounts.slab_air > 0.0)
+		margin = std::max(margin, slab_field(wx, wy) - slab_cut(amounts.slab_air * taper));
+	if (amounts.slab_holes > 0.0) {
+		const double n = (double)n_slab_hole_.GetNoise((double)wx, (double)wy);
+		margin = std::max(margin, n - (1.0 - 2.0 * amounts.slab_holes * taper));
+	}
+	return margin;
 }
 
 bool TerrainGenerator::cave_for(int wx, int wy, int depth, const Blended& amounts) const {
