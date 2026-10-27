@@ -382,6 +382,12 @@ TEST_CASE("config errors name the culprit") {
 		CHECK(fails(cfg));
 		CHECK(error.find("slab_frequency") != std::string::npos);
 	}
+	{
+		TerrainConfig cfg = terraintest::crust_config();
+		cfg.biomes[0].crust_material = "granite";
+		CHECK(fails(cfg));
+		CHECK(error.find("crust_material") != std::string::npos);
+	}
 }
 
 namespace {
@@ -561,4 +567,58 @@ TEST_CASE("no seam where cave styles meet") {
 		for (int y = 100; y < 612; ++y) caves += gen->cave_at(x, y);
 	}
 	CHECK(caves > 0);
+}
+
+TEST_CASE("crust holds under the caves") {
+	MaterialTable table = terraintest::terrain_table();
+	TerrainConfig cfg = terraintest::crust_config();
+	cfg.entrance_threshold = 2.0f;  // entrances off
+	std::unique_ptr<TerrainGenerator> gen = compile_or_fail(cfg, table);
+	terraintest::ChunkCache cache(*gen, test_seed());
+	const MatId sandstone = table.id_of("sandstone");
+
+	int under_cave = 0;  // crust cells the cave field would have carved
+	for (int x = -2000; x < 2000; ++x) {
+		const int s = gen->surface_height(x);
+		for (int d = 6; d < 12; ++d) {
+			REQUIRE_MESSAGE(cache.at(x, s + d) == sandstone, "no crust at x " << x << ", depth " << d);
+			under_cave += gen->cave_at(x, s + d);
+		}
+	}
+	CHECK(under_cave > 0);
+}
+
+TEST_CASE("entrances cut the crust") {
+	MaterialTable table = terraintest::terrain_table();
+	std::unique_ptr<TerrainGenerator> gen = compile_or_fail(terraintest::crust_config(), table);
+	terraintest::ChunkCache cache(*gen, test_seed());
+	const MatId sandstone = table.id_of("sandstone");
+
+	int cut = 0;
+	for (int x = -20000; x < 20000; ++x) {
+		const int s = gen->surface_height(x);
+		for (int d = 6; d < 12; ++d) {
+			if (cache.at(x, s + d) == sandstone) continue;
+			REQUIRE_MESSAGE(gen->entrance_at(x), "crust cut off an entrance at x " << x);
+			++cut;
+		}
+	}
+	CHECK(cut > 0);
+}
+
+TEST_CASE("no crust when crust_depth is not positive") {
+	MaterialTable table = terraintest::terrain_table();
+	const MatId sandstone = table.id_of("sandstone");
+	for (int depth : {0, -3}) {
+		TerrainConfig cfg = terraintest::crust_config();
+		cfg.biomes[0].crust_depth = depth;
+		std::unique_ptr<TerrainGenerator> gen = compile_or_fail(cfg, table);
+		terraintest::ChunkCache cache(*gen, test_seed());
+		for (int x = -500; x < 500; ++x) {
+			const int s = gen->surface_height(x);
+			for (int d = 0; d < 40; ++d)
+				REQUIRE_MESSAGE(cache.at(x, s + d) != sandstone,
+				                "sandstone at x " << x << ", depth " << d << " with crust_depth " << depth);
+		}
+	}
 }

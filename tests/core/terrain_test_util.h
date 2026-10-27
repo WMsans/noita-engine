@@ -18,10 +18,11 @@
 // without building a WorldGrid.
 namespace terraintest {
 
-// air(implicit) + the seven materials the world generator paints with. Classes and
-// densities match the starter set in materials/. Dirt and grass are Plan 2 additions.
+// air(implicit) + the eight materials the world generator paints with. Classes and
+// densities match the starter set in materials/. Dirt and grass are Plan 2 additions;
+// sandstone is the desert crust.
 inline MaterialTable terrain_table() {
-	std::vector<MaterialDef> defs(7);
+	std::vector<MaterialDef> defs(8);
 	defs[0].name = "rock";
 	defs[0].cls = MatClass::Solid;
 	defs[0].density = 3.0f;
@@ -51,6 +52,10 @@ inline MaterialTable terrain_table() {
 	defs[6].fixed_temp = true;
 	defs[6].base_temp = 1200;
 	defs[6].dispersion = 2;
+	defs[7].name = "sandstone";
+	defs[7].cls = MatClass::Solid;
+	defs[7].density = 2.4f;
+	defs[7].collision_solid = true;
 
 	MaterialTable table;
 	std::string error;
@@ -138,6 +143,20 @@ inline TerrainConfig slabs_config() {
 	slabby.slab_air = 0.55f;
 	slabby.slab_holes = 0.1f;
 	return config({slabby});
+}
+
+// One open-band desert on slabs caves at high air, with a sandstone crust under its sand skin.
+inline TerrainConfig crust_config() {
+	BiomeDef dunes = biome("dunes", 0, -1);
+	dunes.surface_material = "sand";
+	dunes.base_material = "sand";
+	dunes.surface_depth = 6;
+	dunes.crust_material = "sandstone";
+	dunes.crust_depth = 6;
+	dunes.cave_style = CaveStyle::Slabs;
+	dunes.slab_air = 0.9f;
+	dunes.slab_holes = 0.1f;
+	return config({dunes});
 }
 
 // Generates chunks on demand, so a test can address any world cell without a WorldGrid.

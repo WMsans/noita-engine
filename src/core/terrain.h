@@ -20,6 +20,10 @@ struct BiomeDef {
 	std::string surface_material, base_material, pocket_material,
 	    liquid_material;  // "" = none; base required
 	int surface_depth = 0;
+	// A solid band of crust_depth cells under the surface skin that caves don't carve, except
+	// at entrances. "" = none.
+	std::string crust_material;
+	int crust_depth = 0;
 	// "Amounts" in [0, 1]: 0 = never, larger = more. Blended by biome weight per cell.
 	float pocket_threshold = 0, tunnel_threshold = 0, cavern_threshold = 0, liquid_threshold = 0;
 	CaveStyle cave_style = CaveStyle::Classic;
@@ -90,6 +94,8 @@ public:
 	BiomeWeights weights_at(int wx, int wy) const;  // count 0 above the surface
 	int biome_at(int wx, int wy) const;             // dithered pick; -1 above the surface
 	bool cave_at(int wx, int wy) const;  // tunnel || cavern, thresholds blended, taper applied
+	// The column is a cave entrance: caves carve through its surface and crust.
+	bool entrance_at(int wx) const;
 	// The room the placement cell (px, py) holds, if any. Cells are room_cell_size square.
 	std::optional<RoomPlacement> room_in_cell(int px, int py) const;
 
@@ -100,13 +106,13 @@ private:
 		std::vector<int> biomes;
 	};
 	struct BiomeIds {
-		MatId surface = MAT_AIR, base = MAT_AIR, pocket = MAT_AIR, liquid = MAT_AIR;
+		MatId surface = MAT_AIR, base = MAT_AIR, pocket = MAT_AIR, liquid = MAT_AIR, crust = MAT_AIR;
 	};
 	// Per-cell thresholds: the weights blended "amounts" the fields are tested against.
 	// tunnel and cavern blend over the classic biomes only; classic_weight and slabs_weight
 	// are the shares of the cell's biome weight on each style (they sum to 1).
 	struct Blended {
-		double tunnel = 0, cavern = 0, pocket = 0, liquid = 0, surface_depth = 0;
+		double tunnel = 0, cavern = 0, pocket = 0, liquid = 0, surface_depth = 0, crust_depth = 0;
 		double classic_weight = 0, slabs_weight = 0;
 		double slab_air = 0, slab_holes = 0;  // blended over the slabs biomes only
 	};

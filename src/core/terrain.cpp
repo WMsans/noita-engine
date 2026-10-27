@@ -118,7 +118,8 @@ std::unique_ptr<TerrainGenerator> TerrainGenerator::compile(const TerrainConfig&
 		    !resolve_material(table, def, def.pocket_material, "pocket_material", ids.pocket,
 		                      error) ||
 		    !resolve_material(table, def, def.liquid_material, "liquid_material", ids.liquid,
-		                      error))
+		                      error) ||
+		    !resolve_material(table, def, def.crust_material, "crust_material", ids.crust, error))
 			return nullptr;
 	}
 
@@ -457,6 +458,7 @@ TerrainGenerator::Blended TerrainGenerator::blend(const BiomeWeights& w) const {
 		out.pocket = def.pocket_threshold;
 		out.liquid = def.liquid_threshold;
 		out.surface_depth = def.surface_depth;
+		out.crust_depth = def.crust_depth;
 		return out;
 	}
 	double total = 0;
@@ -477,6 +479,7 @@ TerrainGenerator::Blended TerrainGenerator::blend(const BiomeWeights& w) const {
 		out.pocket += k * def.pocket_threshold;
 		out.liquid += k * def.liquid_threshold;
 		out.surface_depth += k * def.surface_depth;
+		out.crust_depth += k * def.crust_depth;
 	}
 	// Renormalise over the classic biomes. Skipped in an all-classic cell, whose sums are
 	// already today's and must stay bit-for-bit the same.
@@ -512,10 +515,12 @@ double TerrainGenerator::taper_at(int wx, int depth) const {
 		if (taper > 1.0) taper = 1.0;
 		if (taper < 0.0) taper = 0.0;
 	}
-	if (taper < 1.0 &&
-	    (double)n_entrance_.GetNoise((double)wx, 0.0) > (double)config_.entrance_threshold)
-		taper = 1.0;
+	if (taper < 1.0 && entrance_at(wx)) taper = 1.0;
 	return taper;
+}
+
+bool TerrainGenerator::entrance_at(int wx) const {
+	return (double)n_entrance_.GetNoise((double)wx, 0.0) > (double)config_.entrance_threshold;
 }
 
 double TerrainGenerator::classic_margin(int wx, int wy, double taper,
@@ -692,8 +697,13 @@ void TerrainGenerator::generate(ChunkCoord coord, Chunk& out, uint32_t seed) con
 				const int picked = pick_from(weights, wx, wy);
 				const BiomeIds& ids = ids_[picked];
 				const int top = (int)std::lround(amounts.surface_depth);
+				const int crust = (int)std::lround(amounts.crust_depth);
+				bool in_crust = false;
 				if (ids.surface != MAT_AIR && depth < top) {
 					mat = ids.surface;
+				} else if (ids.crust != MAT_AIR && depth >= top && depth < top + crust) {
+					mat = ids.crust;
+					in_crust = true;
 				} else if (ids.pocket != MAT_AIR && amounts.pocket > 0.0 &&
 				           (double)n_pocket_.GetNoise((double)wx, (double)wy) >
 				               1.0 - 2.0 * amounts.pocket) {
@@ -701,7 +711,7 @@ void TerrainGenerator::generate(ChunkCoord coord, Chunk& out, uint32_t seed) con
 				} else {
 					mat = ids.base;
 				}
-				if (cave_for(wx, wy, depth, amounts)) {
+				if ((!in_crust || entrance_at(wx)) && cave_for(wx, wy, depth, amounts)) {
 					mat = MAT_AIR;
 					if (ids.liquid != MAT_AIR && amounts.liquid > 0.0 &&
 					    (double)n_pool_.GetNoise((double)wx, (double)wy) >
