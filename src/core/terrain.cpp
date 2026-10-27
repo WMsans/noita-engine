@@ -281,7 +281,8 @@ std::unique_ptr<TerrainGenerator> TerrainGenerator::compile(const TerrainConfig&
 	gen->n_slab_ = field_noise(seed, SALT_SLAB, cfg.slab_frequency, 4, FastNoiseLite::FractalType_FBm);
 	gen->n_slab_warp_ = field_noise(seed, SALT_SLAB_WARP, 2.0f * cfg.slab_frequency, 2,
 	                                FastNoiseLite::FractalType_FBm);
-	gen->n_slab_rough_ = field_noise(seed, SALT_SLAB_ROUGH, cfg.slab_rough_frequency, 2,
+	// Four octaves: lumps at slab_rough_frequency down to a few-cell crumble.
+	gen->n_slab_rough_ = field_noise(seed, SALT_SLAB_ROUGH, cfg.slab_rough_frequency, 4,
 	                                 FastNoiseLite::FractalType_FBm);
 	gen->n_slab_hole_ = field_noise(seed, SALT_SLAB_HOLE, cfg.slab_hole_frequency, 2,
 	                                FastNoiseLite::FractalType_FBm);
@@ -295,9 +296,10 @@ std::unique_ptr<TerrainGenerator> TerrainGenerator::compile(const TerrainConfig&
 		samples.reserve((size_t)QUANTILE_GRID * QUANTILE_GRID);
 		const int start = -QUANTILE_GRID / 2 * QUANTILE_SPACING;
 		for (int j = 0; j < QUANTILE_GRID; ++j)
-			for (int i = 0; i < QUANTILE_GRID; ++i)
-				samples.push_back((float)gen->slab_field(start + i * QUANTILE_SPACING,
-				                                         start + j * QUANTILE_SPACING));
+			for (int i = 0; i < QUANTILE_GRID; ++i) {
+				const double x = start + i * QUANTILE_SPACING, y = start + j * QUANTILE_SPACING;
+				samples.push_back((float)gen->slab_field(x, y, gen->slab_rough_at(x, y)));
+			}
 		std::sort(samples.begin(), samples.end());
 		gen->slab_quantiles_.resize(QUANTILE_STEPS + 1);
 		for (int q = 0; q <= QUANTILE_STEPS; ++q)
@@ -531,7 +533,12 @@ double TerrainGenerator::classic_margin(int wx, int wy, double taper,
 	return margin;
 }
 
-double TerrainGenerator::slab_field(double wx, double wy) const {
+double TerrainGenerator::slab_rough_at(double wx, double wy) const {
+	if (config_.slab_rough == 0.0f) return 0.0;
+	return (double)config_.slab_rough * (double)n_slab_rough_.GetNoise(wx, wy);
+}
+
+double TerrainGenerator::slab_field(double wx, double wy, double rough) const {
 	const double stretch = (double)config_.slab_stretch;
 	double x = wx, y = wy;
 	if (config_.slab_warp != 0.0f) {
@@ -540,14 +547,12 @@ double TerrainGenerator::slab_field(double wx, double wy) const {
 		x += warp * (double)n_slab_warp_.GetNoise(wx, wy);
 		y += warp / stretch * (double)n_slab_warp_.GetNoise(wx + SLAB_WARP_DX, wy + SLAB_WARP_DY);
 	}
-	double f = (double)n_slab_.GetNoise(x, y * stretch);
+	double f = (double)n_slab_.GetNoise(x, y * stretch) + rough;
 	if (config_.slab_seam != 0.0f) {
 		// Ridges along the seam field's zero lines: a connected net of channels between slabs.
 		const double ridge = 1.0 - std::fabs((double)n_slab_seam_.GetNoise(x, y * stretch));
 		f += (double)config_.slab_seam * ridge * ridge * ridge * ridge;
 	}
-	if (config_.slab_rough != 0.0f)
-		f += (double)config_.slab_rough * (double)n_slab_rough_.GetNoise(wx, wy);
 	return f;
 }
 
@@ -563,10 +568,12 @@ double TerrainGenerator::slab_cut(double air) const {
 
 double TerrainGenerator::slabs_margin(int wx, int wy, double taper, const Blended& amounts) const {
 	double margin = -1.0;
+	// One roughness sample shared by the slab edge and the hole edge, so both crumble alike.
+	const double rough = slab_rough_at(wx, wy);
 	if (amounts.slab_air > 0.0)
-		margin = std::max(margin, slab_field(wx, wy) - slab_cut(amounts.slab_air * taper));
+		margin = std::max(margin, slab_field(wx, wy, rough) - slab_cut(amounts.slab_air * taper));
 	if (amounts.slab_holes > 0.0) {
-		const double n = (double)n_slab_hole_.GetNoise((double)wx, (double)wy);
+		const double n = (double)n_slab_hole_.GetNoise((double)wx, (double)wy) + rough;
 		margin = std::max(margin, n - (1.0 - 2.0 * amounts.slab_holes * taper));
 	}
 	return margin;

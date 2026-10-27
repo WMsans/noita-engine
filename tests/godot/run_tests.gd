@@ -904,6 +904,15 @@ func test_biome_cave_style_defaults_classic() -> bool:
 	return biome.cave_style == PixelBiome.CAVE_STYLE_CLASSIC and biome.slab_air == 0.0
 
 
+func test_shipped_biomes_use_slabs() -> bool:
+	for biome_name: String in ["forest", "desert", "underground", "caverns", "deep"]:
+		var biome: PixelBiome = load("res://worldgen/%s.tres" % biome_name)
+		if biome.cave_style != PixelBiome.CAVE_STYLE_SLABS or biome.slab_air <= 0.0:
+			printerr("  worldgen/%s.tres is not on the slabs cave style" % biome_name)
+			return false
+	return true
+
+
 func test_generator_slab_defaults() -> bool:
 	var generator: PixelWorldGenerator = PixelWorldGenerator.new()
 	return (generator.slab_stretch == 4.0 and is_equal_approx(generator.slab_frequency, 0.004)

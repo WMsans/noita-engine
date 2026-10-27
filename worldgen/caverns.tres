@@ -13,3 +13,6 @@ pocket_threshold = 0.08
 tunnel_threshold = 0.12
 cavern_threshold = 0.3
 liquid_threshold = 0.15
+cave_style = 1
+slab_air = 0.5
+slab_holes = 0.15

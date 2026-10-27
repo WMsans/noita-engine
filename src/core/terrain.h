@@ -127,7 +127,8 @@ private:
 	// still mixes with the other at a style border.
 	double classic_margin(int wx, int wy, double taper, const Blended&) const;
 	double slabs_margin(int wx, int wy, double taper, const Blended&) const;
-	double slab_field(double wx, double wy) const;  // without holes
+	double slab_rough_at(double wx, double wy) const;  // the roughness term, scaled
+	double slab_field(double wx, double wy, double rough) const;  // without holes
 	double slab_cut(double air) const;              // field level leaving `air` of it above
 
 	const MaterialTable& table_;  // must outlive the generator
