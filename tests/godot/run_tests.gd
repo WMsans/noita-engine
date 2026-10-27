@@ -909,10 +909,13 @@ func test_biome_crust_defaults_none() -> bool:
 	return biome.crust_material == &"" and biome.crust_depth == 0
 
 
-func test_desert_ships_sandstone_crust() -> bool:
+func test_desert_ships_sandstone_ground() -> bool:
 	var desert: PixelBiome = load("res://worldgen/desert.tres")
 	if desert.crust_material != &"sandstone" or desert.crust_depth != 6:
 		printerr("  desert crust is '%s' x %d, expected 'sandstone' x 6" % [desert.crust_material, desert.crust_depth])
+		return false
+	if desert.base_material != &"sandstone":
+		printerr("  desert base is '%s', expected 'sandstone'" % desert.base_material)
 		return false
 	var mat_set: PixelMaterialSet = load("res://materials/default_set.tres")
 	for mat: PixelMaterial in mat_set.materials:
