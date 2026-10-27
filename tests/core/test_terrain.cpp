@@ -515,3 +515,50 @@ TEST_CASE("slabs amounts are clamped") {
 	under.biomes[0].slab_holes = 0.0f;
 	CHECK(air_share(cave_grid(*compile_or_fail(under, table), 0, 100, 256, 256)) == 0.0);
 }
+
+TEST_CASE("no seam where cave styles meet") {
+	MaterialTable table = terraintest::terrain_table();
+	BiomeDef old_style = biome("old", 0, -1);
+	old_style.base_material = "rock";
+	old_style.tunnel_threshold = 0.12f;
+	old_style.cavern_threshold = 0.3f;
+	BiomeDef new_style = biome("new", 0, -1);
+	new_style.base_material = "rock";
+	new_style.cave_style = CaveStyle::Slabs;
+	new_style.slab_air = 0.55f;
+	TerrainConfig cfg = config({old_style, new_style});
+	cfg.band_warp = 0;
+	cfg.region_warp = 0;
+	cfg.region_width = 512;
+	cfg.region_transition = 128;
+	std::unique_ptr<TerrainGenerator> gen = compile_or_fail(cfg, table);
+
+	// The first border whose two regions picked different biomes.
+	int first_blend = -1, last_blend = -1;
+	for (int x = -8192; x < 8192; ++x) {
+		const bool blending = gen->weights_at(x, gen->surface_height(x) + 100).count == 2;
+		if (blending && first_blend < 0) first_blend = x;
+		if (first_blend >= 0 && !blending) break;
+		if (blending) last_blend = x;
+	}
+	REQUIRE(first_blend >= 0);
+
+	// Rows where a cell and its right neighbour disagree, over 512 rows below the taper.
+	auto flips = [&](int x) {
+		int count = 0;
+		for (int y = 100; y < 612; ++y) count += gen->cave_at(x, y) != gen->cave_at(x + 1, y);
+		return count;
+	};
+	double outside = 0;
+	for (int i = 1; i <= 64; ++i) outside += flips(first_blend - i) + flips(last_blend + i);
+	outside /= 128.0;
+	REQUIRE(outside > 0);
+
+	int caves = 0;
+	for (int x = first_blend; x <= last_blend; ++x) {
+		CHECK_MESSAGE(flips(x) <= 3.0 * outside,
+		              "column " << x << " flips " << flips(x) << " rows, around it " << outside);
+		for (int y = 100; y < 612; ++y) caves += gen->cave_at(x, y);
+	}
+	CHECK(caves > 0);
+}
