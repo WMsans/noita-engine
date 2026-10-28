@@ -4,6 +4,7 @@
 #include "cell.h"
 #include "coords.h"
 #include "doctest/doctest.h"
+#include "job_pool.h"
 #include "material.h"
 #include "rng.h"
 #include "sim_test_util.h"
@@ -221,6 +222,40 @@ TEST_CASE("crossing chunk border") {
 	Chunk* lower = grid.find({0, 1});
 	REQUIRE(lower != nullptr);
 	CHECK(lower->at(30, 0).mat == sand);
+}
+
+TEST_CASE("a falling column keeps its shape across a chunk border") {
+	MaterialTable table = simtest::movement_table();
+	const MatId sand = table.id_of("sand");
+	constexpr int X = 30, TOP = 10, BOTTOM = 70;  // 60 cells, straddling the y=64 border
+
+	// Chunk rows are simulated bottom-up, so a cell that crosses a border lands in space its
+	// neighbour already vacated this tick. Anything else tears the column open where it
+	// crosses: the cells above miss their step and slide diagonally out of the column.
+	for (int threads : {1, 4}) {
+		WorldGrid grid(table, 99);
+		simtest::load_arena(grid, table, 0, 0, 128, 192, table.id_of("rock"));
+		for (int y = TOP; y < BOTTOM; ++y) REQUIRE(grid.set(X, y, sand));
+
+		JobPool pool(threads);
+		Simulator sim(grid, &pool);
+
+		int bottom = BOTTOM - 1;
+		for (int t = 1; t <= 8; ++t) {
+			sim.tick();
+			bottom += std::min(t, 15);  // free fall: the cell keeps 1, 2, 3 ... cells per tick
+			const int top = bottom - (BOTTOM - TOP - 1);
+			CHECK(simtest::mat_at(grid, X, bottom) == sand);
+			CHECK(simtest::mat_at(grid, X, top) == sand);
+			// No hole in the column and no cell off to the side: a stray would show up as a
+			// missing cell here once the count is unchanged.
+			CHECK(simtest::count_mat(grid, sand) == BOTTOM - TOP);
+			int holes = 0;
+			for (int y = top; y <= bottom; ++y)
+				if (simtest::mat_at(grid, X, y) != sand) ++holes;
+			CHECK(holes == 0);
+		}
+	}
 }
 
 TEST_CASE("settled world goes quiet") {

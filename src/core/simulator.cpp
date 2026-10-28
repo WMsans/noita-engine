@@ -1,5 +1,6 @@
 #include "simulator.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <vector>
@@ -10,12 +11,18 @@
 namespace {
 using Clock = std::chrono::steady_clock;
 
-// Checkerboard phase of a chunk: (cx & 1) | ((cy & 1) << 1), so (0,0) -> 0, (1,0) -> 1,
-// (0,1) -> 2, (1,1) -> 3. Any +-1 step in x or y flips one of those two parity bits, and a
-// chunk only ever touches its own cells and its 3x3 neighbours' (a cell moves at most 16
-// cells, so at most one chunk border). So two chunks of the same phase are never neighbour
-// to each other and never read or write each other's cells: they can run concurrently.
-int phase_of(ChunkCoord c) { return (c.x & 1) | ((c.y & 1) << 1); }
+// Simulation order: chunk rows bottom-up, and inside a row the two x parities. A chunk then
+// runs after the three chunks of the row below it, so a falling cell finds the space its
+// neighbour vacated this tick, exactly as the bottom-up row scan inside a chunk does, and a
+// stream no longer jams and fans out on a chunk border. Rising and sideways moves meet a
+// neighbour that has not run yet and wait a tick there (the stamp in update_cell keeps that
+// from becoming a second update). A cell moves at most 16 cells, well under a chunk, so it
+// never reaches past its 3x3 neighbours, and chunks of one parity in a row are never
+// neighbours: they can run together.
+bool runs_before(const Chunk* a, const Chunk* b) {
+	if (a->coord.y != b->coord.y) return a->coord.y > b->coord.y;
+	return (a->coord.x & 1) < (b->coord.x & 1);
+}
 }  // namespace
 
 void Simulator::tick() {
@@ -41,7 +48,7 @@ void Simulator::tick() {
 	stats_ = SimStats{};
 	stats_.chunks_active = chunks_active;
 
-	// 2. Simulate every chunk that last tick woke, rows from the bottom up.
+	// 2. Simulate every chunk that last tick woke, in the order above.
 	// SimStats is filled from these relaxed counters once every worker is done.
 	std::atomic<int> chunks{0}, cells{0};
 	const uint32_t seed = grid.seed();
@@ -70,21 +77,26 @@ void Simulator::tick() {
 		cells.fetch_add(visited, std::memory_order_relaxed);
 	};
 
-	if (pool == nullptr) {
-		grid.for_each_chunk(simulate);
-	} else {
-		// Bucket the awake chunks by phase on this thread, before any worker starts: the
-		// lists are shared, so they must not be built while the phase loop runs. Each phase
-		// is a barrier (parallel_for blocks), which is what makes another phase's writes to
-		// our cells visible and finished before we read them.
-		std::vector<Chunk*> phases[4];
-		grid.for_each_chunk([&](Chunk& c) {
-			if (!c.cur.empty()) phases[phase_of(c.coord)].push_back(&c);
-		});
-		for (std::vector<Chunk*>& phase : phases) {
-			if (phase.empty()) continue;  // nothing awake in this phase this tick
-			pool->parallel_for((int)phase.size(), [&](int i) { simulate(*phase[(size_t)i]); });
+	// Collect and sort the awake chunks here, before any worker starts: the list is shared, so
+	// it must not be built while the workers run. Every (row, parity) run is one barrier
+	// (parallel_for blocks), which is what makes a finished row's writes visible to the rows
+	// above it. The single-threaded tick walks the same order, so both agree cell for cell.
+	std::vector<Chunk*> awake;
+	grid.for_each_chunk([&](Chunk& c) {
+		if (!c.cur.empty()) awake.push_back(&c);
+	});
+	std::sort(awake.begin(), awake.end(), runs_before);
+	for (size_t i = 0; i < awake.size();) {
+		size_t end = i + 1;
+		while (end < awake.size() && awake[end]->coord.y == awake[i]->coord.y &&
+		       (awake[end]->coord.x & 1) == (awake[i]->coord.x & 1))
+			++end;
+		if (pool == nullptr) {
+			for (size_t k = i; k < end; ++k) simulate(*awake[k]);
+		} else {
+			pool->parallel_for((int)(end - i), [&](int k) { simulate(*awake[i + (size_t)k]); });
 		}
+		i = end;
 	}
 
 	stats_.chunks_simulated = chunks.load(std::memory_order_relaxed);
