@@ -1,0 +1,8 @@
+[gd_resource type="PixelReaction" format=3]
+
+[resource]
+a = &"fire"
+b = &"oil"
+a_into = &"fire"
+b_into = &"fire"
+probability = 0.3

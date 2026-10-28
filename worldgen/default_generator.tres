@@ -1,0 +1,41 @@
+[gd_resource type="PixelWorldGenerator" load_steps=10 format=3]
+
+[ext_resource type="PixelBiome" path="res://worldgen/forest.tres" id="1_forest"]
+[ext_resource type="PixelBiome" path="res://worldgen/desert.tres" id="1_desert"]
+[ext_resource type="PixelBiome" path="res://worldgen/underground.tres" id="1_underground"]
+[ext_resource type="PixelBiome" path="res://worldgen/caverns.tres" id="1_caverns"]
+[ext_resource type="PixelBiome" path="res://worldgen/deep.tres" id="1_deep"]
+[ext_resource type="PixelRoomPalette" path="res://rooms/palette.tres" id="2_palette"]
+[ext_resource type="PixelRoom" path="res://rooms/hut.tres" id="3_hut"]
+[ext_resource type="PixelRoom" path="res://rooms/shrine.tres" id="3_shrine"]
+[ext_resource type="PixelRoom" path="res://rooms/platform.tres" id="3_platform"]
+
+[resource]
+surface_y = 176
+surface_amplitude = 192.0
+surface_frequency = 0.001
+band_warp = 48
+region_width = 3072
+region_warp = 128
+region_transition = 384
+band_transition = 128
+tunnel_frequency = 0.002
+cave_stretch = 1.0
+cavern_frequency = 0.001
+pocket_frequency = 0.0075
+pool_frequency = 0.005
+slab_frequency = 0.0016
+slab_stretch = 3.0
+slab_warp = 60.0
+slab_rough_frequency = 0.019
+slab_rough = 0.25
+slab_hole_frequency = 0.0064
+slab_seam = 2.0
+cave_taper_depth = 160
+entrance_frequency = 0.0005
+entrance_threshold = 0.75
+room_cell_size = 512
+room_chance = 0.25
+biomes = Array[PixelBiome]([ExtResource("1_forest"), ExtResource("1_desert"), ExtResource("1_underground"), ExtResource("1_caverns"), ExtResource("1_deep")])
+rooms = Array[PixelRoom]([ExtResource("3_hut"), ExtResource("3_shrine"), ExtResource("3_platform")])
+room_palette = ExtResource("2_palette")

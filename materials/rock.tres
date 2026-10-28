@@ -1,0 +1,9 @@
+[gd_resource type="PixelMaterial" format=3]
+
+[resource]
+name = &"rock"
+material_class = 1
+density = 3.0
+color = Color(0.45, 0.42, 0.4, 1)
+collision_solid = true
+light_opacity = 1.0

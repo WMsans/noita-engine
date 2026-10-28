@@ -1,0 +1,9 @@
+[gd_resource type="PixelRoom" load_steps=2 format=3]
+
+[ext_resource type="Texture2D" path="res://rooms/shrine.png" id="1_shrine"]
+
+[resource]
+image = ExtResource("1_shrine")
+weight = 1.0
+anchor = 1
+biomes = PackedStringArray("underground", "caverns")

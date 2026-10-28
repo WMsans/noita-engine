@@ -1,0 +1,18 @@
+[gd_resource type="PixelBiome" format=3]
+
+[resource]
+name = &"deep"
+min_depth = 6000
+max_depth = -1
+weight = 1.0
+base_material = &"rock"
+pocket_material = &"dirt"
+liquid_material = &"lava"
+surface_depth = 0
+pocket_threshold = 0.05
+tunnel_threshold = 0.12
+cavern_threshold = 0.25
+liquid_threshold = 0.15
+cave_style = 1
+slab_air = 0.5
+slab_holes = 0.15

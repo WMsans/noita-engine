@@ -1,0 +1,25 @@
+[gd_scene load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://bench/bench_world.gd" id="1_bench_world"]
+[ext_resource type="PixelMaterialSet" path="res://materials/default_set.tres" id="2_set"]
+[ext_resource type="PixelWorldGenerator" path="res://worldgen/default_generator.tres" id="3_gen"]
+
+[node name="BenchWorld" type="Node2D"]
+script = ExtResource("1_bench_world")
+
+[node name="PixelWorld" type="PixelWorld" parent="."]
+generator_threads = 3
+
+material_set = ExtResource("2_set")
+generator = ExtResource("3_gen")
+world_seed = 1337
+follow_target = NodePath("../Camera2D")
+simulating = false
+lighting_enabled = true
+
+[node name="Camera2D" type="Camera2D" parent="."]
+position = Vector2(0, 216)
+
+[node name="Torch" type="PixelLight" parent="Camera2D"]
+radius = 48.0
+flicker = 0.3

@@ -1,3 +1,18 @@
 # Godot 4+ specific ignores
 .godot/
 /android/
+
+# isolated worktrees
+.worktrees/
+
+# build artifacts
+bin/*.so
+bin/*.dylib
+bin/*.framework
+build/
+.sconsign.dblite
+src/**/*.os
+src/**/*.o
+tests/**/*.os
+tests/**/*.o
+*.o.tmp

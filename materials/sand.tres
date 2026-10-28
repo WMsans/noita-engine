@@ -1,0 +1,9 @@
+[gd_resource type="PixelMaterial" format=3]
+
+[resource]
+name = &"sand"
+material_class = 2
+density = 1.6
+collision_solid = true
+color = Color(0.84, 0.76, 0.5, 1)
+light_opacity = 0.9

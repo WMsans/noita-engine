@@ -1,0 +1,12 @@
+[gd_resource type="PixelMaterial" format=3]
+
+[resource]
+name = &"water"
+material_class = 3
+density = 1.0
+color = Color(0.16, 0.35, 0.85, 1)
+dispersion = 5
+light_opacity = 0.3
+conductivity = 0.6
+high_temperature = 100
+high_into = &"steam"

@@ -1,0 +1,25 @@
+[gd_scene load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://demo/creatures_demo.gd" id="1_demo"]
+[ext_resource type="PixelMaterialSet" path="res://materials/default_set.tres" id="2_set"]
+[ext_resource type="PixelWorldGenerator" path="res://worldgen/default_generator.tres" id="3_gen"]
+
+[node name="CreaturesDemo" type="Node2D"]
+script = ExtResource("1_demo")
+
+[node name="PixelWorld" type="PixelWorld" parent="."]
+lighting_enabled = false
+material_set = ExtResource("2_set")
+generator = ExtResource("3_gen")
+follow_target = NodePath("../Camera2D")
+
+[node name="Camera2D" type="Camera2D" parent="."]
+position = Vector2(0, 176)
+
+[node name="UI" type="CanvasLayer" parent="."]
+
+[node name="Label" type="Label" parent="UI"]
+offset_left = 8.0
+offset_top = 8.0
+offset_right = 520.0
+offset_bottom = 80.0

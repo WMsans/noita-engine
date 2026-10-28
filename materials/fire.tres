@@ -1,0 +1,14 @@
+[gd_resource type="PixelMaterial" format=3]
+
+[resource]
+name = &"fire"
+material_class = 4
+density = 0.1
+color = Color(1, 0.62, 0.18, 1)
+emission = Color(1, 0.65, 0.2, 1)
+emission_energy = 1.5
+light_opacity = 0.05
+fixed_temperature = true
+base_temperature = 600
+lifetime = 24
+decays_into = &"smoke"

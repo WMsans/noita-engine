@@ -1,0 +1,21 @@
+[gd_resource type="PixelBiome" format=3]
+
+[resource]
+name = &"desert"
+min_depth = 0
+max_depth = 480
+weight = 1.0
+surface_material = &"sand"
+base_material = &"sandstone"
+pocket_material = &"rock"
+liquid_material = &"water"
+surface_depth = 24
+crust_material = &"sandstone"
+crust_depth = 6
+pocket_threshold = 0.1
+tunnel_threshold = 0.1
+cavern_threshold = 0.06
+liquid_threshold = 0.05
+cave_style = 1
+slab_air = 0.4
+slab_holes = 0.1
