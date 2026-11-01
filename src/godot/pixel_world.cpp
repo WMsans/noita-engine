@@ -695,10 +695,13 @@ void PixelWorld::build_light_frame() {
 	add_light_spots(area, spots, texels, reach);
 	light_spot_rects = spot_rects(area, spots);
 
-	// Light past the largest reach is not computed, so only the cascades that cover it run.
+	// Light past the largest reach is not computed, so only the cascades that cover it run. The
+	// shader fades on the ceil-rounded reach code, so count from that: a count from the un-rounded
+	// reach leaves the top cascade ending short of where the falloff reaches zero.
 	float max_reach_cells = emission_reach;
 	for (const LightSpot &spot : spots) max_reach_cells = std::max(max_reach_cells, std::min(spot.radius, 1020.0f));
-	const int cascade_count = light_cascade_count(max_reach_cells / (float)area.scale);
+	const int cascade_count =
+	    light_cascade_count(LIGHT_REACH_UNIT * pack_reach(max_reach_cells) / (float)area.scale);
 
 	light_spots = (int)spots.size();
 	// The build, the repaints and the spots are all of the input budget. The job stores the same
