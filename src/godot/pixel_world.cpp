@@ -113,6 +113,8 @@ void PixelWorld::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_lighting_enabled"), &PixelWorld::get_lighting_enabled);
 	ClassDB::bind_method(D_METHOD("set_ambient", "value"), &PixelWorld::set_ambient);
 	ClassDB::bind_method(D_METHOD("get_ambient"), &PixelWorld::get_ambient);
+	ClassDB::bind_method(D_METHOD("set_ambient_tint", "value"), &PixelWorld::set_ambient_tint);
+	ClassDB::bind_method(D_METHOD("get_ambient_tint"), &PixelWorld::get_ambient_tint);
 	ClassDB::bind_method(D_METHOD("set_light_exposure", "value"), &PixelWorld::set_light_exposure);
 	ClassDB::bind_method(D_METHOD("get_light_exposure"), &PixelWorld::get_light_exposure);
 	ClassDB::bind_method(D_METHOD("set_light_margin", "value"), &PixelWorld::set_light_margin);
@@ -142,6 +144,7 @@ void PixelWorld::_bind_methods() {
 
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "lighting_enabled"), "set_lighting_enabled", "get_lighting_enabled");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ambient", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_ambient", "get_ambient");
+	ADD_PROPERTY(PropertyInfo(Variant::COLOR, "ambient_tint"), "set_ambient_tint", "get_ambient_tint");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "light_exposure", PROPERTY_HINT_RANGE, "0,8,0.01,or_greater"), "set_light_exposure", "get_light_exposure");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "light_margin", PROPERTY_HINT_RANGE, "0,4096,1"), "set_light_margin", "get_light_margin");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "light_resolution", PROPERTY_HINT_RANGE, "1,4,1"), "set_light_resolution", "get_light_resolution");
@@ -857,6 +860,7 @@ void PixelWorld::update_light_overlay(const LightArea &p_area) {
 	}
 
 	rs->material_set_param(light_material, "ambient", ambient);
+	rs->material_set_param(light_material, "ambient_tint", ambient_tint);
 	rs->material_set_param(light_material, "light_exposure", light_exposure);
 	rs->material_set_param(bloom_material, "bloom_strength", bloom_strength);
 	if (!light_overlay_visible) {

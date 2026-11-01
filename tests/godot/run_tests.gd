@@ -1019,7 +1019,8 @@ func test_lighting_settings_defaults() -> bool:
 	var light: PixelLight = PixelLight.new()
 	var defaults := {
 		"lighting_enabled": true,
-		"ambient": 0.05,
+		"ambient": 0.40,
+		"ambient_tint": Color(0.62, 0.69, 1.0),
 		"light_exposure": 1.0,
 		"light_margin": 240,
 		"backdrop_color": Color(0.07, 0.05, 0.04),
@@ -1028,14 +1029,15 @@ func test_lighting_settings_defaults() -> bool:
 		"marker_light_color": Color(1, 0.75, 0.4),
 		"marker_light_energy": 1.5,
 		"marker_light_radius": 48.0,
-		"bloom_threshold": 1.0,
-		"bloom_strength": 0.6,
+		"bloom_threshold": 2.5,
+		"bloom_strength": 0.35,
 		"emission_reach": 40.0,
 		"light_surface_depth": 40,
 	}
 	var written := {
 		"lighting_enabled": false,
 		"ambient": 0.2,
+		"ambient_tint": Color(1, 1, 1),
 		"light_exposure": 2.0,
 		"light_margin": 64,
 		"backdrop_color": Color(0.1, 0.2, 0.3),

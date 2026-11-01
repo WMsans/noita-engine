@@ -342,16 +342,18 @@ void main() {
 }
 )GLSL";
 
-// Multiplies what is already on screen by ambient + light. Linear filtering, one texel per cell.
+// Multiplies what is already on screen by ambient * ambient_tint + light. Linear filtering, one
+// texel per cell.
 inline constexpr const char *LIGHT_OVERLAY_SHADER = R"GLSL(
 shader_type canvas_item;
 render_mode blend_mul, unshaded;
 
-uniform float ambient = 0.05;
+uniform float ambient = 0.40;
+uniform vec4 ambient_tint = vec4(0.62, 0.69, 1.0, 1.0);
 uniform float light_exposure = 1.0;
 
 void fragment() {
-	COLOR = vec4(min(vec3(ambient) + texture(TEXTURE, UV).rgb * light_exposure, 1.0), 1.0);
+	COLOR = vec4(min(ambient * ambient_tint.rgb + texture(TEXTURE, UV).rgb * light_exposure, 1.0), 1.0);
 }
 )GLSL";
 
@@ -359,7 +361,7 @@ inline constexpr const char *BLOOM_OVERLAY_SHADER = R"GLSL(
 shader_type canvas_item;
 render_mode blend_add, unshaded;
 
-uniform float bloom_strength = 0.6;
+uniform float bloom_strength = 0.35;
 
 void fragment() {
 	COLOR = vec4(texture(TEXTURE, UV).rgb * bloom_strength, 1.0);

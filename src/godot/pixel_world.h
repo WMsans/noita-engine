@@ -67,7 +67,8 @@ class PixelWorld : public Node2D {
 	int discard_hysteresis = 2;
 	// Lighting settings: all live, read every lit frame.
 	bool lighting_enabled = true;
-	float ambient = 0.05f;
+	float ambient = 0.40f;
+	Color ambient_tint = Color(0.62f, 0.69f, 1.0f);
 	float light_exposure = 1.0f;
 	int light_margin = 240;
 	int light_resolution = 1;  // world cells per light texel, 1..4: 1 = full, 2 = half, 4 = quarter
@@ -79,8 +80,8 @@ class PixelWorld : public Node2D {
 	Color marker_light_color = Color(1.0f, 0.75f, 0.4f);
 	float marker_light_energy = 1.5f;
 	float marker_light_radius = 48.0f;
-	float bloom_threshold = 1.0f;
-	float bloom_strength = 0.6f;
+	float bloom_threshold = 2.5f;
+	float bloom_strength = 0.35f;
 	NodePath follow_target;
 	Vector2i load_radius = Vector2i(6, 4);
 	Rect2i arena = Rect2i(-512, -256, 1024, 512);
@@ -250,6 +251,9 @@ public:
 
 	void set_ambient(float p_value) { ambient = p_value; }
 	float get_ambient() const { return ambient; }
+
+	void set_ambient_tint(const Color &p_value) { ambient_tint = p_value; }
+	Color get_ambient_tint() const { return ambient_tint; }
 
 	void set_light_exposure(float p_value) { light_exposure = p_value; }
 	float get_light_exposure() const { return light_exposure; }
