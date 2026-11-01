@@ -38,6 +38,25 @@ int max_channel(uint32_t rgba) {
 
 }  // namespace
 
+TEST_CASE("back wall rgba8 bytes follow the packed order") {
+	// A texture upload reads bytes in R, G, B, A order, while the wall packs 0xRRGGBBAA.
+	uint8_t px[4] = {0, 0, 0, 0};
+	back_wall_rgba8_bytes(0x11223344u, px);
+	CHECK(px[0] == 0x11);
+	CHECK(px[1] == 0x22);
+	CHECK(px[2] == 0x33);
+	CHECK(px[3] == 0x44);
+
+	// Alpha is the low byte, so a wall-less cell (alpha 0) stays transparent.
+	back_wall_rgba8_bytes(0xAABBCC00u, px);
+	CHECK(px[0] == 0xAA);
+	CHECK(px[3] == 0);
+
+	// And a filled wall cell is opaque.
+	back_wall_rgba8_bytes(0x102030FFu, px);
+	CHECK(px[3] == 255);
+}
+
 TEST_CASE("back wall absent above the surface") {
 	MaterialTable table = terraintest::terrain_table();
 	const TerrainConfig cfg = terraintest::starter_config();

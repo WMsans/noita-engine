@@ -30,6 +30,15 @@ struct BackWallConfig {
 	float shade_amount = 0.06f;   // per-cell brightness jitter
 };
 
+// Unpacks one wall pixel into the bytes a texture upload reads in order: R, G, B, A. Inverts
+// the 0xRRGGBBAA packing fill() writes, so a straight copy of the words would come out swapped.
+inline void back_wall_rgba8_bytes(uint32_t packed, uint8_t *out) {
+	out[0] = (uint8_t)(packed >> 24);
+	out[1] = (uint8_t)(packed >> 16);
+	out[2] = (uint8_t)(packed >> 8);
+	out[3] = (uint8_t)packed;
+}
+
 // The back wall of one chunk: CHUNK x CHUNK RGBA8 packed 0xRRGGBBAA, alpha 0 where there is
 // no wall (above the surface) and 255 everywhere below. Built from world coordinates and the
 // seed alone, so neighbouring chunks agree at their shared edges.

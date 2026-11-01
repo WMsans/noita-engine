@@ -940,7 +940,9 @@ void PixelWorld::upload_dirty_chunks() {
 		// Added before the cell rect: a canvas item draws its commands in order, so the wall sits
 		// under its chunk's cells. The same cell texture never needs it re-uploaded.
 		if (back_wall_enabled && !chunk.back_wall.empty()) {
-			memcpy(upload_image->ptrw(), chunk.back_wall.data(), chunk_texels * sizeof(uint32_t));
+			uint8_t *dst = (uint8_t *)upload_image->ptrw();
+			for (size_t p = 0; p < chunk_texels; ++p)
+				back_wall_rgba8_bytes(chunk.back_wall[p], &dst[p * 4]);
 			view.back_texture = rs->texture_2d_create(upload_image);
 			rs->canvas_item_add_texture_rect(view.canvas_item, rect, view.back_texture);
 			view.has_back = true;
