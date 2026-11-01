@@ -168,6 +168,45 @@ TEST_CASE("back wall hollow share") {
 	CHECK_MESSAGE(share <= 0.55, "hollow share " << share << " is over half");
 }
 
+TEST_CASE("back wall teeth reduce the hollow area") {
+	MaterialTable table = terraintest::terrain_table();
+	const TerrainConfig cfg = terraintest::starter_config();
+	TerrainConfig bare = cfg;  // same hollow field, teeth turned off
+	bare.back_wall.stalactite_length = 0;
+	bare.back_wall.stalagmite_length = 0;
+	std::unique_ptr<TerrainGenerator> toothed = compile_or_fail(cfg, table, test_seed());
+	std::unique_ptr<TerrainGenerator> plain = compile_or_fail(bare, table, test_seed());
+	REQUIRE(toothed->back_wall() != nullptr);
+	REQUIRE(plain->back_wall() != nullptr);
+
+	int toothed_hollow = 0, plain_hollow = 0, walls = 0;
+	for (int cx = 0; cx < 4; ++cx) {
+		for (int cy = 3; cy < 7; ++cy) {
+			const ChunkCoord coord{cx, cy};
+			std::vector<uint32_t> out;
+			toothed->back_wall()->fill(*toothed, table, coord, out);
+			for (int ly = 0; ly < CHUNK; ++ly) {
+				for (int lx = 0; lx < CHUNK; ++lx) {
+					if (alpha_of(out[(size_t)ly * CHUNK + lx]) == 0) continue;
+					const int wx = cx * CHUNK + lx, wy = cy * CHUNK + ly;
+					++walls;
+					if (toothed->back_wall()->hollow_at(*toothed, wx, wy)) ++toothed_hollow;
+					if (plain->back_wall()->hollow_at(*plain, wx, wy)) ++plain_hollow;
+				}
+			}
+		}
+	}
+	REQUIRE(walls == 16 * CHUNK * CHUNK);
+	const double toothed_share = (double)toothed_hollow / (double)walls;
+	const double plain_share = (double)plain_hollow / (double)walls;
+	CHECK_MESSAGE(toothed_share < plain_share,
+	              "teeth left " << toothed_share << " of the wall hollow, bare field "
+	                             << plain_share);
+	CHECK_MESSAGE(plain_share - toothed_share >= 0.02,
+	              "teeth removed only " << (plain_share - toothed_share)
+	                                     << " of the hollow area");
+}
+
 TEST_CASE("back wall darker than terrain") {
 	MaterialTable table = terraintest::terrain_table();
 	const TerrainConfig cfg = terraintest::starter_config();
