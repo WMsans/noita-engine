@@ -21,7 +21,7 @@ namespace terraintest {
 // air(implicit) + the eight materials the world generator paints with. Classes and
 // densities match the starter set in materials/. Dirt and grass are Plan 2 additions;
 // sandstone is the desert crust.
-inline MaterialTable terrain_table() {
+inline std::vector<MaterialDef> terrain_defs() {
 	std::vector<MaterialDef> defs(8);
 	defs[0].name = "rock";
 	defs[0].cls = MatClass::Solid;
@@ -56,7 +56,28 @@ inline MaterialTable terrain_table() {
 	defs[7].cls = MatClass::Solid;
 	defs[7].density = 2.4f;
 	defs[7].collision_solid = true;
+	return defs;
+}
 
+inline MaterialTable terrain_table() {
+	MaterialTable table;
+	std::string error;
+	REQUIRE(MaterialTable::compile(terrain_defs(), {}, table, error));
+	return table;
+}
+
+// terrain_table() with 16x16 textures: rock gets a texture and a crust texture, sand gets a
+// texture only. The words are placeholders; the crust tests check flags, not colours.
+inline MaterialTable crust_table() {
+	std::vector<MaterialDef> defs = terrain_defs();
+	defs[0].texture_rgba.resize(256);
+	defs[0].crust_rgba.resize(256);
+	for (int i = 0; i < 256; ++i) {
+		defs[0].texture_rgba[i] = 0x11000000u | (uint32_t)i;
+		defs[0].crust_rgba[i] = 0x22000000u | (uint32_t)i;
+	}
+	defs[2].texture_rgba.resize(256);
+	for (int i = 0; i < 256; ++i) defs[2].texture_rgba[i] = 0x33000000u | (uint32_t)i;
 	MaterialTable table;
 	std::string error;
 	REQUIRE(MaterialTable::compile(defs, {}, table, error));
@@ -143,6 +164,18 @@ inline TerrainConfig slabs_config() {
 	slabby.slab_air = 0.55f;
 	slabby.slab_holes = 0.1f;
 	return config({slabby});
+}
+
+// One open-band rock biome with normal caves and water pools: the surface rock faces sky
+// and pool floors face water, so crust on both kinds of edge shows up in a small area.
+inline TerrainConfig rocky_config() {
+	BiomeDef rocky = biome("rocky", 0, -1);
+	rocky.base_material = "rock";
+	rocky.tunnel_threshold = 0.12f;
+	rocky.cavern_threshold = 0.15f;
+	rocky.liquid_material = "water";
+	rocky.liquid_threshold = 0.2f;
+	return config({rocky});
 }
 
 // One open-band desert on slabs caves at high air, with a sandstone crust under its sand skin.

@@ -11,6 +11,7 @@
 #include "chunk.h"
 #include "chunk_streamer.h"
 #include "coords.h"
+#include "crust_pass.h"
 #include "doctest/doctest.h"
 #include "generator.h"
 #include "material.h"
@@ -224,6 +225,249 @@ TEST_CASE("classic caves are unchanged") {
 	}
 	CHECK(hash == 0xc99e0ec9f0e4e29bull);
 	CHECK(caves == 205590);
+}
+
+// FNV-1a 64 over mat, shade and flags of every cell of the chunks in [cx0, cx1) x [cy0, cy1).
+uint64_t region_cell_hash(const TerrainGenerator& gen, int cx0, int cx1, int cy0, int cy1) {
+	uint64_t hash = 1469598103934665603ull;
+	auto mix = [&](uint64_t v) { hash = (hash ^ v) * 1099511628211ull; };
+	for (int cy = cy0; cy < cy1; ++cy)
+		for (int cx = cx0; cx < cx1; ++cx) {
+			const std::unique_ptr<Chunk> chunk = make_chunk({cx, cy}, gen, test_seed());
+			for (const Cell& c : chunk->cells) {
+				mix(c.mat);
+				mix(c.shade);
+				mix(c.flags);
+			}
+		}
+	return hash;
+}
+
+// The den from test_rooms.cpp (the helper is local there, not shared): a 100x80 room with a
+// 3-thick rock border, an air interior, a keep patch and one marker-light pixel.
+constexpr uint32_t PIN_C_ROCK = 0x776655FF;
+constexpr uint32_t PIN_C_AIR = 0x102030FF;
+constexpr uint32_t PIN_C_LIGHT = 0xFFFF00FF;
+constexpr uint32_t PIN_C_KEEP = 0x00000000;
+
+RoomDef pin_den_room() {
+	RoomDef room;
+	room.name = "den";
+	room.width = 100;
+	room.height = 80;
+	room.rgba.assign((size_t)100 * 80, PIN_C_AIR);
+	for (int y = 0; y < 80; ++y)
+		for (int x = 0; x < 100; ++x)
+			if (x < 3 || y < 3 || x >= 97 || y >= 77) room.rgba[(size_t)y * 100 + x] = PIN_C_ROCK;
+	for (int y = 30; y < 40; ++y)
+		for (int x = 0; x < 10; ++x) room.rgba[(size_t)y * 100 + x] = PIN_C_KEEP;
+	room.rgba[(size_t)40 * 100 + 1] = PIN_C_LIGHT;
+	return room;
+}
+
+TEST_CASE("generate output is unchanged without crust") {
+	MaterialTable table = terraintest::terrain_table();
+	std::unique_ptr<TerrainGenerator> gen =
+	    compile_or_fail(terraintest::starter_config(), table);
+	const uint64_t plain = region_cell_hash(*gen, -3, 3, -1, 5);
+
+	TerrainConfig roomed = terraintest::starter_config();
+	roomed.room_chance = 1.0f;
+	roomed.rooms = {pin_den_room()};
+	roomed.palette = {{PIN_C_ROCK, PaletteKind::Material, "rock"},
+	                 {PIN_C_AIR, PaletteKind::Material, "air"},
+	                 {PIN_C_LIGHT, PaletteKind::MarkerLight, ""}};
+	std::unique_ptr<TerrainGenerator> room_gen = compile_or_fail(roomed, table);
+	const uint64_t rooms = region_cell_hash(*room_gen, -3, 3, -1, 5);
+
+	CHECK(plain != rooms);  // the room actually stamps something in the hashed range
+	CHECK(plain == 0xb7929bdf53d3750aull);
+	CHECK(rooms == 0x9038be10a6ae56d8ull);
+}
+
+TEST_CASE("crust is seamless across chunk borders") {
+	MaterialTable table = terraintest::crust_table();
+	std::unique_ptr<TerrainGenerator> gen =
+	    compile_or_fail(terraintest::rocky_config(), table);
+	const int margin = gen->region_margin();
+	// One reference region covering the whole 4x4-chunk area plus the margin.
+	const int x0 = -2 * CHUNK - margin, y0 = -margin;
+	const int size = 4 * CHUNK + 2 * margin;
+	GenRegion ref;
+	gen->resolve_region(x0, y0, size, ref, nullptr);
+	gen->apply_passes(ref);
+
+	// Crust within 3 cells of each side of the centre borders (x = 0, y = 128).
+	int vl = 0, vr = 0, ht = 0, hb = 0;
+	for (int cy = 0; cy < 4; ++cy)
+		for (int cx = -2; cx < 2; ++cx) {
+			const std::unique_ptr<Chunk> chunk = make_chunk({cx, cy}, *gen, test_seed());
+			for (int ly = 0; ly < CHUNK; ++ly)
+				for (int lx = 0; lx < CHUNK; ++lx) {
+					const int wx = cx * CHUNK + lx, wy = cy * CHUNK + ly;
+					const bool chunk_crust = chunk->at(lx, ly).flags & FLAG_CRUST;
+					const bool ref_crust = ref.flags_at(wx, wy) & FLAG_CRUST;
+					CHECK(chunk_crust == ref_crust);
+					if (!chunk_crust) continue;
+					if (wx < 3) ++vl;
+					if (wx > -3) ++vr;
+					if (wy < 131) ++ht;
+					if (wy > 125) ++hb;
+				}
+		}
+	CHECK(vl > 0);
+	CHECK(vr > 0);
+	CHECK(ht > 0);
+	CHECK(hb > 0);
+}
+
+TEST_CASE("crust is deterministic per seed") {
+	MaterialTable table = terraintest::crust_table();
+	TerrainConfig cfg = terraintest::starter_config();
+	std::string error;
+	std::unique_ptr<TerrainGenerator> a = TerrainGenerator::compile(cfg, table, test_seed(), error);
+	REQUIRE_MESSAGE(a != nullptr, error);
+	std::unique_ptr<TerrainGenerator> b = TerrainGenerator::compile(cfg, table, test_seed(), error);
+	REQUIRE_MESSAGE(b != nullptr, error);
+	std::unique_ptr<TerrainGenerator> c =
+	    TerrainGenerator::compile(cfg, table, test_seed() + 1, error);
+	REQUIRE_MESSAGE(c != nullptr, error);
+
+	const auto ca = make_chunk({1, 2}, *a, test_seed());
+	const auto cb = make_chunk({1, 2}, *b, test_seed());
+	const auto cc = make_chunk({1, 2}, *c, test_seed());
+	CHECK(std::memcmp(ca->cells.data(), cb->cells.data(), sizeof(ca->cells)) == 0);
+	CHECK(std::memcmp(ca->cells.data(), cc->cells.data(), sizeof(ca->cells)) != 0);
+}
+
+TEST_CASE("crust only on crust materials next to open space") {
+	MaterialTable table = terraintest::crust_table();
+	std::unique_ptr<TerrainGenerator> gen =
+	    compile_or_fail(terraintest::rocky_config(), table);
+	const MatId rock = table.id_of("rock");
+	const MatId water = table.id_of("water");
+	const int reach = (int)std::ceil(6 * 1.3f + 2.0f);  // the crust radius bound
+
+	// The 4x4-chunk area (world x in [-128, 128), y in [0, 256)) in one grid.
+	std::vector<Cell> cells((size_t)4 * CHUNK * 4 * CHUNK);
+	for (int cy = 0; cy < 4; ++cy)
+		for (int cx = -2; cx < 2; ++cx) {
+			const std::unique_ptr<Chunk> chunk = make_chunk({cx, cy}, *gen, test_seed());
+			for (int ly = 0; ly < CHUNK; ++ly)
+				for (int lx = 0; lx < CHUNK; ++lx)
+					cells[(size_t)(cy * CHUNK + ly) * 4 * CHUNK + (cx + 2) * CHUNK + lx] =
+					    chunk->at(lx, ly);
+		}
+	auto mat_at = [&](int wx, int wy) -> MatId {
+		if (wx < -2 * CHUNK || wx >= 2 * CHUNK || wy < 0 || wy >= 4 * CHUNK) return MAT_AIR;
+		return cells[(size_t)wy * 4 * CHUNK + (wx + 2 * CHUNK)].mat;
+	};
+	auto open_class = [&](MatId m) {
+		const MatClass cls = table.get(m).cls;
+		return cls == MatClass::Empty || cls == MatClass::Liquid || cls == MatClass::Gas;
+	};
+	auto is_edge_rock = [&](int wx, int wy) {
+		if (mat_at(wx, wy) != rock) return false;
+		return open_class(mat_at(wx + 1, wy)) || open_class(mat_at(wx - 1, wy)) ||
+		       open_class(mat_at(wx, wy + 1)) || open_class(mat_at(wx, wy - 1));
+	};
+
+	int crust_cells = 0, water_facing = 0, sky_facing = 0;
+	for (int wy = 0; wy < 4 * CHUNK; ++wy)
+		for (int wx = -2 * CHUNK; wx < 2 * CHUNK; ++wx) {
+			const Cell& c = cells[(size_t)wy * 4 * CHUNK + (wx + 2 * CHUNK)];
+			if (!(c.flags & FLAG_CRUST)) continue;
+			CHECK(c.mat == rock);  // rock is the only crust material in crust_table()
+			++crust_cells;
+			bool near_edge = false;
+			for (int dy = -reach; dy <= reach && !near_edge; ++dy)
+				for (int dx = -reach; dx <= reach && !near_edge; ++dx)
+					if (std::hypot((double)dx, (double)dy) <= reach &&
+					    is_edge_rock(wx + dx, wy + dy))
+						near_edge = true;
+			CHECK_MESSAGE(near_edge, "crust at (" << wx << ", " << wy
+			                                      << ") is more than "
+			                                      << reach << " from any edge rock cell");
+			if (mat_at(wx + 1, wy) == water || mat_at(wx - 1, wy) == water ||
+			    mat_at(wx, wy + 1) == water || mat_at(wx, wy - 1) == water)
+				++water_facing;
+			const int h = gen->surface_height(wx);
+			if (mat_at(wx, wy - 1) == MAT_AIR && wy - 1 < h) ++sky_facing;
+		}
+	CHECK(crust_cells > 0);
+	CHECK(water_facing > 0);
+	CHECK(sky_facing > 0);
+
+	// A rock cell whose only open neighbours are sand is not an edge.
+	{
+		const MatId sand = table.id_of("sand");
+		GenRegion region;
+		region.x0 = 0;
+		region.y0 = 0;
+		region.size = 6;
+		region.mat.assign((size_t)6 * 6, sand);
+		for (int y = 2; y < 4; ++y)
+			for (int x = 2; x < 4; ++x) region.mat[(size_t)y * 6 + x] = rock;
+		region.flags.assign((size_t)6 * 6, 0);
+		CrustPass pass(table, test_seed(), 1.0f, 6);
+		pass.apply(region);
+		for (int y = 0; y < 6; ++y)
+			for (int x = 0; x < 6; ++x)
+				CHECK((region.flags[(size_t)y * 6 + x] & FLAG_CRUST) == 0);
+
+		// The same patch next to air is an edge and gets crust.
+		GenRegion open_region = region;
+		open_region.flags.assign((size_t)6 * 6, 0);
+		open_region.mat[(size_t)3 * 6 + 3] = MAT_AIR;
+		pass.apply(open_region);
+		CHECK((open_region.flags[(size_t)3 * 6 + 2] & FLAG_CRUST) != 0);
+	}
+}
+
+TEST_CASE("no passes without a crust material") {
+	MaterialTable table = terraintest::terrain_table();  // no textures at all
+	std::unique_ptr<TerrainGenerator> gen =
+	    compile_or_fail(terraintest::starter_config(), table);
+	CHECK(gen->region_margin() == 0);
+
+	MaterialTable crusty = terraintest::crust_table();
+	TerrainConfig off = terraintest::starter_config();
+	off.crust_chance = 0;
+	std::unique_ptr<TerrainGenerator> gen_off = compile_or_fail(off, crusty);
+	CHECK(gen_off->region_margin() == 0);
+
+	std::unique_ptr<TerrainGenerator> gen_on =
+	    compile_or_fail(terraintest::starter_config(), crusty);
+	CHECK(gen_on->region_margin() == 11);  // reach 10 + 1 for radius 6
+}
+
+TEST_CASE("crust settings are validated") {
+	MaterialTable table = terraintest::terrain_table();
+	std::string error;
+	auto fails = [&](const TerrainConfig& cfg) {
+		error.clear();
+		return TerrainGenerator::compile(cfg, table, test_seed(), error) == nullptr;
+	};
+
+	TerrainConfig low = terraintest::starter_config();
+	low.crust_chance = -0.1f;
+	CHECK(fails(low));
+	CHECK(error.find("crust_chance") != std::string::npos);
+
+	TerrainConfig high = terraintest::starter_config();
+	high.crust_chance = 1.1f;
+	CHECK(fails(high));
+	CHECK(error.find("crust_chance") != std::string::npos);
+
+	TerrainConfig small = terraintest::starter_config();
+	small.crust_radius = 0;
+	CHECK(fails(small));
+	CHECK(error.find("crust_radius") != std::string::npos);
+
+	TerrainConfig large = terraintest::starter_config();
+	large.crust_radius = 33;
+	CHECK(fails(large));
+	CHECK(error.find("crust_radius") != std::string::npos);
 }
 
 TEST_CASE("chunk is independent of load order and threads") {

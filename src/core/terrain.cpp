@@ -8,6 +8,7 @@
 #include <map>
 
 #include "coords.h"
+#include "crust_pass.h"
 #include "rng.h"
 
 namespace {
@@ -256,6 +257,14 @@ std::unique_ptr<TerrainGenerator> TerrainGenerator::compile(const TerrainConfig&
 		error = "slab_stretch must be positive, not " + std::to_string(cfg.slab_stretch);
 		return nullptr;
 	}
+	if (!(cfg.crust_chance >= 0.0f && cfg.crust_chance <= 1.0f)) {
+		error = "crust_chance must be in [0, 1], not " + std::to_string(cfg.crust_chance);
+		return nullptr;
+	}
+	if (cfg.crust_radius < 1 || cfg.crust_radius > 32) {
+		error = "crust_radius must be in [1, 32], not " + std::to_string(cfg.crust_radius);
+		return nullptr;
+	}
 
 	gen->region_offset_.resize(gen->bands_.size());
 	for (size_t band = 0; band < gen->bands_.size(); ++band) {
@@ -308,6 +317,16 @@ std::unique_ptr<TerrainGenerator> TerrainGenerator::compile(const TerrainConfig&
 	}
 
 	if (cfg.back_wall.enabled) gen->back_wall_ = std::make_unique<BackWall>(cfg.back_wall, seed);
+
+	// Crust is the only pass today; a material without a crust texture means no pass at all,
+	// which keeps margin 0 and generation at its untextured cost.
+	if (cfg.crust_chance > 0.0f) {
+		bool any_crust = false;
+		for (size_t i = 0; i < table.size(); ++i) any_crust |= !table.get(i).crust_rgba.empty();
+		if (any_crust)
+			gen->passes_.push_back(
+			    std::make_unique<CrustPass>(table, seed, cfg.crust_chance, cfg.crust_radius));
+	}
 
 	return gen;
 }
@@ -676,26 +695,55 @@ std::optional<RoomPlacement> TerrainGenerator::room_in_cell(int px, int py) cons
 	return RoomPlacement{room, x, y};
 }
 
-void TerrainGenerator::generate(ChunkCoord coord, Chunk& out, uint32_t seed) const {
-	(void)seed;  // every field was seeded by compile(); a different seed needs a new generator
-	out.light_markers.clear();
-	const int base_x = coord.x * CHUNK;
-	const int base_y = coord.y * CHUNK;
-	// room_cell_size is a multiple of CHUNK, so a chunk lies in exactly one placement cell.
-	std::optional<RoomPlacement> room;
-	if (!config_.rooms.empty())
-		room = room_in_cell(floor_div(base_x, config_.room_cell_size),
-		                    floor_div(base_y, config_.room_cell_size));
-	const RoomDef* room_def = room ? &config_.rooms[room->room] : nullptr;
-	const std::vector<MatId>* room_cells = room ? &room_pixels_[room->room] : nullptr;
-	// The wall takes its biome from these instead of re-deriving it per cell.
-	int biome_of[CHUNK * CHUNK];
-	for (int lx = 0; lx < CHUNK; ++lx) {
-		const int wx = base_x + lx;
+int TerrainGenerator::region_margin() const {
+	int margin = 0;
+	for (const std::unique_ptr<GenPass>& pass : passes_) margin += pass->margin();
+	return margin;
+}
+
+void TerrainGenerator::apply_passes(GenRegion& region) const {
+	for (const std::unique_ptr<GenPass>& pass : passes_) pass->apply(region);
+}
+
+void TerrainGenerator::resolve_region(int x0, int y0, int size, GenRegion& out,
+                                      int* biome_of) const {
+	out.x0 = x0;
+	out.y0 = y0;
+	out.size = size;
+	out.mat.assign((size_t)size * size, MAT_AIR);
+	out.flags.assign((size_t)size * size, 0);
+
+	const int base_x = x0 + (size - CHUNK) / 2, base_y = y0 + (size - CHUNK) / 2;
+	// A padded region can touch up to four room placement cells; look each up once.
+	struct RoomHit {
+		int px, py;
+		const RoomDef* def = nullptr;
+		const std::vector<MatId>* cells = nullptr;
+		int x = 0, y = 0;  // world top-left
+	};
+	std::vector<RoomHit> rooms;
+	if (!config_.rooms.empty()) {
+		const int step = config_.room_cell_size;
+		for (int py = floor_div(y0, step); py <= floor_div(y0 + size - 1, step); ++py)
+			for (int px = floor_div(x0, step); px <= floor_div(x0 + size - 1, step); ++px) {
+				RoomHit hit;
+				hit.px = px;
+				hit.py = py;
+				if (std::optional<RoomPlacement> placed = room_in_cell(px, py)) {
+					hit.def = &config_.rooms[placed->room];
+					hit.cells = &room_pixels_[placed->room];
+					hit.x = placed->x;
+					hit.y = placed->y;
+				}
+				rooms.push_back(std::move(hit));
+			}
+	}
+	for (int lx = 0; lx < size; ++lx) {
+		const int wx = x0 + lx;
 		const int h = surface_height(wx);
 		const double xw = region_x(wx);
-		for (int ly = 0; ly < CHUNK; ++ly) {
-			const int wy = base_y + ly;
+		for (int ly = 0; ly < size; ++ly) {
+			const int wy = y0 + ly;
 			const int depth = wy - h;
 			MatId mat = MAT_AIR;
 			int picked = -1;  // no biome above the surface, where there is no wall either
@@ -729,21 +777,50 @@ void TerrainGenerator::generate(ChunkCoord coord, Chunk& out, uint32_t seed) con
 						mat = ids.liquid;
 				}
 			}
-			if (room_def != nullptr) {
-				const int rx = wx - room->x, ry = wy - room->y;
-				if (rx >= 0 && ry >= 0 && rx < room_def->width && ry < room_def->height) {
-					const MatId stamped = (*room_cells)[(size_t)ry * room_def->width + rx];
-					if (stamped != MAT_KEEP) mat = stamped;
+			if (!rooms.empty()) {
+				const int px = floor_div(wx, config_.room_cell_size);
+				const int py = floor_div(wy, config_.room_cell_size);
+				for (const RoomHit& hit : rooms) {
+					if (hit.px != px || hit.py != py) continue;
+					if (hit.def == nullptr) break;
+					const int rx = wx - hit.x, ry = wy - hit.y;
+					if (rx >= 0 && ry >= 0 && rx < hit.def->width && ry < hit.def->height) {
+						const MatId stamped = (*hit.cells)[(size_t)ry * hit.def->width + rx];
+						if (stamped != MAT_KEEP) mat = stamped;
+					}
+					break;
 				}
 			}
+			if (biome_of != nullptr && wx >= base_x && wx < base_x + CHUNK &&
+			    wy >= base_y && wy < base_y + CHUNK)
+				biome_of[(size_t)(wy - base_y) * CHUNK + (wx - base_x)] = picked;
+			out.mat[(size_t)ly * size + lx] = mat;
+		}
+	}
+}
+
+void TerrainGenerator::generate(ChunkCoord coord, Chunk& out, uint32_t seed) const {
+	(void)seed;  // every field was seeded by compile(); a different seed needs a new generator
+	out.light_markers.clear();
+	const int base_x = coord.x * CHUNK;
+	const int base_y = coord.y * CHUNK;
+	const int margin = region_margin();
+	GenRegion region;
+	int biome_of[CHUNK * CHUNK];  // the wall takes its biome from these, not re-derived per cell
+	resolve_region(base_x - margin, base_y - margin, CHUNK + 2 * margin, region, biome_of);
+	apply_passes(region);
+	for (int ly = 0; ly < CHUNK; ++ly)
+		for (int lx = 0; lx < CHUNK; ++lx) {
+			const int wx = base_x + lx, wy = base_y + ly;
+			MatId mat = region.mat_at(wx, wy);
 			if (mat == MAT_LIGHT_MARKER) {
 				mat = MAT_AIR;
 				out.light_markers.push_back((uint16_t)(ly * CHUNK + lx));
 			}
-			biome_of[ly * CHUNK + lx] = picked;
-			out.at(lx, ly) = spawn_cell(mat, table_, seed_, wx, wy);
+			Cell& cell = out.at(lx, ly);
+			cell = spawn_cell(mat, table_, seed_, wx, wy);
+			cell.flags |= region.flags_at(wx, wy);
 		}
-	}
 	if (back_wall_)
 		back_wall_->fill(*this, table_, coord, biome_of, out.back_wall);
 	else

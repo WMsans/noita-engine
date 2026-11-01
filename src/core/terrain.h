@@ -7,6 +7,7 @@
 
 #include "FastNoiseLite/FastNoiseLite.h"
 #include "back_wall.h"
+#include "gen_pass.h"
 #include "generator.h"
 #include "material.h"
 
@@ -73,6 +74,9 @@ struct TerrainConfig {
 	float entrance_frequency = 0.002f, entrance_threshold = 0.75f;  // > 1 disables entrances
 	int room_cell_size = 256;
 	float room_chance = 0.25f;
+	// Blob crust on generated edges (CrustPass); see crust_pass.h. chance 0 disables it.
+	float crust_chance = 0.3f;
+	int crust_radius = 6;
 	std::vector<BiomeDef> biomes;
 	std::vector<PaletteEntry> palette;
 	std::vector<RoomDef> rooms;
@@ -92,6 +96,14 @@ public:
 	static std::unique_ptr<TerrainGenerator> compile(const TerrainConfig&, const MaterialTable&,
 	                                                uint32_t seed, std::string& error);
 	void generate(ChunkCoord coord, Chunk& out, uint32_t seed) const override;
+	// Sum of the pass margins; 0 when the generator has no passes (today's cost).
+	int region_margin() const;
+	// Resolves world cells [x0, x0+size) x [y0, y0+size) with the same per-cell logic
+	// generate() uses. If biome_of is non-null it receives the picked biome of the central
+	// 64x64 chunk (row-major), which generate() passes to the back wall.
+	void resolve_region(int x0, int y0, int size, GenRegion& out, int* biome_of) const;
+	// Runs the pass list in order over a resolved region.
+	void apply_passes(GenRegion& region) const;
 	int surface_height(int wx) const;               // h(wx): first ground row
 	BiomeWeights weights_at(int wx, int wy) const;  // count 0 above the surface
 	int biome_at(int wx, int wy) const;             // dithered pick; -1 above the surface
@@ -151,6 +163,7 @@ private:
 	std::vector<int> region_offset_;  // per band, from a hash of the seed
 	std::vector<BiomeIds> ids_;
 	std::unique_ptr<BackWall> back_wall_;
+	std::vector<std::unique_ptr<GenPass>> passes_;  // in apply order
 	// One field per noise source, built once. GetNoise is const, so delegates may share them.
 	FastNoiseLite n_surface_, n_band_, n_region_, n_tunnel_, n_cavern_, n_pocket_, n_pool_,
 	    n_entrance_, n_slab_, n_slab_warp_, n_slab_rough_, n_slab_hole_, n_slab_seam_;
