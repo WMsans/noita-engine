@@ -746,6 +746,7 @@ TEST_CASE("spot rects restore the base") {
 TEST_CASE("light surface radius") {
 	CHECK(light_surface_radius(40, 1) == 40);
 	CHECK(light_surface_radius(40, 2) == 20);  // half resolution reaches as far in cells
+	CHECK(light_surface_radius(41, 2) == 21);  // ceil: never shallower than the cells asked for
 	CHECK(light_surface_radius(200, 1) == 96);
 	CHECK(light_surface_radius(0, 1) == 0);
 	CHECK(light_surface_radius(-3, 1) == 0);

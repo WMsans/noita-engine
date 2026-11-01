@@ -267,7 +267,7 @@ void main() {
 		return;
 	}
 	vec4 own = imageLoad(light, p);
-	vec3 acc = vec3(0.0);
+	vec3 acc = imageLoad(surface, p).rgb;  // k^0 = 1: the row result at p itself
 	float w = 1.0;
 	for (int i = 1; i <= params.radius; ++i) {
 		w *= params.falloff;
