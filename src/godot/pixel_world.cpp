@@ -125,6 +125,8 @@ void PixelWorld::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_light_surface_depth"), &PixelWorld::get_light_surface_depth);
 	ClassDB::bind_method(D_METHOD("set_backdrop_color", "value"), &PixelWorld::set_backdrop_color);
 	ClassDB::bind_method(D_METHOD("get_backdrop_color"), &PixelWorld::get_backdrop_color);
+	ClassDB::bind_method(D_METHOD("set_back_wall_enabled", "value"), &PixelWorld::set_back_wall_enabled);
+	ClassDB::bind_method(D_METHOD("get_back_wall_enabled"), &PixelWorld::get_back_wall_enabled);
 	ClassDB::bind_method(D_METHOD("set_fire_glow_color", "value"), &PixelWorld::set_fire_glow_color);
 	ClassDB::bind_method(D_METHOD("get_fire_glow_color"), &PixelWorld::get_fire_glow_color);
 	ClassDB::bind_method(D_METHOD("set_fire_glow_energy", "value"), &PixelWorld::set_fire_glow_energy);
@@ -150,6 +152,7 @@ void PixelWorld::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "light_resolution", PROPERTY_HINT_RANGE, "1,4,1"), "set_light_resolution", "get_light_resolution");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "light_surface_depth", PROPERTY_HINT_RANGE, "0,96,1"), "set_light_surface_depth", "get_light_surface_depth");
 	ADD_PROPERTY(PropertyInfo(Variant::COLOR, "backdrop_color"), "set_backdrop_color", "get_backdrop_color");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "back_wall_enabled"), "set_back_wall_enabled", "get_back_wall_enabled");
 	ADD_PROPERTY(PropertyInfo(Variant::COLOR, "fire_glow_color"), "set_fire_glow_color", "get_fire_glow_color");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "fire_glow_energy", PROPERTY_HINT_RANGE, "0,16,0.01,or_greater"), "set_fire_glow_energy", "get_fire_glow_energy");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "emission_reach", PROPERTY_HINT_RANGE, "1,1020,1,or_greater"), "set_emission_reach", "get_emission_reach");
@@ -354,6 +357,7 @@ void PixelWorld::_notification(int p_what) {
 	if (!rs) return;
 	for (const auto &kv : views) {
 		if (kv.second.texture.is_valid()) rs->free_rid(kv.second.texture);
+		if (kv.second.back_texture.is_valid()) rs->free_rid(kv.second.back_texture);
 		if (kv.second.canvas_item.is_valid()) rs->free_rid(kv.second.canvas_item);
 	}
 	views.clear();
@@ -923,21 +927,31 @@ void PixelWorld::upload_dirty_chunks() {
 
 	for (size_t i = 0; i < upload_chunks.size(); ++i) {
 		const Chunk &chunk = *upload_chunks[i];
-		memcpy(upload_image->ptrw(), &upload_pixels[i * chunk_texels], chunk_texels * sizeof(uint32_t));
-
+		const uint32_t *const rgba = &upload_pixels[i * chunk_texels];
 		ChunkView &view = view_for(chunk.coord);
 		if (view.has_texture) {
+			memcpy(upload_image->ptrw(), rgba, chunk_texels * sizeof(uint32_t));
 			rs->texture_2d_update(view.texture, upload_image, 0);
-		} else {
-			const auto create_start = std::chrono::steady_clock::now();
-			view.texture = rs->texture_2d_create(upload_image);
-			const Vector2 origin((float)(chunk.coord.x * CHUNK), (float)(chunk.coord.y * CHUNK));
-			rs->canvas_item_add_texture_rect(view.canvas_item, Rect2(origin, Vector2(CHUNK, CHUNK)), view.texture);
-			view.has_texture = true;
-			first_upload +=
-			    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - create_start)
-			        .count();
+			continue;
 		}
+		const auto create_start = std::chrono::steady_clock::now();
+		const Vector2 origin((float)(chunk.coord.x * CHUNK), (float)(chunk.coord.y * CHUNK));
+		const Rect2 rect(origin, Vector2(CHUNK, CHUNK));
+		// Added before the cell rect: a canvas item draws its commands in order, so the wall sits
+		// under its chunk's cells. The same cell texture never needs it re-uploaded.
+		if (back_wall_enabled && !chunk.back_wall.empty()) {
+			memcpy(upload_image->ptrw(), chunk.back_wall.data(), chunk_texels * sizeof(uint32_t));
+			view.back_texture = rs->texture_2d_create(upload_image);
+			rs->canvas_item_add_texture_rect(view.canvas_item, rect, view.back_texture);
+			view.has_back = true;
+		}
+		memcpy(upload_image->ptrw(), rgba, chunk_texels * sizeof(uint32_t));
+		view.texture = rs->texture_2d_create(upload_image);
+		rs->canvas_item_add_texture_rect(view.canvas_item, rect, view.texture);
+		view.has_texture = true;
+		first_upload +=
+		    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - create_start)
+		        .count();
 	}
 	first_upload_ms = first_upload;
 
@@ -987,8 +1001,21 @@ void PixelWorld::drop_view(ChunkCoord coord) {
 	if (it == views.end()) return;
 	RenderingServer *rs = RenderingServer::get_singleton();
 	if (it->second.texture.is_valid()) rs->free_rid(it->second.texture);
+	if (it->second.back_texture.is_valid()) rs->free_rid(it->second.back_texture);
 	if (it->second.canvas_item.is_valid()) rs->free_rid(it->second.canvas_item);
 	views.erase(it);
+}
+
+// The wall texture lives with the view, so a toggle drops every view and marks its chunk dirty:
+// the next upload rebuilds both textures of each chunk, in draw order, from data it still holds.
+void PixelWorld::set_back_wall_enabled(bool p_value) {
+	if (back_wall_enabled == p_value) return;
+	back_wall_enabled = p_value;
+	if (!grid) return;
+	for (const ChunkCoord &coord : loaded) {
+		if (Chunk *chunk = grid->find(coord)) chunk->render_dirty.store(true);
+		drop_view(coord);
+	}
 }
 
 bool PixelWorld::set_cell(const Vector2i &p_pos, const StringName &p_material) {
@@ -1170,6 +1197,10 @@ Dictionary PixelWorld::get_stats() const {
 	stats["chunks_generated"] = streamer ? chunks_generated : (int64_t)0;
 	stats["stream_ms"] = streamer ? insert_evict_ms + first_upload_ms : 0.0;
 	stats["view_missing"] = streamer ? view_missing : 0;
+	int back_walls = 0;
+	for (const auto &kv : views)
+		if (kv.second.has_back) ++back_walls;
+	stats["back_walls"] = back_walls;
 	stats["particles_material"] = particles ? (int64_t)particles->material().size() : (int64_t)0;
 	stats["particles_visual"] = particles ? (int64_t)particles->visual().size() : (int64_t)0;
 	stats["particles_dropped"] = particles ? particles->stats().dropped : (int64_t)0;

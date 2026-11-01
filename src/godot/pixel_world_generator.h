@@ -46,6 +46,23 @@ class PixelWorldGenerator : public Resource {
 	float entrance_threshold = 0.75f;  // > 1 disables entrances
 	int room_cell_size = 256;
 	float room_chance = 0.25f;
+	// BackWallConfig, field for field.
+	bool back_wall_enabled = true;
+	float back_wall_darken = 0.38f;
+	float back_wall_desaturate = 0.5f;
+	int back_wall_edge_rough = 4;
+	float back_wall_hollow_frequency = 0.012f;
+	float back_wall_hollow_stretch = 3.0f;
+	float back_wall_hollow_amount = 0.35f;
+	float back_wall_hollow_darken = 0.3f;
+	int back_wall_stalactite_length = 14;
+	int back_wall_stalagmite_length = 6;
+	int back_wall_tooth_period = 8;
+	float back_wall_crack_frequency = 0.04f;
+	float back_wall_crack_width = 0.04f;
+	float back_wall_crack_darken = 0.75f;
+	float back_wall_pebble_amount = 0.35f;
+	float back_wall_shade_amount = 0.06f;
 	TypedArray<PixelBiome> biomes;
 	TypedArray<PixelRoom> rooms;
 	Ref<PixelRoomPalette> room_palette;
@@ -136,6 +153,54 @@ public:
 
 	void set_room_chance(float p_value) { room_chance = p_value; }
 	float get_room_chance() const { return room_chance; }
+
+	void set_back_wall_enabled(bool p_value) { back_wall_enabled = p_value; }
+	bool get_back_wall_enabled() const { return back_wall_enabled; }
+
+	void set_back_wall_darken(float p_value) { back_wall_darken = p_value; }
+	float get_back_wall_darken() const { return back_wall_darken; }
+
+	void set_back_wall_desaturate(float p_value) { back_wall_desaturate = p_value; }
+	float get_back_wall_desaturate() const { return back_wall_desaturate; }
+
+	void set_back_wall_edge_rough(int p_value) { back_wall_edge_rough = p_value; }
+	int get_back_wall_edge_rough() const { return back_wall_edge_rough; }
+
+	void set_back_wall_hollow_frequency(float p_value) { back_wall_hollow_frequency = p_value; }
+	float get_back_wall_hollow_frequency() const { return back_wall_hollow_frequency; }
+
+	void set_back_wall_hollow_stretch(float p_value) { back_wall_hollow_stretch = p_value; }
+	float get_back_wall_hollow_stretch() const { return back_wall_hollow_stretch; }
+
+	void set_back_wall_hollow_amount(float p_value) { back_wall_hollow_amount = p_value; }
+	float get_back_wall_hollow_amount() const { return back_wall_hollow_amount; }
+
+	void set_back_wall_hollow_darken(float p_value) { back_wall_hollow_darken = p_value; }
+	float get_back_wall_hollow_darken() const { return back_wall_hollow_darken; }
+
+	void set_back_wall_stalactite_length(int p_value) { back_wall_stalactite_length = p_value; }
+	int get_back_wall_stalactite_length() const { return back_wall_stalactite_length; }
+
+	void set_back_wall_stalagmite_length(int p_value) { back_wall_stalagmite_length = p_value; }
+	int get_back_wall_stalagmite_length() const { return back_wall_stalagmite_length; }
+
+	void set_back_wall_tooth_period(int p_value) { back_wall_tooth_period = p_value; }
+	int get_back_wall_tooth_period() const { return back_wall_tooth_period; }
+
+	void set_back_wall_crack_frequency(float p_value) { back_wall_crack_frequency = p_value; }
+	float get_back_wall_crack_frequency() const { return back_wall_crack_frequency; }
+
+	void set_back_wall_crack_width(float p_value) { back_wall_crack_width = p_value; }
+	float get_back_wall_crack_width() const { return back_wall_crack_width; }
+
+	void set_back_wall_crack_darken(float p_value) { back_wall_crack_darken = p_value; }
+	float get_back_wall_crack_darken() const { return back_wall_crack_darken; }
+
+	void set_back_wall_pebble_amount(float p_value) { back_wall_pebble_amount = p_value; }
+	float get_back_wall_pebble_amount() const { return back_wall_pebble_amount; }
+
+	void set_back_wall_shade_amount(float p_value) { back_wall_shade_amount = p_value; }
+	float get_back_wall_shade_amount() const { return back_wall_shade_amount; }
 
 	void set_biomes(const TypedArray<PixelBiome> &p_value) { biomes = p_value; }
 	TypedArray<PixelBiome> get_biomes() const { return biomes; }

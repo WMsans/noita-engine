@@ -43,11 +43,13 @@ class PixelRigidBody;
 class PixelWorld : public Node2D {
 	GDCLASS(PixelWorld, Node2D)
 
-	// One per loaded chunk: the canvas item parented to this node's, and its texture RID.
+	// One per loaded chunk: the canvas item parented to this node's, and its texture RIDs.
 	struct ChunkView {
 		RID canvas_item;
 		RID texture;
+		RID back_texture;
 		bool has_texture = false;
+		bool has_back = false;
 	};
 
 	// Per-material render state, resolved once at _ready so the pixel loop stays floats only.
@@ -74,6 +76,7 @@ class PixelWorld : public Node2D {
 	int light_resolution = 1;  // world cells per light texel, 1..4: 1 = full, 2 = half, 4 = quarter
 	int light_surface_depth = 40;  // cells of light into solid surfaces, 0..LIGHT_SURFACE_MAX_DEPTH; 0 = off
 	Color backdrop_color = Color(0.07f, 0.05f, 0.04f);
+	bool back_wall_enabled = true;  // draw the chunks' generated back wall under their cells
 	Color fire_glow_color = Color(1.0f, 0.6f, 0.2f);
 	float fire_glow_energy = 1.5f;
 	float emission_reach = 40.0f;  // cells an emitter's light carries before it fades to zero
@@ -271,6 +274,11 @@ public:
 
 	void set_backdrop_color(const Color &p_value) { backdrop_color = p_value; }
 	Color get_backdrop_color() const { return backdrop_color; }
+
+	// Toggling drops every view and marks its chunk dirty, so the next upload rebuilds both
+	// textures of each chunk in draw order.
+	void set_back_wall_enabled(bool p_value);
+	bool get_back_wall_enabled() const { return back_wall_enabled; }
 
 	void set_fire_glow_color(const Color &p_value) {
 		fire_glow_color = p_value;

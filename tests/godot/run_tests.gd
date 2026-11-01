@@ -1231,3 +1231,84 @@ func test_existing_scenes_opt_out() -> bool:
 			return false
 		scene.free()
 	return true
+
+
+# --- back wall (Plan 7) ---------------------------------------------------------------------
+
+# Every BackWallConfig field is a property on the generator, so a scene can tune the wall. The
+# four spot checks below are the defaults the core sets.
+func test_back_wall_generator_defaults() -> bool:
+	var gen: PixelWorldGenerator = PixelWorldGenerator.new()
+	var bad: PackedStringArray = []
+	if gen.back_wall_enabled != true:
+		bad.append("back_wall_enabled reads %s, expected true" % gen.back_wall_enabled)
+	if not is_equal_approx(gen.back_wall_darken, 0.38):
+		bad.append("back_wall_darken reads %s, expected 0.38" % gen.back_wall_darken)
+	if not is_equal_approx(gen.back_wall_hollow_amount, 0.35):
+		bad.append("back_wall_hollow_amount reads %s, expected 0.35" % gen.back_wall_hollow_amount)
+	if gen.back_wall_stalactite_length != 14:
+		bad.append("back_wall_stalactite_length reads %s, expected 14" % gen.back_wall_stalactite_length)
+	if not bad.is_empty():
+		printerr("  " + ", ".join(bad))
+		return false
+	return true
+
+
+func _make_back_wall_world(target: Node2D, enabled: bool) -> PixelWorld:
+	var world: PixelWorld = PixelWorld.new()
+	world.material_set = load("res://materials/default_set.tres")
+	world.generator = load("res://worldgen/default_generator.tres")
+	world.worker_threads = 1
+	world.generator_threads = 2
+	world.simulating = false
+	world.lighting_enabled = false  # the wall is unlit, and --headless has no RenderingDevice
+	world.back_wall_enabled = enabled
+	world.follow_target = target.get_path()
+	root.add_child(world)
+	await process_frame
+	return world
+
+
+# The wall draws from the chunk bytes without the light pass, survives unload + regenerate, and
+# is gone entirely when the world's back_wall_enabled is false.
+func test_back_wall_draws_without_lighting() -> bool:
+	var bad: PackedStringArray = []
+	var below := Rect2i(0, 4 * 64, 64, 64)
+
+	var target: Node2D = Node2D.new()
+	root.add_child(target)
+	var world: PixelWorld = await _make_back_wall_world(target, true)
+	var ready: bool = await _await_ready(world, below)
+	var drawn: int = world.get_stats()["back_walls"]
+	if not ready or drawn <= 0:
+		bad.append("chunk(0,4) ready=%s, back_walls=%d (expected > 0)" % [ready, drawn])
+
+	target.position = Vector2(20000, 0)
+	for i: int in 600:
+		if not world.is_chunk_loaded(Vector2i(0, 4)):
+			break
+		await process_frame
+	var unloaded: bool = not world.is_chunk_loaded(Vector2i(0, 4))
+	target.position = Vector2.ZERO
+	var back_ready: bool = await _await_ready(world, below)
+	var regenerated: int = world.get_stats()["back_walls"]
+	if not unloaded or not back_ready or regenerated <= 0:
+		bad.append("after unload=%s ready=%s, back_walls=%d (expected > 0)" % [unloaded, back_ready, regenerated])
+	world.free()
+
+	var off_target: Node2D = Node2D.new()
+	root.add_child(off_target)
+	var off: PixelWorld = await _make_back_wall_world(off_target, false)
+	for i: int in 10:
+		await process_frame
+	var off_drawn: int = off.get_stats()["back_walls"]
+	if off_drawn != 0:
+		bad.append("back_wall_enabled=false: back_walls=%d, expected 0" % off_drawn)
+	off.free()
+	off_target.free()
+	target.free()
+
+	if not bad.is_empty():
+		printerr("  " + ", ".join(bad))
+		return false
+	return true
