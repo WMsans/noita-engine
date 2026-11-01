@@ -3,7 +3,9 @@
 #include <vector>
 
 #include "doctest/doctest.h"
+#include "generator.h"
 #include "material.h"
+#include "rng.h"
 
 namespace {
 
@@ -145,6 +147,39 @@ TEST_CASE("duplicate reaction pair is an error") {	std::vector<MaterialDef> defs
 	CHECK_FALSE(MaterialTable::compile(defs, {first, dup}, table, error));
 	CHECK(has(error, "water"));
 	CHECK(has(error, "lava"));
+}
+
+TEST_CASE("textured material spawns its texel as shade") {
+	MaterialDef rock = make_def("rock", MatClass::Solid);
+	rock.texture_rgba.assign(256, 0xAABBCCDD);
+	MaterialDef water = make_def("water", MatClass::Liquid);
+
+	MaterialTable t;
+	std::string error;
+	REQUIRE(MaterialTable::compile({rock, water}, {}, t, error));
+
+	CHECK(spawn_cell(1, t, 1, 5, 3).shade == 3 * 16 + 5);
+	CHECK(spawn_cell(1, t, 1, -1, -1).shade == 255);  // negative coords wrap, no mirror
+	CHECK(spawn_cell(1, t, 1, 21, 19).shade == 3 * 16 + 5);  // 16-cell period
+	CHECK(spawn_cell(1, t, 1, 100, 100, 2, 7).shade == 7 * 16 + 2);  // explicit texel coords win
+	CHECK(spawn_cell(2, t, 1, 5, 3).shade == (hash5(1, 0, 5, 3, 0) & 0xFF));  // untextured unchanged
+	CHECK(spawn_cell(1, t, 1, 5, 3).flags == 0);  // no FLAG_CRUST from spawning
+}
+
+TEST_CASE("texture of the wrong size fails compile naming the material") {
+	MaterialDef rock = make_def("rock", MatClass::Solid);
+	rock.texture_rgba.assign(255, 0);
+	MaterialTable table;
+	std::string error;
+	CHECK_FALSE(MaterialTable::compile({rock}, {}, table, error));
+	CHECK(has(error, "rock"));
+	CHECK(has(error, "texture"));
+
+	MaterialDef crust_rock = make_def("rock", MatClass::Solid);
+	crust_rock.crust_rgba.assign(300, 0);
+	CHECK_FALSE(MaterialTable::compile({crust_rock}, {}, table, error));
+	CHECK(has(error, "rock"));
+	CHECK(has(error, "crust"));
 }
 
 TEST_CASE("failed compile leaves the previous table intact") {
