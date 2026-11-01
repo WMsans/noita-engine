@@ -307,3 +307,27 @@ TEST_CASE("conservation") {
 
 	for (int mi = 0; mi < 3; ++mi) CHECK(simtest::count_mat(grid, mats[mi]) == PER_MAT);
 }
+
+TEST_CASE("a liquid front does not stall on a vertical chunk border") {
+	MaterialTable table = simtest::movement_table();
+	const MatId water = table.id_of("water"), rock = table.id_of("rock");
+	constexpr int W = 512, H = 256, FLOOR_Y = 250, BORDER = 128;
+	WorldGrid grid(table, 1);
+	simtest::load_arena(grid, table, 0, 0, W, H, rock);
+	simtest::paint(grid, {{0, FLOOR_Y, W, H, rock}, {0, 20, 100, FLOOR_Y, water}});  // a dam
+
+	Simulator sim(grid);
+	simtest::tick_n(sim, 300);
+
+	// When a chunk runs all its lines before its neighbour, the column just past the border
+	// refills from above before the neighbour's cells can flow into it, so the front stands
+	// as a wall on the border with open air beside it.
+	int stuck = 0;
+	for (int y = 136; y < 240; ++y) {
+		int front = -1;
+		for (int x = 0; x < W; ++x)
+			if (simtest::mat_at(grid, x, y) == water) front = x;
+		if (front >= BORDER && front < BORDER + 4) ++stuck;
+	}
+	CHECK(stuck < 10);
+}
