@@ -3,6 +3,10 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <functional>
+#include <mutex>
+#include <queue>
 #include <vector>
 
 #include "job_pool.h"
@@ -34,6 +38,69 @@ struct ChunkPair {
 bool runs_before(const ChunkPair& a, const ChunkPair& b) {
 	if (a.y != b.y) return a.y > b.y;
 	return (a.index & 1) < (b.index & 1);
+}
+
+// Runs the pairs on the pool in an order the sorted list allows: a pair waits only for the
+// pairs it can touch that come before it, the three pairs under it (it falls into them and
+// they rise into it) and, for the second parity, its two same-row neighbours. A pair reaches
+// one chunk past its own two, so pairs further apart touch no common cell and their order
+// cannot change a result: the tick matches the single-threaded walk of the list cell for cell,
+// while rows overlap where the awake chunks are uneven instead of meeting at a barrier.
+template <class F>
+void run_pairs(JobPool& pool, const std::vector<ChunkPair>& pairs, const F& simulate) {
+	const int n = (int)pairs.size();
+	auto find = [&](int y, int index) {  // pairs are sorted by row, then parity, then index
+		for (int k = 0; k < n; ++k)
+			if (pairs[(size_t)k].y == y && pairs[(size_t)k].index == index) return k;
+		return -1;
+	};
+	std::vector<std::vector<int>> dependents((size_t)n);
+	std::vector<int> pending((size_t)n);  // guarded by `lock` once the workers run
+	std::vector<int> ready;
+	for (int k = 0; k < n; ++k) {
+		const ChunkPair& p = pairs[(size_t)k];
+		int deps = 0;
+		auto after = [&](int y, int index) {
+			const int d = find(y, index);
+			if (d < 0) return;
+			dependents[(size_t)d].push_back(k);
+			++deps;
+		};
+		for (int di = -1; di <= 1; ++di) after(p.y + 1, p.index + di);
+		if (p.index & 1) {
+			after(p.y, p.index - 1);
+			after(p.y, p.index + 1);
+		}
+		pending[(size_t)k] = deps;
+		if (deps == 0) ready.push_back(k);
+	}
+
+	// Lowest list position first: the bottom rows carry the longest chains of waiting pairs.
+	std::mutex lock;
+	std::condition_variable wake;  // a pair became ready, or the last one finished
+	std::priority_queue<int, std::vector<int>, std::greater<int>> queue(std::greater<int>(), ready);
+	int remaining = n;  // guarded by `lock`
+	pool.parallel_for(pool.workers(), [&](int) {
+		std::unique_lock<std::mutex> guard(lock);
+		for (;;) {
+			wake.wait(guard, [&] { return !queue.empty() || remaining == 0; });
+			if (queue.empty()) return;
+			const int k = queue.top();
+			queue.pop();
+			guard.unlock();
+			simulate(pairs[(size_t)k]);
+			int woke = 0;
+			guard.lock();
+			for (int d : dependents[(size_t)k])
+				if (--pending[(size_t)d] == 0) {
+					queue.push(d);
+					++woke;
+				}
+			if (--remaining == 0) wake.notify_all();
+			else if (woke > 1) wake.notify_all();
+			else if (woke == 1) wake.notify_one();
+		}
+	});
 }
 }  // namespace
 
@@ -98,9 +165,8 @@ void Simulator::tick() {
 	};
 
 	// Collect and sort the awake pairs here, before any worker starts: the list is shared, so
-	// it must not be built while the workers run. Every (row, parity) run is one barrier
-	// (parallel_for blocks), which is what makes a finished row's writes visible to the rows
-	// above it. The single-threaded tick walks the same order, so both agree cell for cell.
+	// it must not be built while the workers run. The single-threaded tick walks the list in
+	// order; run_pairs keeps every order that can matter, so both agree cell for cell.
 	const int offset = pairing_offset(tick);
 	std::vector<Chunk*> awake;
 	grid.for_each_chunk([&](Chunk& c) {
@@ -118,17 +184,10 @@ void Simulator::tick() {
 		pairs.back().half[c->coord.x - offset - 2 * index] = c;
 	}
 	std::stable_sort(pairs.begin(), pairs.end(), runs_before);
-	for (size_t i = 0; i < pairs.size();) {
-		size_t end = i + 1;
-		while (end < pairs.size() && pairs[end].y == pairs[i].y &&
-		       (pairs[end].index & 1) == (pairs[i].index & 1))
-			++end;
-		if (pool == nullptr) {
-			for (size_t k = i; k < end; ++k) simulate(pairs[k]);
-		} else {
-			pool->parallel_for((int)(end - i), [&](int k) { simulate(pairs[i + (size_t)k]); });
-		}
-		i = end;
+	if (pool == nullptr) {
+		for (const ChunkPair& p : pairs) simulate(p);
+	} else {
+		run_pairs(*pool, pairs, simulate);
 	}
 
 	stats_.chunks_simulated = chunks.load(std::memory_order_relaxed);
