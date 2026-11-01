@@ -26,6 +26,14 @@ namespace godot {
 
 namespace {
 
+// A back wall is only drawn where its chunk's wall has pixels at all: above the surface the
+// wall is all zero and the chunk texture is left transparent there.
+bool chunk_has_wall(const Chunk &chunk) {
+	for (uint32_t px : chunk.back_wall)
+		if ((px & 0xFFu) != 0) return true;  // alpha is the low byte of the packed 0xRRGGBBAA wall
+	return false;
+}
+
 Color color_from_rgba32(uint32_t p_rgba) {
 	return Color(((p_rgba >> 24) & 0xFF) / 255.0f, ((p_rgba >> 16) & 0xFF) / 255.0f,
 	             ((p_rgba >> 8) & 0xFF) / 255.0f, (p_rgba & 0xFF) / 255.0f);
@@ -357,7 +365,6 @@ void PixelWorld::_notification(int p_what) {
 	if (!rs) return;
 	for (const auto &kv : views) {
 		if (kv.second.texture.is_valid()) rs->free_rid(kv.second.texture);
-		if (kv.second.back_texture.is_valid()) rs->free_rid(kv.second.back_texture);
 		if (kv.second.canvas_item.is_valid()) rs->free_rid(kv.second.canvas_item);
 	}
 	views.clear();
@@ -937,16 +944,7 @@ void PixelWorld::upload_dirty_chunks() {
 		const auto create_start = std::chrono::steady_clock::now();
 		const Vector2 origin((float)(chunk.coord.x * CHUNK), (float)(chunk.coord.y * CHUNK));
 		const Rect2 rect(origin, Vector2(CHUNK, CHUNK));
-		// Added before the cell rect: a canvas item draws its commands in order, so the wall sits
-		// under its chunk's cells. The same cell texture never needs it re-uploaded.
-		if (back_wall_enabled && !chunk.back_wall.empty()) {
-			uint8_t *dst = (uint8_t *)upload_image->ptrw();
-			for (size_t p = 0; p < chunk_texels; ++p)
-				back_wall_rgba8_bytes(chunk.back_wall[p], &dst[p * 4]);
-			view.back_texture = rs->texture_2d_create(upload_image);
-			rs->canvas_item_add_texture_rect(view.canvas_item, rect, view.back_texture);
-			view.has_back = true;
-		}
+		view.has_back = back_wall_enabled && chunk_has_wall(chunk);
 		memcpy(upload_image->ptrw(), rgba, chunk_texels * sizeof(uint32_t));
 		view.texture = rs->texture_2d_create(upload_image);
 		rs->canvas_item_add_texture_rect(view.canvas_item, rect, view.texture);
@@ -979,11 +977,24 @@ Color PixelWorld::cell_color(const Cell &p_cell) const {
 
 // Runs on the pool: reads only the chunk and cell_rgba. An id past the palette draws nothing,
 // like cell_color().
+//
+// The back wall is baked in where the cell is transparent instead of being a second texture
+// drawn underneath: a second texture per chunk costs a texture create per chunk, which is the
+// whole of this streamer's worst-frame time. Every material is opaque, so a wall pixel is only
+// ever visible through air and the image is the same either way.
 void PixelWorld::write_chunk_image(const Chunk &chunk, uint32_t *out) const {
 	const size_t mats = palette.size();
+	const bool bake_wall =
+	    back_wall_enabled && chunk.back_wall.size() == (size_t)CHUNK * CHUNK;
 	for (size_t i = 0; i < (size_t)CHUNK * CHUNK; ++i) {
 		const Cell &cell = chunk.cells[i];
-		out[i] = cell.mat < mats ? cell_rgba[((size_t)cell.mat * 2 + (cell.flags & FLAG_BURNING)) * 256 + cell.shade] : 0u;
+		const uint32_t px = cell.mat < mats ? cell_rgba[((size_t)cell.mat * 2 + (cell.flags & FLAG_BURNING)) * 256 + cell.shade] : 0u;
+		// Alpha is the top byte of these R, G, B, A words. Transparent: the wall shows through.
+		if ((px >> 24) != 0u || !bake_wall) {
+			out[i] = px;
+			continue;
+		}
+		back_wall_rgba8_bytes(chunk.back_wall[i], (uint8_t *)&out[i]);
 	}
 }
 
@@ -1003,13 +1014,12 @@ void PixelWorld::drop_view(ChunkCoord coord) {
 	if (it == views.end()) return;
 	RenderingServer *rs = RenderingServer::get_singleton();
 	if (it->second.texture.is_valid()) rs->free_rid(it->second.texture);
-	if (it->second.back_texture.is_valid()) rs->free_rid(it->second.back_texture);
 	if (it->second.canvas_item.is_valid()) rs->free_rid(it->second.canvas_item);
 	views.erase(it);
 }
 
-// The wall texture lives with the view, so a toggle drops every view and marks its chunk dirty:
-// the next upload rebuilds both textures of each chunk, in draw order, from data it still holds.
+// The wall is baked into the chunk texture, so a toggle drops every view and marks its chunk
+// dirty: the next upload rebuilds each texture from the cells the chunk still holds.
 void PixelWorld::set_back_wall_enabled(bool p_value) {
 	if (back_wall_enabled == p_value) return;
 	back_wall_enabled = p_value;

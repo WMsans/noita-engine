@@ -43,11 +43,11 @@ class PixelRigidBody;
 class PixelWorld : public Node2D {
 	GDCLASS(PixelWorld, Node2D)
 
-	// One per loaded chunk: the canvas item parented to this node's, and its texture RIDs.
+	// One per loaded chunk: the canvas item parented to this node's, and its texture RID. The
+	// back wall is baked into that texture, so it is one texture per chunk.
 	struct ChunkView {
 		RID canvas_item;
 		RID texture;
-		RID back_texture;
 		bool has_texture = false;
 		bool has_back = false;
 	};

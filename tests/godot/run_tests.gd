@@ -1245,7 +1245,7 @@ func test_existing_scenes_opt_out() -> bool:
 # --- back wall (Plan 7) ---------------------------------------------------------------------
 
 # Every BackWallConfig field is a property on the generator, so a scene can tune the wall. The
-# four spot checks below are the defaults the core sets.
+# spot checks below mirror the defaults the core sets (src/core/back_wall.h).
 func test_back_wall_generator_defaults() -> bool:
 	var gen: PixelWorldGenerator = PixelWorldGenerator.new()
 	var bad: PackedStringArray = []
@@ -1253,10 +1253,18 @@ func test_back_wall_generator_defaults() -> bool:
 		bad.append("back_wall_enabled reads %s, expected true" % gen.back_wall_enabled)
 	if not is_equal_approx(gen.back_wall_darken, 0.54):
 		bad.append("back_wall_darken reads %s, expected 0.54" % gen.back_wall_darken)
+	if not is_equal_approx(gen.back_wall_hollow_frequency, 0.008):
+		bad.append("back_wall_hollow_frequency reads %s, expected 0.008" % gen.back_wall_hollow_frequency)
+	if not is_equal_approx(gen.back_wall_hollow_stretch, 4.0):
+		bad.append("back_wall_hollow_stretch reads %s, expected 4.0" % gen.back_wall_hollow_stretch)
 	if not is_equal_approx(gen.back_wall_hollow_amount, 0.38):
 		bad.append("back_wall_hollow_amount reads %s, expected 0.38" % gen.back_wall_hollow_amount)
 	if gen.back_wall_stalactite_length != 20:
 		bad.append("back_wall_stalactite_length reads %s, expected 20" % gen.back_wall_stalactite_length)
+	if gen.back_wall_stalagmite_length != 8:
+		bad.append("back_wall_stalagmite_length reads %s, expected 8" % gen.back_wall_stalagmite_length)
+	if gen.back_wall_tooth_period != 7:
+		bad.append("back_wall_tooth_period reads %s, expected 7" % gen.back_wall_tooth_period)
 	if not bad.is_empty():
 		printerr("  " + ", ".join(bad))
 		return false

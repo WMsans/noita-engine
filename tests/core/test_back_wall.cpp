@@ -36,6 +36,16 @@ int max_channel(uint32_t rgba) {
 	                 (int)((rgba >> 8) & 0xFFu)});
 }
 
+// generate() hands the wall its per-cell biome pick; a direct fill() call builds the same row.
+std::vector<int> biome_row(const TerrainGenerator& gen, ChunkCoord coord) {
+	std::vector<int> biomes((size_t)CHUNK * CHUNK, -1);
+	for (int ly = 0; ly < CHUNK; ++ly)
+		for (int lx = 0; lx < CHUNK; ++lx)
+			biomes[(size_t)ly * CHUNK + lx] =
+			    gen.biome_at(coord.x * CHUNK + lx, coord.y * CHUNK + ly);
+	return biomes;
+}
+
 }  // namespace
 
 TEST_CASE("back wall rgba8 bytes follow the packed order") {
@@ -89,7 +99,8 @@ TEST_CASE("back wall chunk matches per-cell reference") {
 	const ChunkCoord coords[] = {{0, 2}, {-1, 3}, {-3, -1}, {5, 4}};
 	for (ChunkCoord coord : coords) {
 		std::vector<uint32_t> out;
-		wall->fill(*gen, table, coord, out);
+		const std::vector<int> biomes = biome_row(*gen, coord);
+		wall->fill(*gen, table, coord, biomes.data(), out);
 		REQUIRE_MESSAGE(out.size() == (size_t)CHUNK * CHUNK,
 		                "fill sizes a chunk at " << coord.x << "," << coord.y);
 
@@ -127,10 +138,12 @@ TEST_CASE("back wall deterministic") {
 	std::unique_ptr<TerrainGenerator> b = compile_or_fail(cfg, table, test_seed());
 	std::unique_ptr<TerrainGenerator> other = compile_or_fail(cfg, table, test_seed() + 1);
 
+	const std::vector<int> biomes_a = biome_row(*a, {2, 3});
+	const std::vector<int> biomes_other = biome_row(*other, {2, 3});
 	std::vector<uint32_t> out_a, out_b, out_other;
-	a->back_wall()->fill(*a, table, {2, 3}, out_a);
-	b->back_wall()->fill(*b, table, {2, 3}, out_b);
-	other->back_wall()->fill(*other, table, {2, 3}, out_other);
+	a->back_wall()->fill(*a, table, {2, 3}, biomes_a.data(), out_a);
+	b->back_wall()->fill(*b, table, {2, 3}, biomes_a.data(), out_b);
+	other->back_wall()->fill(*other, table, {2, 3}, biomes_other.data(), out_other);
 	REQUIRE(out_a.size() == (size_t)CHUNK * CHUNK);
 	CHECK(std::memcmp(out_a.data(), out_b.data(), out_a.size() * sizeof(uint32_t)) == 0);
 	CHECK(std::memcmp(out_a.data(), out_other.data(), out_a.size() * sizeof(uint32_t)) != 0);
@@ -148,7 +161,8 @@ TEST_CASE("back wall hollow share") {
 		for (int cy = 3; cy < 7; ++cy) {
 			const ChunkCoord coord{cx, cy};
 			std::vector<uint32_t> out;
-			wall->fill(*gen, table, coord, out);
+			const std::vector<int> biomes = biome_row(*gen, coord);
+			wall->fill(*gen, table, coord, biomes.data(), out);
 			// Per biome in this chunk: the brightest hollow and the darkest wall cell.
 			std::map<int, std::pair<int, int>> extremes;  // biome -> (hollow max, wall min)
 			for (int ly = 0; ly < CHUNK; ++ly) {
@@ -203,7 +217,8 @@ TEST_CASE("back wall teeth reduce the hollow area") {
 		for (int cy = 3; cy < 7; ++cy) {
 			const ChunkCoord coord{cx, cy};
 			std::vector<uint32_t> out;
-			toothed->back_wall()->fill(*toothed, table, coord, out);
+			const std::vector<int> biomes = biome_row(*toothed, coord);
+			toothed->back_wall()->fill(*toothed, table, coord, biomes.data(), out);
 			for (int ly = 0; ly < CHUNK; ++ly) {
 				for (int lx = 0; lx < CHUNK; ++lx) {
 					if (alpha_of(out[(size_t)ly * CHUNK + lx]) == 0) continue;
@@ -232,12 +247,17 @@ TEST_CASE("back wall darker than terrain") {
 	std::unique_ptr<TerrainGenerator> gen = compile_or_fail(cfg, table, test_seed());
 	const BackWall* wall = gen->back_wall();
 	REQUIRE(wall != nullptr);
-	const double limit = (double)cfg.back_wall.darken + 0.1;
+	// What the look requires, independent of the config: every wall cell is at least a quarter
+	// darker than the terrain material of its own biome. A bound in terms of `darken` cannot
+	// work: shade and pebbles multiply a wall cell by up to 1.1845, so `darken + 0.1` would cap
+	// the tunable `darken` itself at about 0.54 instead of judging the picture.
+	constexpr double WALL_MAX_RATIO = 0.75;
 
 	const ChunkCoord coords[] = {{0, 3}, {1, 3}, {-1, 3}, {0, 4}};
 	for (ChunkCoord coord : coords) {
 		std::vector<uint32_t> out;
-		wall->fill(*gen, table, coord, out);
+		const std::vector<int> biomes = biome_row(*gen, coord);
+		wall->fill(*gen, table, coord, biomes.data(), out);
 		for (int ly = 0; ly < CHUNK; ++ly) {
 			for (int lx = 0; lx < CHUNK; ++lx) {
 				const int wx = coord.x * CHUNK + lx, wy = coord.y * CHUNK + ly;
@@ -245,10 +265,17 @@ TEST_CASE("back wall darker than terrain") {
 				if (alpha_of(rgba) == 0) continue;
 				const uint32_t base =
 				    table.get(gen->biome_base(gen->biome_at(wx, wy))).color_rgba;
-				const double ceiling = limit * (double)max_channel(base);
-				REQUIRE_MESSAGE((double)max_channel(rgba) < ceiling,
-				                "wall " << max_channel(rgba) << " at (" << wx << ", " << wy
-				                        << ") is not darker than " << ceiling);
+				const int terrain = max_channel(base), cell = max_channel(rgba);
+				if (terrain <= 0) {  // a black base cannot be darkened further
+					CHECK_MESSAGE(cell == 0, "wall " << cell << " at (" << wx << ", " << wy
+					                               << ") over a black terrain base");
+					continue;
+				}
+				const double ratio = (double)cell / (double)terrain;
+				REQUIRE_MESSAGE(ratio <= WALL_MAX_RATIO,
+				                "wall " << cell << " at (" << wx << ", " << wy << ") is " << ratio
+				                        << " of its terrain's " << terrain << ", not under "
+				                        << WALL_MAX_RATIO);
 			}
 		}
 	}

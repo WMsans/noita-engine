@@ -121,25 +121,29 @@ int BackWall::tooth_length(int reach, int wx, uint32_t tri_salt) const {
 	return std::clamp((int)std::floor(length), 0, reach);
 }
 
-BackWall::Column BackWall::column(const TerrainGenerator& gen, int wx, int row0, int count) const {
-	Column c;
-	c.row0 = row0;
-	c.count = std::max(count, 0);
+void BackWall::reach(int wx, int& down, int& up) const {
+	down = tooth_length(cfg_.stalactite_length, wx, SALT_TRI_DOWN);
+	up = tooth_length(cfg_.stalagmite_length, wx, SALT_TRI_UP);
+}
+
+void BackWall::column(const TerrainGenerator& gen, int wx, int row0, int count, int down, int up,
+                      Column& out) const {
+	out.row0 = row0;
+	out.count = std::max(count, 0);
 	const double edge = 0.5 * ((double)n_rough_.GetNoise((double)wx, 0.0) + 1.0);
 	const double rough = (double)cfg_.edge_rough * std::clamp(edge, 0.0, 1.0);
-	c.wall_top = gen.surface_height(wx) + (int)std::ceil(rough);
-	c.down = tooth_length(cfg_.stalactite_length, wx, SALT_TRI_DOWN);
-	c.up = tooth_length(cfg_.stalagmite_length, wx, SALT_TRI_UP);
-	c.raw_hollow.assign((size_t)c.count, 0);
-	c.near_hollow.assign((size_t)c.count, 0);
-	for (int i = 0; i < c.count; ++i) {
-		const int wy = c.row0 + i;
-		if (wy < c.wall_top) continue;
+	out.wall_top = gen.surface_height(wx) + (int)std::ceil(rough);
+	out.down = down;
+	out.up = up;
+	out.raw_hollow.resize((size_t)out.count);
+	out.near_hollow.resize((size_t)out.count);
+	for (int i = 0; i < out.count; ++i) {
+		const int wy = out.row0 + i;
+		if (wy < out.wall_top) continue;
 		const double value = hollow_value(wx, wy);
-		c.raw_hollow[i] = value > hollow_cut_;
-		c.near_hollow[i] = !c.raw_hollow[i] && value > hollow_cut_ - PEBBLE_BAND;
+		out.raw_hollow[i] = value > hollow_cut_;
+		out.near_hollow[i] = !out.raw_hollow[i] && value > hollow_cut_ - PEBBLE_BAND;
 	}
-	return c;
 }
 
 // A raw hollow becomes wall when a wall row sits within the tooth reach above or below it:
@@ -160,11 +164,10 @@ bool BackWall::teeth_row(const Column& c, int wy) const {
 }
 
 uint32_t BackWall::colour(const TerrainGenerator& gen, const MaterialTable& table, const Column& c,
-                          int wx, int wy) const {
+                          int wx, int wy, int biome) const {
 	if (wy < c.wall_top) return 0u;  // sky: no wall at all
 	const int i = wy - c.row0;
 	if (i < 0 || i >= c.count) return 0u;
-	const int biome = gen.biome_at(wx, wy);
 	if (biome < 0) return 0u;
 
 	const uint32_t base = table.get(gen.biome_base(biome)).color_rgba;
@@ -196,29 +199,38 @@ uint32_t BackWall::colour(const TerrainGenerator& gen, const MaterialTable& tabl
 }
 
 void BackWall::fill(const TerrainGenerator& gen, const MaterialTable& table, ChunkCoord coord,
-                    std::vector<uint32_t>& out) const {
+                    const int* biomes, std::vector<uint32_t>& out) const {
 	const int base_x = coord.x * CHUNK, base_y = coord.y * CHUNK;
 	// One hollow field window per column covers the chunk plus the rows the teeth read.
-	const int above = down_reach(), below = up_reach();
 	out.assign((size_t)CHUNK * CHUNK, 0u);
+	Column c;  // one column's buffers, reused for all 64: no per-column allocation
 	for (int lx = 0; lx < CHUNK; ++lx) {
 		const int wx = base_x + lx;
-		const Column c = column(gen, wx, base_y - above, CHUNK + above + below);
+		int down = 0, up = 0;
+		reach(wx, down, up);
+		// The window is this column's own reach, not the config's maximum: the hollow field is
+		// 25 rows shorter per column on average and nothing outside it is ever read.
+		column(gen, wx, base_y - down, CHUNK + down + up, down, up, c);
 		for (int ly = 0; ly < CHUNK; ++ly)
-			out[(size_t)ly * CHUNK + lx] = colour(gen, table, c, wx, base_y + ly);
+			out[(size_t)ly * CHUNK + lx] =
+			    colour(gen, table, c, wx, base_y + ly, biomes[(size_t)ly * CHUNK + lx]);
 	}
 }
 
 uint32_t BackWall::colour_at(const TerrainGenerator& gen, const MaterialTable& table, int wx,
                              int wy) const {
-	const int above = down_reach(), below = up_reach();
-	const Column c = column(gen, wx, wy - above, above + below + 1);
-	return colour(gen, table, c, wx, wy);
+	int down = 0, up = 0;
+	reach(wx, down, up);
+	Column c;
+	column(gen, wx, wy - down, down + up + 1, down, up, c);
+	return colour(gen, table, c, wx, wy, gen.biome_at(wx, wy));
 }
 
 bool BackWall::hollow_at(const TerrainGenerator& gen, int wx, int wy) const {
-	const int above = down_reach(), below = up_reach();
-	const Column c = column(gen, wx, wy - above, above + below + 1);
+	int down = 0, up = 0;
+	reach(wx, down, up);
+	Column c;
+	column(gen, wx, wy - down, down + up + 1, down, up, c);
 	if (wy < c.wall_top) return false;
 	const int i = wy - c.row0;
 	return c.raw_hollow[(size_t)i] != 0 && !teeth_row(c, wy);

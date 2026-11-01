@@ -46,8 +46,10 @@ class BackWall {
 public:
 	BackWall(const BackWallConfig&, uint32_t seed);
 
-	// Fills `out` with the whole chunk. Byte-identical to colour_at at every cell.
-	void fill(const TerrainGenerator&, const MaterialTable&, ChunkCoord,
+	// Fills `out` with the whole chunk. Byte-identical to colour_at at every cell. `biomes`
+	// holds CHUNK x CHUNK biome indices in chunk row-major order: generate()'s own per-cell
+	// pick, so the wall never re-derives it (that was over half of the wall's cost).
+	void fill(const TerrainGenerator&, const MaterialTable&, ChunkCoord, const int* biomes,
 	          std::vector<uint32_t>& out) const;
 	// The slow per-cell reference fill is checked against.
 	uint32_t colour_at(const TerrainGenerator&, const MaterialTable&, int wx, int wy) const;
@@ -66,10 +68,15 @@ private:
 		std::vector<uint8_t> near_hollow;  // wall row just under the cut: the pebble band
 	};
 
-	Column column(const TerrainGenerator&, int wx, int row0, int count) const;
+	// Rows the teeth of the column at wx reach above (down) and below (up) a cell.
+	void reach(int wx, int& down, int& up) const;
+	// Fills `out` for the column at wx, from `row0` down `count` rows. fill() reuses one Column
+	// across a chunk's 64 columns, so its two buffers are resized, not reallocated, per column.
+	void column(const TerrainGenerator&, int wx, int row0, int count, int down, int up,
+	            Column& out) const;
 	bool teeth_row(const Column&, int wy) const;
-	uint32_t colour(const TerrainGenerator&, const MaterialTable&, const Column&, int wx,
-	                int wy) const;
+	uint32_t colour(const TerrainGenerator&, const MaterialTable&, const Column&, int wx, int wy,
+	                int biome) const;
 	// Length of the tooth hanging (or rising) at wx, in rows.
 	int tooth_length(int reach, int wx, uint32_t tri_salt) const;
 	double tri(int wx, uint32_t salt) const;  // triangle wave in [0, 1]
