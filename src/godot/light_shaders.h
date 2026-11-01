@@ -28,6 +28,8 @@ layout(push_constant, std430) uniform Params {
 
 layout(set = 0, binding = 0) uniform sampler2D src;
 layout(rgba8, set = 0, binding = 1) uniform image2D dst;
+layout(set = 0, binding = 2) uniform sampler2D reach_src;
+layout(r8, set = 0, binding = 3) uniform image2D reach_dst;
 
 void main() {
 	ivec2 p = ivec2(gl_GlobalInvocationID.xy);
@@ -40,14 +42,19 @@ void main() {
 	// light in a coarse cascade instead of leaking through it.
 	vec3 emission = vec3(0.0);
 	float opacity = 0.0;
+	// Reach takes the max, so the coarse cascade still knows the farthest reach in the block.
+	float reach = 0.0;
 	for (int y = 0; y < 2; ++y) {
 		for (int x = 0; x < 2; ++x) {
-			vec4 c = texelFetch(src, min(p * 2 + ivec2(x, y), src_hi), 0);
+			ivec2 at = min(p * 2 + ivec2(x, y), src_hi);
+			vec4 c = texelFetch(src, at, 0);
 			emission += c.rgb;
 			opacity = max(opacity, c.a);
+			reach = max(reach, texelFetch(reach_src, at, 0).r);
 		}
 	}
 	imageStore(dst, p, vec4(emission * 0.25, opacity));
+	imageStore(reach_dst, p, vec4(reach, 0.0, 0.0, 0.0));
 }
 )GLSL";
 
@@ -64,12 +71,14 @@ layout(push_constant, std430) uniform Params {
 	int t_end;
 	int rays;
 	int has_upper;
-	int pad;
+	float step_texels;  // texels per march step (2^(level-1)); level 0 unused
+	float reach_unit;   // world cells per reach code = LIGHT_REACH_UNIT / area.scale
 } params;
 
 layout(set = 0, binding = 0) uniform sampler2D input_tex;
 layout(rgba16f, set = 0, binding = 1) uniform image2D dst;
 layout(rgba16f, set = 0, binding = 2) uniform image2D upper;
+layout(set = 0, binding = 3) uniform sampler2D reach_tex;
 
 // Must match EMISSION_RANGE in src/core/light_input.h: the CPU packs e / EMISSION_RANGE and
 // this shader multiplies the texel back up.
@@ -145,7 +154,13 @@ void main() {
 				vec4 texel_in = (cell.x < 0 || cell.y < 0 || cell.x >= params.mip.x || cell.y >= params.mip.y)
 				    ? vec4(0.0, 0.0, 0.0, 1.0)
 				    : texelFetch(input_tex, cell, 0);
-				ray += t * texel_in.rgb * EMISSION_RANGE;
+				// Far light fades to zero at the emitter's reach: a texel whose light does not
+				// carry this far contributes nothing, so nothing lights a far ceiling.
+				const float d = float(step) * params.step_texels;
+				const float R = texelFetch(reach_tex, clamp(cell, ivec2(0), params.mip - 1), 0).r * 255.0
+				                * params.reach_unit;
+				const float w = R > 0.0 ? pow(max(1.0 - d / R, 0.0), 2.0) : 0.0;
+				ray += t * texel_in.rgb * EMISSION_RANGE * w;
 				t *= 1.0 - texel_in.a;
 				if (t < 0.01) {
 					break;

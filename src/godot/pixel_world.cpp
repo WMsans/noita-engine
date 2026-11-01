@@ -127,6 +127,8 @@ void PixelWorld::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_fire_glow_color"), &PixelWorld::get_fire_glow_color);
 	ClassDB::bind_method(D_METHOD("set_fire_glow_energy", "value"), &PixelWorld::set_fire_glow_energy);
 	ClassDB::bind_method(D_METHOD("get_fire_glow_energy"), &PixelWorld::get_fire_glow_energy);
+	ClassDB::bind_method(D_METHOD("set_emission_reach", "value"), &PixelWorld::set_emission_reach);
+	ClassDB::bind_method(D_METHOD("get_emission_reach"), &PixelWorld::get_emission_reach);
 	ClassDB::bind_method(D_METHOD("set_marker_light_color", "value"), &PixelWorld::set_marker_light_color);
 	ClassDB::bind_method(D_METHOD("get_marker_light_color"), &PixelWorld::get_marker_light_color);
 	ClassDB::bind_method(D_METHOD("set_marker_light_energy", "value"), &PixelWorld::set_marker_light_energy);
@@ -147,6 +149,7 @@ void PixelWorld::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::COLOR, "backdrop_color"), "set_backdrop_color", "get_backdrop_color");
 	ADD_PROPERTY(PropertyInfo(Variant::COLOR, "fire_glow_color"), "set_fire_glow_color", "get_fire_glow_color");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "fire_glow_energy", PROPERTY_HINT_RANGE, "0,16,0.01,or_greater"), "set_fire_glow_energy", "get_fire_glow_energy");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "emission_reach", PROPERTY_HINT_RANGE, "1,1020,1,or_greater"), "set_emission_reach", "get_emission_reach");
 	ADD_PROPERTY(PropertyInfo(Variant::COLOR, "marker_light_color"), "set_marker_light_color", "get_marker_light_color");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "marker_light_energy", PROPERTY_HINT_RANGE, "0,16,0.01,or_greater"), "set_marker_light_energy", "get_marker_light_energy");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "marker_light_radius", PROPERTY_HINT_RANGE, "1,1024,0.5,or_greater"), "set_marker_light_radius", "get_marker_light_radius");
@@ -362,7 +365,8 @@ void PixelWorld::_notification(int p_what) {
 	// that uses them; the job keeps the renderer alive until then.
 	if (light_renderer) {
 		rs->call_on_render_thread(
-		    Callable(memnew(LightRenderJob(light_renderer, PackedByteArray(), LightArea(), 0.0f, 0, true))));
+		    Callable(memnew(LightRenderJob(light_renderer, PackedByteArray(), PackedByteArray(), LightArea(),
+		                                  0.0f, 0, LIGHT_CASCADES, true))));
 		light_renderer.reset();
 	}
 }
@@ -550,7 +554,7 @@ int PixelWorld::count_view_missing() const {
 void PixelWorld::rebuild_light_palette() {
 	if (table.size() == 0) return;  // the table is compiled in _ready, which rebuilds it
 	light_palette = LightPalette::build(table, fire_glow_color.r, fire_glow_color.g,
-	                                    fire_glow_color.b, fire_glow_energy);
+	                                    fire_glow_color.b, fire_glow_energy, emission_reach);
 }
 
 void PixelWorld::reset_light_stats() {
@@ -602,9 +606,13 @@ void PixelWorld::build_light_frame() {
 	const int texel_w = light_texel_w(area);
 	const int texel_h = light_texel_h(area);
 	const int64_t bytes = (int64_t)texel_w * texel_h * 4;
+	const int64_t reach_bytes = (int64_t)texel_w * texel_h;
 	light_texels.resize(bytes);
 	light_base.resize(bytes);
-	if (light_texels.size() != bytes || light_base.size() != bytes) {  // never write through null
+	light_reach.resize(reach_bytes);
+	light_reach_base.resize(reach_bytes);
+	if (light_texels.size() != bytes || light_base.size() != bytes ||
+	    light_reach.size() != reach_bytes || light_reach_base.size() != reach_bytes) {  // never write through null
 		reset_light_stats();
 		hide_light_backdrop();
 		hide_light_overlay();
@@ -615,6 +623,8 @@ void PixelWorld::build_light_frame() {
 	const auto start = std::chrono::steady_clock::now();
 	LightTexel *texels = reinterpret_cast<LightTexel *>(light_texels.ptrw());
 	LightTexel *base = reinterpret_cast<LightTexel *>(light_base.ptrw());
+	uint8_t *reach = reinterpret_cast<uint8_t *>(light_reach.ptrw());
+	uint8_t *reach_base = reinterpret_cast<uint8_t *>(light_reach_base.ptrw());
 	const bool area_changed = light_base_area.x0 != area.x0 || light_base_area.y0 != area.y0 ||
 	                          light_base_area.w != area.w || light_base_area.h != area.h ||
 	                          light_base_area.scale != area.scale;
@@ -649,19 +659,23 @@ void PixelWorld::build_light_frame() {
 		// A different area on any of its five fields (origin, width, height, scale) falls back to the
 		// whole-area build, which is also what a never-built base hits: its remembered area starts
 		// zeroed. The first frame after a change must show the new terrain.
-		build_light_inputs(*grid, light_palette, area, base, pool.get());
+		build_light_inputs(*grid, light_palette, area, base, reach_base, pool.get());
 		grid->for_each_chunk([](Chunk &chunk) { chunk.light_dirty.store(false); });
 		light_spot_rects.clear();
 		memcpy(texels, base, (size_t)bytes);
+		memcpy(reach, reach_base, (size_t)reach_bytes);
 		light_base_area = area;
 	} else {
-		build_light_rects(*grid, light_palette, area, repainted, base, pool.get());
+		build_light_rects(*grid, light_palette, area, repainted, base, reach_base, pool.get());
 		for (const LightRect &rect : repainted)
-			for (int ty = rect.y; ty < rect.y + rect.h; ++ty)
+			for (int ty = rect.y; ty < rect.y + rect.h; ++ty) {
 				memcpy(texels + (size_t)ty * texel_w + rect.x,
 				       base + (size_t)ty * texel_w + rect.x, (size_t)rect.w * sizeof(LightTexel));
+				memcpy(reach + (size_t)ty * texel_w + rect.x, reach_base + (size_t)ty * texel_w + rect.x,
+				       (size_t)rect.w);
+			}
 		// Undo the last frame's spots before adding this frame's, instead of copying the base.
-		restore_light_rects(area, light_spot_rects, base, texels);
+		restore_light_rects(area, light_spot_rects, base, reach_base, texels, reach);
 	}
 
 	std::vector<LightSpot> spots;
@@ -678,8 +692,13 @@ void PixelWorld::build_light_frame() {
 	const LightSpot marker{0.0f, 0.0f, marker_light_color.r, marker_light_color.g,
 	                       marker_light_color.b, marker_light_energy, marker_light_radius};
 	collect_marker_lights(*grid, area, marker, spots);
-	add_light_spots(area, spots, texels);
+	add_light_spots(area, spots, texels, reach);
 	light_spot_rects = spot_rects(area, spots);
+
+	// Light past the largest reach is not computed, so only the cascades that cover it run.
+	float max_reach_cells = emission_reach;
+	for (const LightSpot &spot : spots) max_reach_cells = std::max(max_reach_cells, std::min(spot.radius, 1020.0f));
+	const int cascade_count = light_cascade_count(max_reach_cells / (float)area.scale);
 
 	light_spots = (int)spots.size();
 	// The build, the repaints and the spots are all of the input budget. The job stores the same
@@ -689,7 +708,7 @@ void PixelWorld::build_light_frame() {
 	    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
 	light_ran_this_frame = true;
 	update_light_backdrop(area);
-	render_light_frame(area, light_texels);
+	render_light_frame(area, light_texels, light_reach, cascade_count);
 	light_gpu_ms = light_renderer ? light_renderer->gpu_ms() : 0.0;
 }
 
@@ -731,7 +750,8 @@ void PixelWorld::hide_light_backdrop() {
 
 // Queues one frame of the GPU pass. The job holds the renderer by shared_ptr and its own copy of
 // the texels, so a queued call stays valid even if this node dies first.
-void PixelWorld::render_light_frame(const LightArea &p_area, const PackedByteArray &p_texels) {
+void PixelWorld::render_light_frame(const LightArea &p_area, const PackedByteArray &p_texels,
+                                    const PackedByteArray &p_reach, int p_cascade_count) {
 	RenderingServer *rs = RenderingServer::get_singleton();
 	if (!rs) return;
 	if (light_overlay_broken) {
@@ -747,8 +767,9 @@ void PixelWorld::render_light_frame(const LightArea &p_area, const PackedByteArr
 	// The job stores the same copy-on-write buffer as light_texels: the next frame's ptrw() detaches
 	// (copies) it if the render thread has not consumed this one, so the two never share storage.
 	rs->call_on_render_thread(
-	    Callable(memnew(LightRenderJob(light_renderer, p_texels, p_area, bloom_threshold,
-	                                    light_surface_passes(light_surface_depth, p_area.scale), false))));
+	    Callable(memnew(LightRenderJob(light_renderer, p_texels, p_reach, p_area, bloom_threshold,
+	                                    light_surface_passes(light_surface_depth, p_area.scale),
+	                                    p_cascade_count, false))));
 	update_light_overlay(p_area);
 }
 

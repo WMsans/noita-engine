@@ -1030,6 +1030,7 @@ func test_lighting_settings_defaults() -> bool:
 		"marker_light_radius": 48.0,
 		"bloom_threshold": 1.0,
 		"bloom_strength": 0.6,
+		"emission_reach": 40.0,
 		"light_surface_depth": 10,
 	}
 	var written := {
@@ -1045,6 +1046,7 @@ func test_lighting_settings_defaults() -> bool:
 		"marker_light_radius": 24.0,
 		"bloom_threshold": 2.0,
 		"bloom_strength": 0.9,
+		"emission_reach": 24.0,
 		"light_surface_depth": 4,
 	}
 	var light_defaults := {"color": Color(1, 0.75, 0.4), "energy": 1.5, "radius": 48.0, "flicker": 0.0, "enabled": true}

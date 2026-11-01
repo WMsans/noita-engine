@@ -75,6 +75,7 @@ class PixelWorld : public Node2D {
 	Color backdrop_color = Color(0.07f, 0.05f, 0.04f);
 	Color fire_glow_color = Color(1.0f, 0.6f, 0.2f);
 	float fire_glow_energy = 1.5f;
+	float emission_reach = 40.0f;  // cells an emitter's light carries before it fades to zero
 	Color marker_light_color = Color(1.0f, 0.75f, 0.4f);
 	float marker_light_energy = 1.5f;
 	float marker_light_radius = 48.0f;
@@ -122,9 +123,12 @@ class PixelWorld : public Node2D {
 	// This frame's lit area and its RGBA8 inputs (r,g,b emission, a opacity), for the renderer.
 	LightArea light_area_now;
 	PackedByteArray light_texels;  // upload buffer: base + this frame's spots
+	// One reach code per texel, same layout as light_texels: how far each texel's light carries.
+	PackedByteArray light_reach;
 	// The same texels with no spots in them, plus the texels the last lit frame's spots wrote, so
 	// the next frame can undo them and repaint only what changed.
 	PackedByteArray light_base;
+	PackedByteArray light_reach_base;
 	LightArea light_base_area;
 	std::vector<LightRect> light_spot_rects;
 	bool light_ran_this_frame = false;
@@ -179,7 +183,8 @@ class PixelWorld : public Node2D {
 	void build_light_frame();
 	void update_light_backdrop(const LightArea &p_area);
 	void hide_light_backdrop();
-	void render_light_frame(const LightArea &p_area, const PackedByteArray &p_texels);
+	void render_light_frame(const LightArea &p_area, const PackedByteArray &p_texels,
+	                        const PackedByteArray &p_reach, int p_cascade_count);
 	void update_light_overlay(const LightArea &p_area);
 	void hide_light_overlay();
 	void free_light_overlay();
@@ -274,6 +279,12 @@ public:
 		rebuild_light_palette();
 	}
 	float get_fire_glow_energy() const { return fire_glow_energy; }
+
+	void set_emission_reach(float p_value) {
+		emission_reach = p_value;
+		rebuild_light_palette();
+	}
+	float get_emission_reach() const { return emission_reach; }
 
 	void set_marker_light_color(const Color &p_value) { marker_light_color = p_value; }
 	Color get_marker_light_color() const { return marker_light_color; }
