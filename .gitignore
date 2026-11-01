@@ -16,3 +16,4 @@ src/**/*.o
 tests/**/*.os
 tests/**/*.o
 *.o.tmp
+.superpowers/
