@@ -54,14 +54,30 @@ std::unique_ptr<Chunk> empty_chunk(ChunkCoord coord) {
 
 // The fire glow the brief fixes for every palette in this file.
 LightPalette fire_palette(const MaterialTable& table) {
-	return LightPalette::build(table, 1.0f, 0.6f, 0.2f, 1.5f);
+	return LightPalette::build(table, 1.0f, 0.6f, 0.2f, 1.5f, 40.0f);
 }
 
-std::vector<LightTexel> build(const WorldGrid& grid, const LightPalette& pal, const LightArea& area,
-                             JobPool* pool = nullptr) {
-	std::vector<LightTexel> out((size_t)area.w * area.h);
-	build_light_inputs(grid, pal, area, out.data(), pool);
-	return out;
+// A build's two planes: the RGBA8 texels and one reach code per texel.
+struct LightPlanes {
+	std::vector<LightTexel> texels;
+	std::vector<uint8_t> reach;
+};
+
+LightPlanes build(const WorldGrid& grid, const LightPalette& pal, const LightArea& area,
+                  JobPool* pool = nullptr) {
+	const size_t n = (size_t)light_texel_w(area) * light_texel_h(area);
+	LightPlanes planes{std::vector<LightTexel>(n), std::vector<uint8_t>(n)};
+	build_light_inputs(grid, pal, area, planes.texels.data(), planes.reach.data(), pool);
+	return planes;
+}
+
+// The incremental paths must rebuild both planes byte for byte.
+void check_same_planes(const LightPlanes& a, const LightPlanes& b) {
+	REQUIRE(a.texels.size() == b.texels.size());
+	REQUIRE(a.reach.size() == b.reach.size());
+	CHECK(std::memcmp(a.texels.data(), b.texels.data(),
+	                  a.texels.size() * sizeof(LightTexel)) == 0);
+	CHECK(std::memcmp(a.reach.data(), b.reach.data(), a.reach.size()) == 0);
 }
 
 }  // namespace
@@ -96,13 +112,13 @@ TEST_CASE("materials pack emission and opacity") {
 	chunk.at(1, 0).mat = lt.rock;
 	chunk.at(2, 0).mat = lt.lava;
 
-	const std::vector<LightTexel> out = build(grid, fire_palette(lt.table), {0, 0, 3, 1});
-	REQUIRE(out.size() == 3);
-	CHECK(std::memcmp(&out[0], &CLEAR, sizeof(LightTexel)) == 0);  // air
+	const LightPlanes out = build(grid, fire_palette(lt.table), {0, 0, 3, 1});
+	REQUIRE(out.texels.size() == 3);
+	CHECK(std::memcmp(&out.texels[0], &CLEAR, sizeof(LightTexel)) == 0);  // air
 	const LightTexel rock{0, 0, 0, 255};
 	const LightTexel lava{128, 57, 13, 77};
-	CHECK(std::memcmp(&out[1], &rock, sizeof(LightTexel)) == 0);
-	CHECK(std::memcmp(&out[2], &lava, sizeof(LightTexel)) == 0);
+	CHECK(std::memcmp(&out.texels[1], &rock, sizeof(LightTexel)) == 0);
+	CHECK(std::memcmp(&out.texels[2], &lava, sizeof(LightTexel)) == 0);
 }
 
 TEST_CASE("burning cells glow with the fire colour") {
@@ -115,21 +131,22 @@ TEST_CASE("burning cells glow with the fire colour") {
 	chunk.at(1, 0).flags |= FLAG_BURNING;
 	chunk.at(2, 0).mat = lt.wood;  // not burning: no glow
 
-	const std::vector<LightTexel> out = build(grid, fire_palette(lt.table), {0, 0, 3, 1});
-	REQUIRE(out.size() == 3);
+	const LightPlanes out = build(grid, fire_palette(lt.table), {0, 0, 3, 1});
+	REQUIRE(out.texels.size() == 3);
 	const LightTexel fire{96, 57, 19, 255};
-	CHECK(std::memcmp(&out[0], &fire, sizeof(LightTexel)) == 0);
+	CHECK(std::memcmp(&out.texels[0], &fire, sizeof(LightTexel)) == 0);
 	const LightTexel both{128, 57, 19, 77};  // per-channel max of lava and fire
-	CHECK(std::memcmp(&out[1], &both, sizeof(LightTexel)) == 0);
-	CHECK(std::memcmp(&out[2], &DARK, sizeof(LightTexel)) == 0);
+	CHECK(std::memcmp(&out.texels[1], &both, sizeof(LightTexel)) == 0);
+	CHECK(std::memcmp(&out.texels[2], &DARK, sizeof(LightTexel)) == 0);
 }
 
 TEST_CASE("unloaded cells are opaque and dark") {
 	LightTable lt;
 	WorldGrid grid(lt.table, 1);
-	const std::vector<LightTexel> out = build(grid, fire_palette(lt.table), {0, 0, 8, 8});
-	REQUIRE(out.size() == 64);
-	for (const LightTexel& t : out) CHECK(std::memcmp(&t, &DARK, sizeof(LightTexel)) == 0);
+	const LightPlanes out = build(grid, fire_palette(lt.table), {0, 0, 8, 8});
+	REQUIRE(out.texels.size() == 64);
+	for (const LightTexel& t : out.texels) CHECK(std::memcmp(&t, &DARK, sizeof(LightTexel)) == 0);
+	for (uint8_t r : out.reach) CHECK(r == 0);  // unloaded chunks do not emit
 }
 
 TEST_CASE("negative coordinates") {
@@ -139,13 +156,14 @@ TEST_CASE("negative coordinates") {
 	chunk.at(28, 14).mat = lt.lava;  // world (-100, -50)
 
 	const LightArea area{-128, -64, 64, 64};
-	const std::vector<LightTexel> out = build(grid, fire_palette(lt.table), area);
-	REQUIRE(out.size() == 64 * 64);
+	const LightPlanes out = build(grid, fire_palette(lt.table), area);
+	REQUIRE(out.texels.size() == 64 * 64);
 	const LightTexel lava{128, 57, 13, 77};
 	int hits = 0;
-	for (const LightTexel& t : out) hits += std::memcmp(&t, &lava, sizeof(LightTexel)) == 0;
+	for (const LightTexel& t : out.texels) hits += std::memcmp(&t, &lava, sizeof(LightTexel)) == 0;
 	CHECK(hits == 1);
-	CHECK(std::memcmp(&out[(size_t)14 * 64 + 28], &lava, sizeof(LightTexel)) == 0);
+	CHECK(std::memcmp(&out.texels[(size_t)14 * 64 + 28], &lava, sizeof(LightTexel)) == 0);
+	CHECK(out.reach[(size_t)14 * 64 + 28] == 10);
 }
 
 TEST_CASE("parallel build matches serial") {
@@ -166,25 +184,22 @@ TEST_CASE("parallel build matches serial") {
 	const LightPalette pal = fire_palette(lt.table);
 	LightArea area{-32, -32, 192, 192};  // reaches past the loaded chunks
 	JobPool pool(4);
-	const std::vector<LightTexel> par = build(grid, pal, area, &pool);
-	const std::vector<LightTexel> ser = build(grid, pal, area, nullptr);
-	REQUIRE(par.size() == ser.size());
-	CHECK(std::memcmp(par.data(), ser.data(), par.size() * sizeof(LightTexel)) == 0);
+	const LightPlanes par = build(grid, pal, area, &pool);
+	const LightPlanes ser = build(grid, pal, area, nullptr);
+	check_same_planes(par, ser);
 
 	// 96 texel rows at scale 2 is six bands, so the block path is parallel too.
 	area.scale = 2;
 	REQUIRE(light_texel_h(area) == 96);
-	const std::vector<LightTexel> par2 = build(grid, pal, area, &pool);
-	const std::vector<LightTexel> ser2 = build(grid, pal, area, nullptr);
-	REQUIRE(par2.size() == ser2.size());
-	CHECK(std::memcmp(par2.data(), ser2.data(), par2.size() * sizeof(LightTexel)) == 0);
+	check_same_planes(build(grid, pal, area, &pool), build(grid, pal, area, nullptr));
 }
 
 TEST_CASE("spots add a disc and saturate") {
 	const LightArea area{0, 0, 64, 64};
 	std::vector<LightTexel> out((size_t)area.w * area.h, LightTexel{0, 0, 0, 9});
+	std::vector<uint8_t> reach((size_t)area.w * area.h, 0);
 	const LightSpot spot{40.5f, 40.5f, 1.0f, 1.0f, 1.0f, 2.0f, 16.0f};
-	add_light_spots(area, {spot}, out.data());
+	add_light_spots(area, {spot}, out.data(), reach.data());
 
 	const LightTexel& centre = out[(size_t)40 * area.w + 40];
 	CHECK(centre.r > 0);
@@ -197,8 +212,9 @@ TEST_CASE("spots add a disc and saturate") {
 
 	// A huge energy saturates instead of wrapping around.
 	std::vector<LightTexel> hot((size_t)area.w * area.h, LightTexel{0, 0, 0, 0});
+	std::vector<uint8_t> hot_reach((size_t)area.w * area.h, 0);
 	add_light_spots(area, {LightSpot{40.5f, 40.5f, 1.0f, 1.0f, 1.0f, 1000.0f, 16.0f}},
-	                hot.data());
+	                hot.data(), hot_reach.data());
 	const LightTexel& peak = hot[(size_t)40 * area.w + 40];
 	CHECK(peak.r == 255);
 	CHECK(peak.g == 255);
@@ -211,6 +227,7 @@ TEST_CASE("spots at the edge or nonsense are safe") {
 	const LightTexel SENTINEL{17, 34, 51, 68};
 	std::vector<LightTexel> buf(n + 128, SENTINEL);
 	LightTexel* const out = buf.data() + 64;
+	std::vector<uint8_t> reach(n, 0);
 	for (size_t i = 0; i < n; ++i) out[i] = LightTexel{0, 0, 0, 0};
 
 	CHECK(spot_source_radius(16.0f) == 3);
@@ -220,18 +237,19 @@ TEST_CASE("spots at the edge or nonsense are safe") {
 	CHECK(spot_source_radius(-4.0f) == 1);
 
 	// Half outside: only the part inside the area is lit.
-	add_light_spots(area, {LightSpot{-1.0f, 20.5f, 1, 1, 1, 2.0f, 16.0f}}, out);
+	add_light_spots(area, {LightSpot{-1.0f, 20.5f, 1, 1, 1, 2.0f, 16.0f}}, out, reach.data());
 	CHECK(out[(size_t)20 * area.w + 0].r > 0);
 
 	std::vector<LightTexel> snapshot(out, out + n);
 	// Wholly outside: nothing changes.
 	add_light_spots(area, {LightSpot{(float)area.x0 + area.w + 100.0f, 20.5f, 1, 1, 1, 2.0f, 16.0f}},
-	                out);
-	add_light_spots(area, {LightSpot{20.5f, (float)area.y0 - 100.0f, 1, 1, 1, 2.0f, 16.0f}}, out);
+	                out, reach.data());
+	add_light_spots(area, {LightSpot{20.5f, (float)area.y0 - 100.0f, 1, 1, 1, 2.0f, 16.0f}}, out,
+	                reach.data());
 	CHECK(std::memcmp(out, snapshot.data(), n * sizeof(LightTexel)) == 0);
 
 	// The default radius 48 maps to a source disc of 8 cells.
-	add_light_spots(area, {LightSpot{32.5f, 16.5f, 1, 1, 1, 2.0f, 48.0f}}, out);
+	add_light_spots(area, {LightSpot{32.5f, 16.5f, 1, 1, 1, 2.0f, 48.0f}}, out, reach.data());
 	CHECK(out[(size_t)16 * area.w + 32].r > 0);
 	CHECK(out[(size_t)16 * area.w + 20].r == 0);  // 12 cells away, outside the 8 cell disc
 
@@ -239,9 +257,9 @@ TEST_CASE("spots at the edge or nonsense are safe") {
 	snapshot.assign(out, out + n);
 	const float nan = std::numeric_limits<float>::quiet_NaN();
 	const float inf = std::numeric_limits<float>::infinity();
-	add_light_spots(area, {LightSpot{nan, 16.5f, 1, 1, 1, 2.0f, 16.0f}}, out);
-	add_light_spots(area, {LightSpot{32.5f, inf, 1, 1, 1, 2.0f, 16.0f}}, out);
-	add_light_spots(area, {LightSpot{-inf, 16.5f, 1, 1, 1, 2.0f, 16.0f}}, out);
+	add_light_spots(area, {LightSpot{nan, 16.5f, 1, 1, 1, 2.0f, 16.0f}}, out, reach.data());
+	add_light_spots(area, {LightSpot{32.5f, inf, 1, 1, 1, 2.0f, 16.0f}}, out, reach.data());
+	add_light_spots(area, {LightSpot{-inf, 16.5f, 1, 1, 1, 2.0f, 16.0f}}, out, reach.data());
 	CHECK(std::memcmp(out, snapshot.data(), n * sizeof(LightTexel)) == 0);
 
 	for (size_t i = 0; i < 64; ++i) {
@@ -290,8 +308,9 @@ TEST_CASE("half resolution packs 2x2 blocks") {
 	// Slack after the texels: a build that still writes one texel per cell must not corrupt this
 	// test's own buffer while it is failing.
 	std::vector<LightTexel> buf((size_t)light_texel_w(area) * light_texel_h(area) + 64, CLEAR);
+	std::vector<uint8_t> reach((size_t)light_texel_w(area) * light_texel_h(area));
 	const LightTexel *out = buf.data();
-	build_light_inputs(grid, fire_palette(lt.table), area, buf.data(), nullptr);
+	build_light_inputs(grid, fire_palette(lt.table), area, buf.data(), reach.data(), nullptr);
 
 	// Per-channel max emission keeps a lone lava cell glowing; opacity is the block mean.
 	const LightTexel lava{128, 57, 13, 19};
@@ -315,7 +334,8 @@ TEST_CASE("partial blocks average opacity over the cells they cover") {
 	REQUIRE(light_texel_w(area) == 2);
 	REQUIRE(light_texel_h(area) == 2);
 	std::vector<LightTexel> buf((size_t)light_texel_w(area) * light_texel_h(area) + 64, CLEAR);
-	build_light_inputs(grid, fire_palette(lt.table), area, buf.data(), nullptr);
+	std::vector<uint8_t> reach((size_t)light_texel_w(area) * light_texel_h(area));
+	build_light_inputs(grid, fire_palette(lt.table), area, buf.data(), reach.data(), nullptr);
 
 	// One cell in a nine-cell block is a ninth opaque; a one-cell edge block is fully opaque.
 	// Dividing by the scale squared instead would leave the edge wall at 28 and leak light.
@@ -345,7 +365,8 @@ TEST_CASE("odd area builds inside its texel rect") {
 	// cell instead of one per block fails the sentinel checks below.
 	std::vector<LightTexel> buf((size_t)tw * th + 16, SENTINEL);
 	LightTexel* const out = buf.data() + 8;
-	build_light_inputs(grid, fire_palette(lt.table), area, out, nullptr);
+	std::vector<uint8_t> reach((size_t)tw * th);
+	build_light_inputs(grid, fire_palette(lt.table), area, out, reach.data(), nullptr);
 
 	const LightTexel lava{128, 57, 13, 19};  // a lone lava cell in a 2x2 block
 	CHECK(std::memcmp(&out[0], &lava, sizeof(LightTexel)) == 0);
@@ -368,7 +389,8 @@ TEST_CASE("half resolution opacity is the block mean") {
 	LightArea area{0, 0, 2, 2};
 	area.scale = 2;
 	std::vector<LightTexel> buf((size_t)light_texel_w(area) * light_texel_h(area) + 64, CLEAR);
-	build_light_inputs(grid, fire_palette(lt.table), area, buf.data(), nullptr);
+	std::vector<uint8_t> reach((size_t)light_texel_w(area) * light_texel_h(area));
+	build_light_inputs(grid, fire_palette(lt.table), area, buf.data(), reach.data(), nullptr);
 	const LightTexel half{0, 0, 0, 128};  // (255 + 255 + 0 + 0) / 4
 	CHECK(std::memcmp(&buf[0], &half, sizeof(LightTexel)) == 0);
 }
@@ -385,11 +407,12 @@ TEST_CASE("half resolution spots land in texel space") {
 	// test's own buffer while it is failing.
 	std::vector<LightTexel> buf((size_t)area.w * area.h + 2048, SENTINEL);
 	LightTexel* const out = buf.data() + 1024;
+	std::vector<uint8_t> reach((size_t)tw * th, 0);
 	for (size_t i = 0; i < (size_t)tw * th; ++i) out[i] = LightTexel{0, 0, 0, 0};
 
 	// A one-texel source disc lights texel (8, 8) and its four neighbours: world (16, 16) is
 	// texel (8, 8), so the mapping is in texels, not cells.
-	add_light_spots(area, {LightSpot{16.0f, 16.0f, 1.0f, 1.0f, 1.0f, 2.0f, 6.0f}}, out);
+	add_light_spots(area, {LightSpot{16.0f, 16.0f, 1.0f, 1.0f, 1.0f, 2.0f, 6.0f}}, out, reach.data());
 	for (int ty = 0; ty < th; ++ty)
 		for (int tx = 0; tx < tw; ++tx) {
 			const bool inside = (tx == 8 && ty == 8) || std::abs(tx - 8) + std::abs(ty - 8) == 1;
@@ -402,13 +425,13 @@ TEST_CASE("half resolution spots land in texel space") {
 
 	// The source radius is divided by the scale: radius 48 is 8 cells, so 4 texels here.
 	std::fill(out, out + (size_t)tw * th, LightTexel{0, 0, 0, 0});
-	add_light_spots(area, {LightSpot{16.0f, 16.0f, 1.0f, 1.0f, 1.0f, 2.0f, 48.0f}}, out);
+	add_light_spots(area, {LightSpot{16.0f, 16.0f, 1.0f, 1.0f, 1.0f, 2.0f, 48.0f}}, out, reach.data());
 	CHECK(out[(size_t)8 * tw + 12].r > 0);   // 4 texels away
 	CHECK(out[(size_t)8 * tw + 13].r == 0);  // 5 texels away
 
 	// Half outside: only the texels inside the area are written.
 	std::fill(out, out + (size_t)tw * th, LightTexel{0, 0, 0, 0});
-	add_light_spots(area, {LightSpot{-1.0f, 16.0f, 1.0f, 1.0f, 1.0f, 2.0f, 6.0f}}, out);
+	add_light_spots(area, {LightSpot{-1.0f, 16.0f, 1.0f, 1.0f, 1.0f, 2.0f, 6.0f}}, out, reach.data());
 	CHECK(out[(size_t)8 * tw + 0].r > 0);
 	CHECK(out[(size_t)8 * tw + 1].r == 0);
 
@@ -416,10 +439,12 @@ TEST_CASE("half resolution spots land in texel space") {
 	std::vector<LightTexel> snapshot(out, out + (size_t)tw * th);
 	const float nan = std::numeric_limits<float>::quiet_NaN();
 	const float inf = std::numeric_limits<float>::infinity();
-	add_light_spots(area, {LightSpot{nan, 16.0f, 1, 1, 1, 2.0f, 6.0f}}, out);
-	add_light_spots(area, {LightSpot{16.0f, inf, 1, 1, 1, 2.0f, 6.0f}}, out);
-	add_light_spots(area, {LightSpot{(float)area.x0 + area.w + 100.0f, 16.0f, 1, 1, 1, 2.0f, 6.0f}}, out);
-	add_light_spots(area, {LightSpot{16.0f, (float)area.y0 - 100.0f, 1, 1, 1, 2.0f, 6.0f}}, out);
+	add_light_spots(area, {LightSpot{nan, 16.0f, 1, 1, 1, 2.0f, 6.0f}}, out, reach.data());
+	add_light_spots(area, {LightSpot{16.0f, inf, 1, 1, 1, 2.0f, 6.0f}}, out, reach.data());
+	add_light_spots(area, {LightSpot{(float)area.x0 + area.w + 100.0f, 16.0f, 1, 1, 1, 2.0f, 6.0f}},
+	                out, reach.data());
+	add_light_spots(area, {LightSpot{16.0f, (float)area.y0 - 100.0f, 1, 1, 1, 2.0f, 6.0f}}, out,
+	                reach.data());
 	CHECK(std::memcmp(out, snapshot.data(), snapshot.size() * sizeof(LightTexel)) == 0);
 	for (size_t i = 0; i < 64; ++i) {
 		CHECK(std::memcmp(&buf[i], &SENTINEL, sizeof(LightTexel)) == 0);
@@ -443,13 +468,13 @@ TEST_CASE("texel size rounds up and scale 1 is unchanged") {
 	chunk.at(1, 0).mat = lt.rock;
 	chunk.at(2, 0).mat = lt.lava;
 	const LightArea area{0, 0, 3, 1};
-	const std::vector<LightTexel> out = build(grid, fire_palette(lt.table), area);
-	REQUIRE(out.size() == 3);
+	const LightPlanes out = build(grid, fire_palette(lt.table), area);
+	REQUIRE(out.texels.size() == 3);
 	const LightTexel rock{0, 0, 0, 255};
 	const LightTexel lava{128, 57, 13, 77};
-	CHECK(std::memcmp(&out[0], &CLEAR, sizeof(LightTexel)) == 0);
-	CHECK(std::memcmp(&out[1], &rock, sizeof(LightTexel)) == 0);
-	CHECK(std::memcmp(&out[2], &lava, sizeof(LightTexel)) == 0);
+	CHECK(std::memcmp(&out.texels[0], &CLEAR, sizeof(LightTexel)) == 0);
+	CHECK(std::memcmp(&out.texels[1], &rock, sizeof(LightTexel)) == 0);
+	CHECK(std::memcmp(&out.texels[2], &lava, sizeof(LightTexel)) == 0);
 }
 
 TEST_CASE("region rebuild matches a full build") {
@@ -473,7 +498,7 @@ TEST_CASE("region rebuild matches a full build") {
 	for (int scale = 1; scale <= 3; ++scale) {
 		area.scale = scale;
 		CAPTURE(scale);
-		std::vector<LightTexel> out = build(grid, pal, area, &pool);  // the persistent base
+		LightPlanes out = build(grid, pal, area, &pool);  // the persistent base
 
 		// Three chunks change, on both sides of the area's origin (which is not block aligned).
 		Chunk& origin = *grid.find({0, 0});
@@ -486,13 +511,14 @@ TEST_CASE("region rebuild matches a full build") {
 		corner.at(0, 0).mat = MAT_AIR;
 		corner.at(1, 0).flags |= FLAG_BURNING;
 
-		build_light_region(grid, pal, area, 0, 0, CHUNK, CHUNK, out.data(), &pool);
-		build_light_region(grid, pal, area, -CHUNK, 0, 0, CHUNK, out.data(), &pool);
-		build_light_region(grid, pal, area, CHUNK, CHUNK, 2 * CHUNK, 2 * CHUNK, out.data(), &pool);
+		build_light_region(grid, pal, area, 0, 0, CHUNK, CHUNK, out.texels.data(), out.reach.data(),
+		                   &pool);
+		build_light_region(grid, pal, area, -CHUNK, 0, 0, CHUNK, out.texels.data(), out.reach.data(),
+		                   &pool);
+		build_light_region(grid, pal, area, CHUNK, CHUNK, 2 * CHUNK, 2 * CHUNK, out.texels.data(),
+		                   out.reach.data(), &pool);
 
-		const std::vector<LightTexel> fresh = build(grid, pal, area, &pool);
-		REQUIRE(out.size() == fresh.size());
-		CHECK(std::memcmp(out.data(), fresh.data(), out.size() * sizeof(LightTexel)) == 0);
+		check_same_planes(out, build(grid, pal, area, &pool));
 	}
 }
 
@@ -539,38 +565,42 @@ TEST_CASE("adjacent chunk rows never share a texel row in one dispatch") {
 	// The multi-rect dispatch rebuilds the same bytes as a full build of the same grid.
 	const LightPalette pal = fire_palette(lt.table);
 	JobPool pool(4);
-	std::vector<LightTexel> out = build(grid, pal, area, &pool);
+	LightPlanes out = build(grid, pal, area, &pool);
 	for (int ly = 0; ly < CHUNK; ++ly) {
 		grid.find({0, 0})->at(3, ly).mat = MAT_AIR;  // rock -> air, in the top row's chunk
 		grid.find({1, 1})->at(7, ly).flags |= FLAG_BURNING;
 	}
 	grid.find({0, 1})->at(20, 30).mat = lt.lava;  // and in the bottom row's chunk
-	build_light_rects(grid, pal, area, {top, bottom}, out.data(), &pool);
-	const std::vector<LightTexel> fresh = build(grid, pal, area, &pool);
-	REQUIRE(out.size() == fresh.size());
-	CHECK(std::memcmp(out.data(), fresh.data(), out.size() * sizeof(LightTexel)) == 0);
+	build_light_rects(grid, pal, area, {top, bottom}, out.texels.data(), out.reach.data(), &pool);
+	check_same_planes(out, build(grid, pal, area, &pool));
 
 	// An unloaded chunk's rect builds the opaque dark texel. Texels 21 stay out of it: the block
 	// on the chunk's first row and column also covers cells of the loaded neighbours.
 	grid.unload({1, 1});
-	build_light_region(grid, pal, area, CHUNK, CHUNK, 2 * CHUNK, 2 * CHUNK, out.data(), &pool);
+	build_light_region(grid, pal, area, CHUNK, CHUNK, 2 * CHUNK, 2 * CHUNK, out.texels.data(),
+	                   out.reach.data(), &pool);
 	for (int ty = 22; ty < th; ++ty)
 		for (int tx = 22; tx < tw; ++tx) {
 			CAPTURE(tx);
 			CAPTURE(ty);
-			CHECK(std::memcmp(&out[(size_t)ty * tw + tx], &DARK, sizeof(LightTexel)) == 0);
+			CHECK(std::memcmp(&out.texels[(size_t)ty * tw + tx], &DARK, sizeof(LightTexel)) == 0);
+			CHECK(out.reach[(size_t)ty * tw + tx] == 0);
 		}
 
 	// At scale 1 a chunk's rect is exactly its cells, so every texel of it is the dark texel.
 	const LightArea flat{0, 0, 2 * CHUNK, 2 * CHUNK};
 	const int fw = light_texel_w(flat);
-	std::vector<LightTexel> one = build(grid, pal, flat, &pool);
-	build_light_region(grid, pal, flat, CHUNK, CHUNK, 2 * CHUNK, 2 * CHUNK, one.data(), &pool);
+	LightPlanes one = build(grid, pal, flat, &pool);
+	build_light_region(grid, pal, flat, CHUNK, CHUNK, 2 * CHUNK, 2 * CHUNK, one.texels.data(),
+	                   one.reach.data(), &pool);
 	const std::vector<LightTexel> dark_row((size_t)CHUNK, DARK);
+	const std::vector<uint8_t> dark_reach((size_t)CHUNK, 0);
 	for (int ty = CHUNK; ty < 2 * CHUNK; ++ty) {
 		CAPTURE(ty);
-		CHECK(std::memcmp(&one[(size_t)ty * fw + CHUNK], dark_row.data(),
+		CHECK(std::memcmp(&one.texels[(size_t)ty * fw + CHUNK], dark_row.data(),
 		                  dark_row.size() * sizeof(LightTexel)) == 0);
+		CHECK(std::memcmp(&one.reach[(size_t)ty * fw + CHUNK], dark_reach.data(),
+		                  dark_reach.size()) == 0);
 	}
 }
 
@@ -591,19 +621,20 @@ TEST_CASE("region build clips to the area and to whole texel blocks") {
 	const LightTexel FILL{1, 2, 3, 4};
 	std::vector<LightTexel> buf((size_t)tw * th + 16, SENTINEL);
 	LightTexel* const out = buf.data() + 8;
+	std::vector<uint8_t> reach((size_t)tw * th);
 	const LightPalette pal = fire_palette(lt.table);
 
 	// Partly outside the area and misaligned to the blocks: cell 1 sits in block 0, so only
 	// texel (0, 0) is rewritten.
 	std::fill(out, out + (size_t)tw * th, FILL);
-	build_light_region(grid, pal, area, -5, -4, 2, 2, out, nullptr);
+	build_light_region(grid, pal, area, -5, -4, 2, 2, out, reach.data(), nullptr);
 	const LightTexel lava{128, 57, 13, 9};  // one lava cell of nine: 77 / 9
 	CHECK(std::memcmp(&out[0], &lava, sizeof(LightTexel)) == 0);
 	for (int i = 1; i < tw * th; ++i) CHECK(std::memcmp(&out[i], &FILL, sizeof(LightTexel)) == 0);
 
 	// A single misaligned cell in the middle: its whole block (all nine cells) is rebuilt.
 	std::fill(out, out + (size_t)tw * th, FILL);
-	build_light_region(grid, pal, area, 4, 4, 5, 5, out, nullptr);
+	build_light_region(grid, pal, area, 4, 4, 5, 5, out, reach.data(), nullptr);
 	const LightTexel rock{0, 0, 0, 28};  // 255 / 9
 	CHECK(std::memcmp(&out[tw + 1], &rock, sizeof(LightTexel)) == 0);
 	for (int i = 0; i < tw * th; ++i)
@@ -611,15 +642,15 @@ TEST_CASE("region build clips to the area and to whole texel blocks") {
 
 	// Clipped at the bottom-right edge: block 2 covers one column and one row of air cells.
 	std::fill(out, out + (size_t)tw * th, FILL);
-	build_light_region(grid, pal, area, 6, 6, 100, 100, out, nullptr);
+	build_light_region(grid, pal, area, 6, 6, 100, 100, out, reach.data(), nullptr);
 	CHECK(std::memcmp(&out[2 * tw + 2], &CLEAR, sizeof(LightTexel)) == 0);
 	for (int i = 0; i < tw * th; ++i)
 		if (i != 2 * tw + 2) CHECK(std::memcmp(&out[i], &FILL, sizeof(LightTexel)) == 0);
 
 	// Wholly outside, including the cell just past the area's edge: nothing written.
 	std::fill(out, out + (size_t)tw * th, FILL);
-	build_light_region(grid, pal, area, 64, 64, 128, 128, out, nullptr);
-	build_light_region(grid, pal, area, 7, 0, 8, 1, out, nullptr);
+	build_light_region(grid, pal, area, 64, 64, 128, 128, out, reach.data(), nullptr);
+	build_light_region(grid, pal, area, 7, 0, 8, 1, out, reach.data(), nullptr);
 	for (int i = 0; i < tw * th; ++i) CHECK(std::memcmp(&out[i], &FILL, sizeof(LightTexel)) == 0);
 
 	for (size_t i = 0; i < 8; ++i) {
@@ -672,7 +703,10 @@ TEST_CASE("spot rects restore the base") {
 		for (int ty = 0; ty < th; ++ty)
 			for (int tx = 0; tx < tw; ++tx)
 				base[(size_t)ty * tw + tx] = LightTexel{(uint8_t)(tx * 3), (uint8_t)(ty * 5), 7, 200};
+		std::vector<uint8_t> reach_base((size_t)tw * th);
+		for (size_t i = 0; i < reach_base.size(); ++i) reach_base[i] = (uint8_t)(i % 5);
 		std::vector<LightTexel> out = base;
+		std::vector<uint8_t> reach = reach_base;
 		const float nan = std::numeric_limits<float>::quiet_NaN();
 		const std::vector<LightSpot> spots = {
 		    LightSpot{20.5f, 10.5f, 1.0f, 1.0f, 1.0f, 2.0f, 48.0f},  // a torch
@@ -690,19 +724,22 @@ TEST_CASE("spot rects restore the base") {
 			CHECK(r.x + r.w <= tw);
 			CHECK(r.y + r.h <= th);
 		}
-		add_light_spots(area, spots, out.data());
+		add_light_spots(area, spots, out.data(), reach.data());
 		CHECK(std::memcmp(out.data(), base.data(), base.size() * sizeof(LightTexel)) != 0);
+		CHECK(std::memcmp(reach.data(), reach_base.data(), reach.size()) != 0);
 
 		// A texel outside every spot's rect is never touched by the restore.
 		const size_t far = (size_t)(th - 1) * tw;
 		const LightTexel MARK{9, 9, 9, 9};
 		out[far] = MARK;
-		restore_light_rects(area, rects, base.data(), out.data());
+		restore_light_rects(area, rects, base.data(), reach_base.data(), out.data(), reach.data());
 		CHECK(std::memcmp(&out[far], &MARK, sizeof(LightTexel)) == 0);
+		CHECK(reach[far] == reach_base[far]);
 
 		// Restoring the rects undoes exactly what the spots wrote.
 		out[far] = base[far];
 		CHECK(std::memcmp(out.data(), base.data(), base.size() * sizeof(LightTexel)) == 0);
+		CHECK(std::memcmp(reach.data(), reach_base.data(), reach.size()) == 0);
 	}
 }
 
@@ -718,4 +755,149 @@ TEST_CASE("surface light passes and falloff") {
 	CHECK(light_surface_falloff(0) == 1.0f);
 	CHECK(std::pow(light_surface_falloff(10), 10.0f) == doctest::Approx(LIGHT_SURFACE_FADE));
 	CHECK(light_surface_falloff(5) < light_surface_falloff(10));  // fewer steps fade faster
+}
+
+TEST_CASE("pack reach") {
+	CHECK(LIGHT_REACH_UNIT == doctest::Approx(4.0f));
+	CHECK(pack_reach(40.0f) == 10);
+	CHECK(pack_reach(41.0f) == 11);
+	CHECK(pack_reach(0.0f) == 1);
+	CHECK(pack_reach(-5.0f) == 1);
+	CHECK(pack_reach(std::numeric_limits<float>::quiet_NaN()) == 1);
+	CHECK(pack_reach(5000.0f) == 255);
+}
+
+TEST_CASE("reach plane from materials") {
+	LightTable lt;
+	WorldGrid grid(lt.table, 1);
+	Chunk& chunk = *grid.insert(empty_chunk({0, 0}));
+	chunk.at(0, 0).mat = lt.rock;
+	chunk.at(1, 0).mat = lt.lava;
+	chunk.at(2, 0).mat = lt.wood;
+	chunk.at(2, 0).flags |= FLAG_BURNING;
+
+	const LightPalette pal = fire_palette(lt.table);
+	CHECK(pal.reach[lt.lava] == 10);
+	CHECK(pal.reach[lt.rock] == 0);  // opaque but not emissive
+	CHECK(pal.reach[MAT_AIR] == 0);
+	CHECK(pal.fire_reach == 10);  // the fire glow reaches like the emissive materials
+
+	const LightPlanes out = build(grid, pal, {0, 0, 4, 1});
+	REQUIRE(out.reach.size() == 4);
+	CHECK(out.reach[0] == 0);   // rock
+	CHECK(out.reach[1] == 10);  // lava
+	CHECK(out.reach[2] == 10);  // burning wood takes the fire reach
+	CHECK(out.reach[3] == 0);   // air
+
+	// An unloaded chunk is dark and does not reach.
+	WorldGrid empty(lt.table, 1);
+	const LightPlanes unloaded = build(empty, pal, {0, 0, 4, 1});
+	REQUIRE(unloaded.reach.size() == 4);
+	for (uint8_t r : unloaded.reach) CHECK(r == 0);
+}
+
+TEST_CASE("reach block max at scale 2") {
+	LightTable lt;
+	WorldGrid grid(lt.table, 1);
+	Chunk& chunk = *grid.insert(empty_chunk({0, 0}));
+	chunk.at(0, 0).mat = lt.lava;  // one lava cell in a 2x2 block
+	chunk.at(1, 1).mat = lt.rock;  // a non-emitter does not lower it
+
+	LightArea area{0, 0, 2, 2};
+	area.scale = 2;
+	const LightPlanes out = build(grid, fire_palette(lt.table), area);
+	REQUIRE(out.reach.size() == 1);
+	CHECK(out.reach[0] == 10);
+}
+
+TEST_CASE("spot reach") {
+	const LightArea area{0, 0, 64, 64};
+	const size_t n = (size_t)area.w * area.h;
+	std::vector<LightTexel> texels(n, LightTexel{0, 0, 0, 0});
+	std::vector<uint8_t> reach(n, 0);
+	reach[(size_t)20 * 64 + 20] = 10;  // a lava texel inside the disc
+
+	// radius 48 packs as code 12: the lava's 10 is raised and air goes from 0 to 12.
+	CHECK(pack_reach(48.0f) == 12);
+	add_light_spots(area, {LightSpot{20.5f, 20.5f, 1, 1, 1, 2.0f, 48.0f}}, texels.data(),
+	                reach.data());
+	CHECK(reach[(size_t)20 * 64 + 20] == 12);
+	CHECK(reach[(size_t)20 * 64 + 21] == 12);
+	CHECK(reach[(size_t)20 * 64 + 32] == 0);  // outside the 8-cell disc
+}
+
+TEST_CASE("spot reach clamps") {
+	const LightArea area{0, 0, 64, 64};
+	const size_t n = (size_t)area.w * area.h;
+	std::vector<LightTexel> texels(n, LightTexel{0, 0, 0, 0});
+	std::vector<uint8_t> reach(n, 0);
+
+	add_light_spots(area, {LightSpot{32.5f, 16.5f, 1, 1, 1, 2.0f, 0.0f}}, texels.data(),
+	                reach.data());
+	CHECK(reach[(size_t)16 * 64 + 32] == 1);    // a zero radius still reaches one code
+	CHECK(texels[(size_t)16 * 64 + 32].r > 0);  // and still emits
+
+	std::fill(texels.begin(), texels.end(), LightTexel{0, 0, 0, 0});
+	std::fill(reach.begin(), reach.end(), 0);
+	add_light_spots(area, {LightSpot{32.5f, 16.5f, 1, 1, 1, 2.0f, 1e9f}}, texels.data(),
+	                reach.data());
+	CHECK(reach[(size_t)16 * 64 + 32] == 255);  // clamped to the last code
+	CHECK(reach[(size_t)0 * 64 + 32] == 255);   // 16 cells away, inside the 32-cell disc
+	CHECK(texels[(size_t)16 * 64 + 32].r > 0);
+}
+
+TEST_CASE("spot reach at scale 2") {
+	LightArea area{0, 0, 32, 32};
+	area.scale = 2;  // 16x16 texels
+	const int tw = light_texel_w(area);
+	const int th = light_texel_h(area);
+	REQUIRE(tw == 16);
+	REQUIRE(th == 16);
+	std::vector<LightTexel> texels((size_t)tw * th, LightTexel{0, 0, 0, 0});
+	std::vector<uint8_t> reach((size_t)tw * th, 0);
+
+	// The reach stays in cells: 48 cells is code 12 at any scale, and the GPU divides by scale.
+	add_light_spots(area, {LightSpot{16.0f, 16.0f, 1, 1, 1, 2.0f, 48.0f}}, texels.data(),
+	                reach.data());
+	CHECK(reach[(size_t)8 * tw + 8] == 12);
+	CHECK(reach[(size_t)8 * tw + 12] == 12);  // 4 texels = 8 cells away, inside the disc
+	CHECK(reach[(size_t)8 * tw + 13] == 0);
+}
+
+TEST_CASE("restore spot reach") {
+	LightArea area{0, 0, 64, 32};
+	area.scale = 2;
+	const int tw = light_texel_w(area);
+	const int th = light_texel_h(area);
+	std::vector<LightTexel> base((size_t)tw * th, LightTexel{0, 0, 0, 0});
+	std::vector<uint8_t> reach_base((size_t)tw * th);
+	for (size_t i = 0; i < reach_base.size(); ++i) reach_base[i] = (uint8_t)(i % 5);
+	std::vector<LightTexel> texels = base;
+	std::vector<uint8_t> reach = reach_base;
+
+	const std::vector<LightSpot> spots = {
+	    LightSpot{20.5f, 10.5f, 1, 1, 1, 2.0f, 48.0f},
+	    LightSpot{32.5f, 16.5f, 1, 1, 1, 2.0f, 100.0f},
+	};
+	const std::vector<LightRect> rects = spot_rects(area, spots);
+	REQUIRE(rects.size() == 2);
+	add_light_spots(area, spots, texels.data(), reach.data());
+	CHECK(std::memcmp(reach.data(), reach_base.data(), reach.size()) != 0);
+
+	restore_light_rects(area, rects, base.data(), reach_base.data(), texels.data(), reach.data());
+	CHECK(std::memcmp(texels.data(), base.data(), texels.size() * sizeof(LightTexel)) == 0);
+	CHECK(std::memcmp(reach.data(), reach_base.data(), reach.size()) == 0);
+}
+
+TEST_CASE("light cascade count") {
+	CHECK(light_cascade_count(0.0f) == 1);
+	CHECK(light_cascade_count(1.0f) == 1);
+	CHECK(light_cascade_count(2.0f) == 2);
+	CHECK(light_cascade_count(21.0f) == 3);
+	CHECK(light_cascade_count(40.0f) == 4);
+	CHECK(light_cascade_count(85.0f) == 4);
+	CHECK(light_cascade_count(86.0f) == 5);
+	CHECK(light_cascade_count(341.0f) == 5);
+	CHECK(light_cascade_count(342.0f) == 6);
+	CHECK(light_cascade_count(5000.0f) == 6);
 }
