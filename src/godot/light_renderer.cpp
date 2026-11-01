@@ -1,6 +1,5 @@
 #include "light_renderer.h"
 
-#include <cmath>
 #include <cstring>
 
 #include <godot_cpp/classes/rd_sampler_state.hpp>
@@ -78,7 +77,7 @@ void LightRenderJob::call(const Variant **p_arguments, int p_argcount, Variant &
 	if (free_only) {
 		renderer->free_all();
 	} else {
-		renderer->render(texels, area, bloom_threshold, surface_passes);
+		renderer->render(texels, reach, area, bloom_threshold, surface_radius, cascade_count);
 	}
 }
 
@@ -211,8 +210,8 @@ bool LightRenderer::create_textures(int p_w, int p_h) {
 
 	const int final_parity = (LIGHT_CASCADES - 1) % 2;  // cascade 0 lands in this one
 
-	// The output lands wherever leaves the last surface pass writing light_texture.
-	for (int target = 0; target < 2; ++target) {
+	// The output lands in light_texture; the surface passes read and write both textures.
+	{
 		Ref<RDUniform> cascade_uniform;
 		cascade_uniform.instantiate();
 		cascade_uniform->set_uniform_type(RenderingDevice::UNIFORM_TYPE_IMAGE);
@@ -222,11 +221,11 @@ bool LightRenderer::create_textures(int p_w, int p_h) {
 		light_uniform.instantiate();
 		light_uniform->set_uniform_type(RenderingDevice::UNIFORM_TYPE_IMAGE);
 		light_uniform->set_binding(1);
-		light_uniform->add_id(target == 0 ? light_texture : surface_texture);
+		light_uniform->add_id(light_texture);
 		TypedArray<Ref<RDUniform>> uniforms;
 		uniforms.push_back(cascade_uniform);
 		uniforms.push_back(light_uniform);
-		output_sets[target] = rd->uniform_set_create(uniforms, output_shader, 0);
+		output_set = rd->uniform_set_create(uniforms, output_shader, 0);
 	}
 	{
 		Ref<RDUniform> light_uniform;
@@ -292,6 +291,22 @@ bool LightRenderer::create_input_texture(int p_w, int p_h) {
 	input_w = p_w;
 	input_h = p_h;
 
+	// One reach code per input texel: how far that texel's light carries, in cells.
+	Ref<RDTextureFormat> reach_format;
+	reach_format.instantiate();
+	reach_format->set_texture_type(RenderingDevice::TEXTURE_TYPE_2D);
+	reach_format->set_format(RenderingDevice::DATA_FORMAT_R8_UNORM);
+	reach_format->set_width((uint32_t)p_w);
+	reach_format->set_height((uint32_t)p_h);
+	reach_format->set_depth(1);
+	reach_format->set_array_layers(1);
+	reach_format->set_mipmaps(1);
+	reach_format->set_samples(RenderingDevice::TEXTURE_SAMPLES_1);
+	reach_format->set_usage_bits(RenderingDevice::TEXTURE_USAGE_SAMPLING_BIT |
+	                             RenderingDevice::TEXTURE_USAGE_CAN_UPDATE_BIT);
+	reach_texture = rd->texture_create(reach_format, view);
+	if (!reach_texture.is_valid()) return false;
+
 	if (!create_mips()) return false;
 
 	// Cascade `level` writes its own size into alternating textures and reads the one above.
@@ -315,43 +330,54 @@ bool LightRenderer::create_input_texture(int p_w, int p_h) {
 		upper_uniform->set_binding(2);
 		// The top cascade has no upper; a valid texture keeps the set complete.
 		upper_uniform->add_id(level == LIGHT_CASCADES - 1 ? cascade_textures[parity] : cascade_textures[upper_parity]);
+		// Level 0 reads the input's reach; the levels above read their own reach mip.
+		Ref<RDUniform> reach_uniform;
+		reach_uniform.instantiate();
+		reach_uniform->set_uniform_type(RenderingDevice::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE);
+		reach_uniform->set_binding(3);
+		reach_uniform->add_id(sampler);
+		reach_uniform->add_id(level <= 1 ? reach_texture : reach_mip_textures[level]);
 		TypedArray<Ref<RDUniform>> uniforms;
 		uniforms.push_back(input_uniform);
 		uniforms.push_back(dst_uniform);
 		uniforms.push_back(upper_uniform);
+		uniforms.push_back(reach_uniform);
 		cascade_sets[level] = rd->uniform_set_create(uniforms, cascade_shader, 0);
 	}
 
-	// The surface passes read the input's opacity, so they are built with it.
-	for (int dir = 0; dir < 2; ++dir) {
+	// The surface passes read the input's opacity, so they are built with it. Both passes bind the
+	// light and the surface texture as images: the horizontal one reads light and writes surface,
+	// the vertical one reads surface and writes light.
+	{
 		Ref<RDUniform> input_uniform;
 		input_uniform.instantiate();
 		input_uniform->set_uniform_type(RenderingDevice::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE);
 		input_uniform->set_binding(0);
 		input_uniform->add_id(sampler);
 		input_uniform->add_id(input_texture);
-		Ref<RDUniform> src_uniform;
-		src_uniform.instantiate();
-		src_uniform->set_uniform_type(RenderingDevice::UNIFORM_TYPE_IMAGE);
-		src_uniform->set_binding(1);
-		src_uniform->add_id(dir == 0 ? light_texture : surface_texture);
-		Ref<RDUniform> dst_uniform;
-		dst_uniform.instantiate();
-		dst_uniform->set_uniform_type(RenderingDevice::UNIFORM_TYPE_IMAGE);
-		dst_uniform->set_binding(2);
-		dst_uniform->add_id(dir == 0 ? surface_texture : light_texture);
+		Ref<RDUniform> light_uniform;
+		light_uniform.instantiate();
+		light_uniform->set_uniform_type(RenderingDevice::UNIFORM_TYPE_IMAGE);
+		light_uniform->set_binding(1);
+		light_uniform->add_id(light_texture);
+		Ref<RDUniform> surface_uniform;
+		surface_uniform.instantiate();
+		surface_uniform->set_uniform_type(RenderingDevice::UNIFORM_TYPE_IMAGE);
+		surface_uniform->set_binding(2);
+		surface_uniform->add_id(surface_texture);
 		TypedArray<Ref<RDUniform>> uniforms;
 		uniforms.push_back(input_uniform);
-		uniforms.push_back(src_uniform);
-		uniforms.push_back(dst_uniform);
-		surface_sets[dir] = rd->uniform_set_create(uniforms, surface_shader, 0);
-		if (!surface_sets[dir].is_valid()) return false;
+		uniforms.push_back(light_uniform);
+		uniforms.push_back(surface_uniform);
+		surface_set = rd->uniform_set_create(uniforms, surface_shader, 0);
+		if (!surface_set.is_valid()) return false;
 	}
 	return true;
 }
 
 // One reduced copy of the input per cascade above 1: emission averaged, opacity maxed, so
-// cascade `i` samples cells no smaller than 2^(i-1).
+// cascade `i` samples cells no smaller than 2^(i-1). The reach chain reduces in step, taking the
+// max of the 2x2 codes.
 bool LightRenderer::create_mips() {
 	// Mip 1 is the lit-area input itself; mips 2..5 halve from there.
 	for (int level = 2; level < LIGHT_CASCADES; ++level) {
@@ -372,6 +398,21 @@ bool LightRenderer::create_mips() {
 		mip_textures[level] = rd->texture_create(format, view);
 		if (!mip_textures[level].is_valid()) return false;
 
+		Ref<RDTextureFormat> reach_format;
+		reach_format.instantiate();
+		reach_format->set_texture_type(RenderingDevice::TEXTURE_TYPE_2D);
+		reach_format->set_format(RenderingDevice::DATA_FORMAT_R8_UNORM);
+		reach_format->set_width((uint32_t)mip_size(input_w, level));
+		reach_format->set_height((uint32_t)mip_size(input_h, level));
+		reach_format->set_depth(1);
+		reach_format->set_array_layers(1);
+		reach_format->set_mipmaps(1);
+		reach_format->set_samples(RenderingDevice::TEXTURE_SAMPLES_1);
+		reach_format->set_usage_bits(RenderingDevice::TEXTURE_USAGE_SAMPLING_BIT |
+		                             RenderingDevice::TEXTURE_USAGE_STORAGE_BIT);
+		reach_mip_textures[level] = rd->texture_create(reach_format, view);
+		if (!reach_mip_textures[level].is_valid()) return false;
+
 		Ref<RDUniform> src_uniform;
 		src_uniform.instantiate();
 		src_uniform->set_uniform_type(RenderingDevice::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE);
@@ -383,9 +424,22 @@ bool LightRenderer::create_mips() {
 		dst_uniform->set_uniform_type(RenderingDevice::UNIFORM_TYPE_IMAGE);
 		dst_uniform->set_binding(1);
 		dst_uniform->add_id(mip_textures[level]);
+		Ref<RDUniform> reach_src_uniform;
+		reach_src_uniform.instantiate();
+		reach_src_uniform->set_uniform_type(RenderingDevice::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE);
+		reach_src_uniform->set_binding(2);
+		reach_src_uniform->add_id(sampler);
+		reach_src_uniform->add_id(level == 2 ? reach_texture : reach_mip_textures[level - 1]);
+		Ref<RDUniform> reach_dst_uniform;
+		reach_dst_uniform.instantiate();
+		reach_dst_uniform->set_uniform_type(RenderingDevice::UNIFORM_TYPE_IMAGE);
+		reach_dst_uniform->set_binding(3);
+		reach_dst_uniform->add_id(reach_mip_textures[level]);
 		TypedArray<Ref<RDUniform>> uniforms;
 		uniforms.push_back(src_uniform);
 		uniforms.push_back(dst_uniform);
+		uniforms.push_back(reach_src_uniform);
+		uniforms.push_back(reach_dst_uniform);
 		mip_sets[level] = rd->uniform_set_create(uniforms, mip_shader, 0);
 		if (!mip_sets[level].is_valid()) return false;
 	}
@@ -400,24 +454,24 @@ void LightRenderer::destroy_textures() {
 		if (set.is_valid()) rd->free_rid(set);
 	for (RID &set : mip_sets)
 		if (set.is_valid()) rd->free_rid(set);
-	for (RID &set : output_sets)
-		if (set.is_valid()) rd->free_rid(set);
-	for (RID &set : surface_sets)
-		if (set.is_valid()) rd->free_rid(set);
+	if (output_set.is_valid()) rd->free_rid(output_set);
+	if (surface_set.is_valid()) rd->free_rid(surface_set);
 	if (bloom_down_set.is_valid()) rd->free_rid(bloom_down_set);
 	for (RID &set : bloom_blur_sets)
 		if (set.is_valid()) rd->free_rid(set);
 	for (RID &set : cascade_sets) set = RID();
 	for (RID &set : mip_sets) set = RID();
-	for (RID &set : output_sets) set = RID();
-	for (RID &set : surface_sets) set = RID();
+	output_set = RID();
+	surface_set = RID();
 	bloom_down_set = RID();
 	for (RID &set : bloom_blur_sets) set = RID();
 
 	// light_texture and bloom_textures[0] are retired (or freed) by the caller.
-	for (RID *texture : { &input_texture, &mip_textures[2], &mip_textures[3], &mip_textures[4],
-	                      &mip_textures[5], &cascade_textures[0], &cascade_textures[1],
-	                      &surface_texture, &bloom_textures[1] }) {
+	for (RID *texture : { &input_texture, &reach_texture, &mip_textures[2], &mip_textures[3],
+	                      &mip_textures[4], &mip_textures[5], &reach_mip_textures[2],
+	                      &reach_mip_textures[3], &reach_mip_textures[4], &reach_mip_textures[5],
+	                      &cascade_textures[0], &cascade_textures[1], &surface_texture,
+	                      &bloom_textures[1] }) {
 		if (texture->is_valid()) rd->free_rid(*texture);
 		*texture = RID();
 	}
@@ -429,8 +483,9 @@ void LightRenderer::destroy_textures() {
 	input_h = 0;
 }
 
-void LightRenderer::render(const PackedByteArray &p_texels, const LightArea &p_area, float p_bloom_threshold,
-                           int p_surface_passes) {
+void LightRenderer::render(const PackedByteArray &p_texels, const PackedByteArray &p_reach,
+                           const LightArea &p_area, float p_bloom_threshold, int p_surface_radius,
+                           int p_cascade_count) {
 	if (state_now.load(std::memory_order_acquire) == STATE_UNINITIALISED) {
 		// First frame: compile the shaders here, on the render thread, like every other call.
 		RenderingServer *rs = RenderingServer::get_singleton();
@@ -445,6 +500,7 @@ void LightRenderer::render(const PackedByteArray &p_texels, const LightArea &p_a
 	const int texel_w = light_texel_w(p_area);
 	const int texel_h = light_texel_h(p_area);
 	if ((int64_t)p_texels.size() < (int64_t)texel_w * texel_h * 4) return;
+	if ((int64_t)p_reach.size() < (int64_t)texel_w * texel_h) return;
 
 	update_timestamps();
 	free_retired(false);
@@ -476,6 +532,10 @@ void LightRenderer::render(const PackedByteArray &p_texels, const LightArea &p_a
 	}
 	rd->capture_timestamp("light_begin");
 	rd->texture_update(input_texture, 0, p_texels);
+	rd->texture_update(reach_texture, 0, p_reach);
+	// Light past the largest reach is never computed: only the cascades that cover it run, so the
+	// top level run has no upper cascade and the mips above it are not reduced.
+	const int levels = CLAMP(p_cascade_count, 1, LIGHT_CASCADES);
 
 	const int64_t list = rd->compute_list_begin();
 	if (list == RenderingDevice::INVALID_ID) {
@@ -485,7 +545,7 @@ void LightRenderer::render(const PackedByteArray &p_texels, const LightArea &p_a
 
 	// Reduced inputs, full resolution down to one texel per probe spacing.
 	rd->compute_list_bind_compute_pipeline(list, mip_pipeline);
-	for (int level = 2; level < LIGHT_CASCADES; ++level) {
+	for (int level = 2; level < levels; ++level) {
 		MipParams params{};
 		params.src_x = mip_size(input_w, level - 1);
 		params.src_y = mip_size(input_h, level - 1);
@@ -500,7 +560,7 @@ void LightRenderer::render(const PackedByteArray &p_texels, const LightArea &p_a
 
 	// Cascades, coarsest first, so each one can merge the one above it.
 	rd->compute_list_bind_compute_pipeline(list, cascade_pipeline);
-	for (int level = LIGHT_CASCADES - 1; level >= 0; --level) {
+	for (int level = levels - 1; level >= 0; --level) {
 		// Level 0 reads the lit area at cell resolution; the others read their mip, which has
 		// two texels per probe spacing (one direction tile per texel pair).
 		const int mip_w = level == 0 ? area_w : mip_size(area_w, level);
@@ -518,7 +578,9 @@ void LightRenderer::render(const PackedByteArray &p_texels, const LightArea &p_a
 		params.t_start = level == 0 ? 0 : mip_start(level);
 		params.t_end = level == 0 ? 0 : mip_end(level);
 		params.rays = rays_for_level(level);
-		params.has_upper = level < LIGHT_CASCADES - 1 ? 1 : 0;
+		params.has_upper = level < levels - 1 ? 1 : 0;
+		params.step_texels = level == 0 ? 0.0f : (float)(1 << mip_shift(level));
+		params.reach_unit = LIGHT_REACH_UNIT / (float)p_area.scale;
 		const PackedByteArray bytes = push_bytes(params);
 		rd->compute_list_bind_uniform_set(list, cascade_sets[level], 0);
 		rd->compute_list_set_push_constant(list, bytes, (uint32_t)bytes.size());
@@ -526,33 +588,35 @@ void LightRenderer::render(const PackedByteArray &p_texels, const LightArea &p_a
 		rd->compute_list_add_barrier(list);
 	}
 
-	// Light output: average the four directions of cascade 0. With an odd number of surface
-	// passes it lands in surface_texture, so the last pass writes light_texture either way.
-	const int passes = MAX(p_surface_passes, 0);
+	// Light output: average the four directions of cascade 0 into light_texture.
 	{
 		OutputParams params{};
 		params.area_x = area_w;
 		params.area_y = area_h;
 		const PackedByteArray bytes = push_bytes(params);
 		rd->compute_list_bind_compute_pipeline(list, output_pipeline);
-		rd->compute_list_bind_uniform_set(list, output_sets[passes % 2], 0);
+		rd->compute_list_bind_uniform_set(list, output_set, 0);
 		rd->compute_list_set_push_constant(list, bytes, (uint32_t)bytes.size());
 		rd->compute_list_dispatch(list, groups(area_w), groups(area_h), 1);
 		rd->compute_list_add_barrier(list);
 	}
 
-	// Light into solid surfaces, one cell deeper per pass, before bloom reads the light.
-	if (passes > 0) {
+	// Light into solids: one horizontal then one vertical max pass, each reaching `radius` texels,
+	// so the light lands that deep in two dispatches instead of one texel per pass.
+	const int radius = MAX(p_surface_radius, 0);
+	if (radius > 0) {
 		SurfaceParams params{};
 		params.size_x = area_w;
 		params.size_y = area_h;
-		params.falloff = light_surface_falloff(passes);
-		params.falloff_diag = std::pow(params.falloff, 1.41421356f);
-		const PackedByteArray bytes = push_bytes(params);
+		params.radius = radius;
+		params.falloff = light_surface_falloff(radius);
 		rd->compute_list_bind_compute_pipeline(list, surface_pipeline);
-		for (int i = 0; i < passes; ++i) {
-			// (passes - i) passes remain: an even count means the light is in light_texture now.
-			rd->compute_list_bind_uniform_set(list, surface_sets[(passes - i) % 2], 0);
+		rd->compute_list_bind_uniform_set(list, surface_set, 0);
+		for (int pass = 0; pass < 2; ++pass) {
+			params.dir_x = pass == 0 ? 1 : 0;
+			params.dir_y = pass == 0 ? 0 : 1;
+			params.final_pass = pass;
+			const PackedByteArray bytes = push_bytes(params);
 			rd->compute_list_set_push_constant(list, bytes, (uint32_t)bytes.size());
 			rd->compute_list_dispatch(list, groups(area_w), groups(area_h), 1);
 			rd->compute_list_add_barrier(list);

@@ -9,9 +9,16 @@ class WorldGrid;
 
 // Emission above this is clamped: the input texel is RGBA8, so 4.0 is the whole range.
 constexpr float EMISSION_RANGE = 4.0f;
+// Reach: how far in world cells an emitter's light carries before it fades to zero. It rides next
+// to the texels as one byte of code, so 255 codes is 1020 cells; 0 means "not an emitter".
+constexpr float LIGHT_REACH_UNIT = 4.0f;
+uint8_t pack_reach(float reach_cells);  // ceil(reach / UNIT) in 1..255; non-finite or <= 0 -> 1
 // Radiance cascades: cascade 0 is one probe per LIGHT_SNAP cells, each level up doubles it.
 constexpr int LIGHT_CASCADES = 6;
 constexpr int LIGHT_SNAP = 1 << (LIGHT_CASCADES - 1);
+// Levels needed by the largest reach in texels: those whose interval starts at (4^L - 1) / 3 and
+// is below max_reach contribute. At least 1, at most LIGHT_CASCADES.
+int light_cascade_count(float max_reach_texels);
 
 struct LightTexel {
 	uint8_t r, g, b, a;  // emission, a = opacity
@@ -39,18 +46,21 @@ bool light_area_fits(const LightArea& area);
 
 struct LightPalette {
 	std::vector<LightTexel> mats;  // index = MatId
+	std::vector<uint8_t> reach;    // index = MatId, 0 = not an emitter
 	LightTexel fire;               // a unused
+	uint8_t fire_reach = 0;
 	static LightPalette build(const MaterialTable& table, float fire_r, float fire_g,
-	                          float fire_b, float fire_energy);
+	                          float fire_b, float fire_energy, float emission_reach);
 };
 
 // out has light_texel_w * light_texel_h texels, row-major from (x0, y0): each covers a
 // scale x scale block of cells, emission is the block max and opacity the block mean. Opacity is
 // the mean over the cells the block actually covers, not over scale x scale, so a partial block at
 // the area's right or bottom edge stays opaque instead of diluting an edge wall into a light leak.
-// pool may be null.
+// reach_out has one byte per texel, same layout: the block's reach max. pool may be null.
 void build_light_inputs(const WorldGrid& grid, const LightPalette& palette,
-                        const LightArea& area, LightTexel* out, JobPool* pool);
+                        const LightArea& area, LightTexel* out, uint8_t* reach_out,
+                        JobPool* pool);
 
 struct LightRect {
 	int x = 0, y = 0, w = 0, h = 0;  // texels, area-relative
@@ -64,7 +74,7 @@ LightRect light_region_rect(const LightArea& area, int cx0, int cy0, int cx1, in
 // whole texel blocks and clipped to the area. Same bytes as a full build of the area.
 void build_light_region(const WorldGrid& grid, const LightPalette& palette,
                         const LightArea& area, int cx0, int cy0, int cx1, int cy1,
-                        LightTexel* out, JobPool* pool);
+                        LightTexel* out, uint8_t* reach_out, JobPool* pool);
 
 // Rects that share no texel row: rects overlapping in y are unioned into their bounding box, so
 // two pool workers never write the same row at once. The union stays byte-identical because every
@@ -74,7 +84,8 @@ std::vector<LightRect> light_disjoint_rects(const std::vector<LightRect>& rects)
 // Rebuilds the texels of every rect in one pool dispatch, so a frame that repaints many chunks
 // pays one handshake instead of one per chunk. The rects are made row-disjoint first.
 void build_light_rects(const WorldGrid& grid, const LightPalette& palette, const LightArea& area,
-                       const std::vector<LightRect>& rects, LightTexel* out, JobPool* pool);
+                       const std::vector<LightRect>& rects, LightTexel* out, uint8_t* reach_out,
+                       JobPool* pool);
 
 struct LightSpot {
 	float x, y, r, g, b, energy, radius;
@@ -83,26 +94,30 @@ struct LightSpot {
 int spot_source_radius(float radius);  // clamp(lround(radius / 6), 1, 32)
 
 // Solid surfaces: the light pass spreads light this many cells into solids, at most.
-constexpr int LIGHT_SURFACE_MAX_DEPTH = 32;
+constexpr int LIGHT_SURFACE_MAX_DEPTH = 96;
 // ponytail: one fade for every solid, tuned by eye; per-material depth would replace it.
 // The light left after a full skin depth.
 constexpr float LIGHT_SURFACE_FADE = 0.05f;
-int light_surface_passes(int depth_cells, int scale);  // ceil(clamp(depth, 0, MAX) / scale)
-float light_surface_falloff(int passes);  // per-step factor: FADE after `passes` steps; 1 at 0
+int light_surface_radius(int depth_cells, int scale);  // ceil(clamp(depth, 0, MAX) / scale)
+float light_surface_falloff(int radius);  // per-texel factor: FADE after `radius` texels; 1 at 0
 
 // Adds colour·energy (packed) to rgb of every texel within the source radius of the spot,
 // saturating at 255; opacity untouched. The spot's position and source radius are in world cells
 // and are divided by the area's scale, so the disc lands in texel space. Clipped to the area;
-// non-finite spots skipped.
-void add_light_spots(const LightArea& area, const std::vector<LightSpot>& spots, LightTexel* out);
+// non-finite spots skipped. Every texel of the disc takes max(reach, pack_reach(radius)): the
+// reach stays in cells at any scale, so the GPU divides by the area's scale.
+void add_light_spots(const LightArea& area, const std::vector<LightSpot>& spots, LightTexel* out,
+                     uint8_t* reach_out);
 
 // The texels each spot's source disc can write, clipped to the area: the rects of a spot pass,
 // so the next frame can restore them from a base with no spots in it.
 std::vector<LightRect> spot_rects(const LightArea& area, const std::vector<LightSpot>& spots);
 
-// Copies the texels of each rect from `base` into `out`: undoes the spots a previous frame added.
+// Copies the texels and reach codes of each rect from `base` / `reach_base` into `out` /
+// `reach_out`: undoes the spots a previous frame added.
 void restore_light_rects(const LightArea& area, const std::vector<LightRect>& rects,
-                         const LightTexel* base, LightTexel* out);
+                         const LightTexel* base, const uint8_t* reach_base, LightTexel* out,
+                         uint8_t* reach_out);
 
 // Appends one spot per marker in every loaded chunk overlapping the area, at the marker
 // cell's centre, with colour/energy/radius from `defaults`.

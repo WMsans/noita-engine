@@ -23,9 +23,11 @@ class LightRenderer;
 class LightRenderJob : public CallableCustom {
 public:
 	LightRenderJob(std::shared_ptr<LightRenderer> p_renderer, const PackedByteArray &p_texels,
-	               const LightArea &p_area, float p_bloom_threshold, int p_surface_passes, bool p_free_only) :
-			renderer(std::move(p_renderer)), texels(p_texels), area(p_area),
-			bloom_threshold(p_bloom_threshold), surface_passes(p_surface_passes), free_only(p_free_only) {}
+	               const PackedByteArray &p_reach, const LightArea &p_area, float p_bloom_threshold,
+	               int p_surface_radius, int p_cascade_count, bool p_free_only) :
+			renderer(std::move(p_renderer)), texels(p_texels), reach(p_reach), area(p_area),
+			bloom_threshold(p_bloom_threshold), surface_radius(p_surface_radius),
+			cascade_count(p_cascade_count), free_only(p_free_only) {}
 
 	// The job owns everything it touches, so it is valid without an Object behind it
 	// (CallableCustom's default is_valid() looks get_object() up in ObjectDB).
@@ -44,9 +46,11 @@ public:
 private:
 	std::shared_ptr<LightRenderer> renderer;
 	PackedByteArray texels;
+	PackedByteArray reach;
 	LightArea area;
 	float bloom_threshold = 1.0f;
-	int surface_passes = 0;
+	int surface_radius = 0;
+	int cascade_count = LIGHT_CASCADES;
 	bool free_only = false;
 };
 
@@ -61,12 +65,13 @@ class LightRenderer {
 public:
 	// Compiles the shaders and creates the sampler. False + error turns lighting off.
 	bool init(RenderingDevice *p_rd, String &r_error);
-	// (Re)creates the textures when the texel size outgrows them, uploads the texels, runs the
-	// cascades top-down, the light output, `p_surface_passes` steps of light into solids and the
-	// bloom passes, and captures GPU timestamps. The area is in world cells; everything the
+	// (Re)creates the textures when the texel size outgrows them, uploads the texels and their
+	// per-texel reach codes, runs the `p_cascade_count` coarsest cascades top-down, the light
+	// output, the two separable max passes that carry light `p_surface_radius` texels into solids
+	// and the bloom passes, and captures GPU timestamps. The area is in world cells; everything the
 	// renderer sizes works in its texel dims.
-	void render(const PackedByteArray &p_texels, const LightArea &p_area, float p_bloom_threshold,
-	            int p_surface_passes);
+	void render(const PackedByteArray &p_texels, const PackedByteArray &p_reach, const LightArea &p_area,
+	            float p_bloom_threshold, int p_surface_radius, int p_cascade_count);
 	// For Texture2DRD on the main thread, after texture_generation() reports a new value.
 	RID light_rd() const { return light_texture; }
 	RID bloom_rd() const { return bloom_texture; }
@@ -93,7 +98,9 @@ private:
 		int32_t area_x, area_y;
 		int32_t mip_x, mip_y;
 		int32_t upper_x, upper_y;
-		int32_t t_start, t_end, rays, has_upper, pad;
+		int32_t t_start, t_end, rays, has_upper;
+		float step_texels;  // texels per march step (2^(level-1)); level 0 unused
+		float reach_unit;   // level-0 texels per reach code = LIGHT_REACH_UNIT / area.scale
 	};
 	struct MipParams {
 		int32_t src_x, src_y;
@@ -103,7 +110,10 @@ private:
 	};
 	struct SurfaceParams {
 		int32_t size_x, size_y;
-		float falloff, falloff_diag;
+		int32_t dir_x, dir_y;
+		int32_t radius;
+		float falloff;
+		int32_t final_pass, pad;
 	};
 	struct BloomDownParams {
 		int32_t size_x, size_y;
@@ -156,16 +166,18 @@ private:
 	int bloom_w = 0;  // the lit area's quarter resolution
 	int bloom_h = 0;
 	RID input_texture;
+	RID reach_texture;  // R8_UNORM: one reach code per input texel
 	RID mip_textures[LIGHT_CASCADES];  // 1..5: one probe spacing per texel; [0] unused
+	RID reach_mip_textures[LIGHT_CASCADES];  // 1..5: the same chain, reach maxed per 2x2
 	RID cascade_textures[2];
 	RID light_texture;
-	RID surface_texture;  // the surface passes' ping-pong partner of light_texture
+	RID surface_texture;  // the horizontal surface pass writes here; the vertical one reads it
 	RID bloom_textures[2];
 	RID bloom_texture;  // the one holding the final blurred result
 	RID mip_sets[LIGHT_CASCADES];      // 1..5: reduce mip i-1 into mip i
 	RID cascade_sets[LIGHT_CASCADES];
-	RID output_sets[2];   // [0] writes light_texture, [1] surface_texture
-	RID surface_sets[2];  // [0] light_texture -> surface_texture, [1] the reverse
+	RID output_set;   // writes light_texture
+	RID surface_set;  // light_texture <-> surface_texture, both read/write
 	RID bloom_down_set;
 	RID bloom_blur_sets[2];
 	std::vector<RetiredTexture> retired;

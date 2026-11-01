@@ -26,6 +26,14 @@ namespace godot {
 
 namespace {
 
+// A back wall is only drawn where its chunk's wall has pixels at all: above the surface the
+// wall is all zero and the chunk texture is left transparent there.
+bool chunk_has_wall(const Chunk &chunk) {
+	for (uint32_t px : chunk.back_wall)
+		if ((px & 0xFFu) != 0) return true;  // alpha is the low byte of the packed 0xRRGGBBAA wall
+	return false;
+}
+
 Color color_from_rgba32(uint32_t p_rgba) {
 	return Color(((p_rgba >> 24) & 0xFF) / 255.0f, ((p_rgba >> 16) & 0xFF) / 255.0f,
 	             ((p_rgba >> 8) & 0xFF) / 255.0f, (p_rgba & 0xFF) / 255.0f);
@@ -113,6 +121,8 @@ void PixelWorld::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_lighting_enabled"), &PixelWorld::get_lighting_enabled);
 	ClassDB::bind_method(D_METHOD("set_ambient", "value"), &PixelWorld::set_ambient);
 	ClassDB::bind_method(D_METHOD("get_ambient"), &PixelWorld::get_ambient);
+	ClassDB::bind_method(D_METHOD("set_ambient_tint", "value"), &PixelWorld::set_ambient_tint);
+	ClassDB::bind_method(D_METHOD("get_ambient_tint"), &PixelWorld::get_ambient_tint);
 	ClassDB::bind_method(D_METHOD("set_light_exposure", "value"), &PixelWorld::set_light_exposure);
 	ClassDB::bind_method(D_METHOD("get_light_exposure"), &PixelWorld::get_light_exposure);
 	ClassDB::bind_method(D_METHOD("set_light_margin", "value"), &PixelWorld::set_light_margin);
@@ -123,10 +133,14 @@ void PixelWorld::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_light_surface_depth"), &PixelWorld::get_light_surface_depth);
 	ClassDB::bind_method(D_METHOD("set_backdrop_color", "value"), &PixelWorld::set_backdrop_color);
 	ClassDB::bind_method(D_METHOD("get_backdrop_color"), &PixelWorld::get_backdrop_color);
+	ClassDB::bind_method(D_METHOD("set_back_wall_enabled", "value"), &PixelWorld::set_back_wall_enabled);
+	ClassDB::bind_method(D_METHOD("get_back_wall_enabled"), &PixelWorld::get_back_wall_enabled);
 	ClassDB::bind_method(D_METHOD("set_fire_glow_color", "value"), &PixelWorld::set_fire_glow_color);
 	ClassDB::bind_method(D_METHOD("get_fire_glow_color"), &PixelWorld::get_fire_glow_color);
 	ClassDB::bind_method(D_METHOD("set_fire_glow_energy", "value"), &PixelWorld::set_fire_glow_energy);
 	ClassDB::bind_method(D_METHOD("get_fire_glow_energy"), &PixelWorld::get_fire_glow_energy);
+	ClassDB::bind_method(D_METHOD("set_emission_reach", "value"), &PixelWorld::set_emission_reach);
+	ClassDB::bind_method(D_METHOD("get_emission_reach"), &PixelWorld::get_emission_reach);
 	ClassDB::bind_method(D_METHOD("set_marker_light_color", "value"), &PixelWorld::set_marker_light_color);
 	ClassDB::bind_method(D_METHOD("get_marker_light_color"), &PixelWorld::get_marker_light_color);
 	ClassDB::bind_method(D_METHOD("set_marker_light_energy", "value"), &PixelWorld::set_marker_light_energy);
@@ -140,13 +154,16 @@ void PixelWorld::_bind_methods() {
 
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "lighting_enabled"), "set_lighting_enabled", "get_lighting_enabled");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ambient", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_ambient", "get_ambient");
+	ADD_PROPERTY(PropertyInfo(Variant::COLOR, "ambient_tint"), "set_ambient_tint", "get_ambient_tint");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "light_exposure", PROPERTY_HINT_RANGE, "0,8,0.01,or_greater"), "set_light_exposure", "get_light_exposure");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "light_margin", PROPERTY_HINT_RANGE, "0,4096,1"), "set_light_margin", "get_light_margin");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "light_resolution", PROPERTY_HINT_RANGE, "1,4,1"), "set_light_resolution", "get_light_resolution");
-	ADD_PROPERTY(PropertyInfo(Variant::INT, "light_surface_depth", PROPERTY_HINT_RANGE, "0,32,1"), "set_light_surface_depth", "get_light_surface_depth");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "light_surface_depth", PROPERTY_HINT_RANGE, "0,96,1"), "set_light_surface_depth", "get_light_surface_depth");
 	ADD_PROPERTY(PropertyInfo(Variant::COLOR, "backdrop_color"), "set_backdrop_color", "get_backdrop_color");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "back_wall_enabled"), "set_back_wall_enabled", "get_back_wall_enabled");
 	ADD_PROPERTY(PropertyInfo(Variant::COLOR, "fire_glow_color"), "set_fire_glow_color", "get_fire_glow_color");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "fire_glow_energy", PROPERTY_HINT_RANGE, "0,16,0.01,or_greater"), "set_fire_glow_energy", "get_fire_glow_energy");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "emission_reach", PROPERTY_HINT_RANGE, "1,1020,1,or_greater"), "set_emission_reach", "get_emission_reach");
 	ADD_PROPERTY(PropertyInfo(Variant::COLOR, "marker_light_color"), "set_marker_light_color", "get_marker_light_color");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "marker_light_energy", PROPERTY_HINT_RANGE, "0,16,0.01,or_greater"), "set_marker_light_energy", "get_marker_light_energy");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "marker_light_radius", PROPERTY_HINT_RANGE, "1,1024,0.5,or_greater"), "set_marker_light_radius", "get_marker_light_radius");
@@ -362,7 +379,8 @@ void PixelWorld::_notification(int p_what) {
 	// that uses them; the job keeps the renderer alive until then.
 	if (light_renderer) {
 		rs->call_on_render_thread(
-		    Callable(memnew(LightRenderJob(light_renderer, PackedByteArray(), LightArea(), 0.0f, 0, true))));
+		    Callable(memnew(LightRenderJob(light_renderer, PackedByteArray(), PackedByteArray(), LightArea(),
+		                                  0.0f, 0, LIGHT_CASCADES, true))));
 		light_renderer.reset();
 	}
 }
@@ -550,7 +568,7 @@ int PixelWorld::count_view_missing() const {
 void PixelWorld::rebuild_light_palette() {
 	if (table.size() == 0) return;  // the table is compiled in _ready, which rebuilds it
 	light_palette = LightPalette::build(table, fire_glow_color.r, fire_glow_color.g,
-	                                    fire_glow_color.b, fire_glow_energy);
+	                                    fire_glow_color.b, fire_glow_energy, emission_reach);
 }
 
 void PixelWorld::reset_light_stats() {
@@ -602,9 +620,13 @@ void PixelWorld::build_light_frame() {
 	const int texel_w = light_texel_w(area);
 	const int texel_h = light_texel_h(area);
 	const int64_t bytes = (int64_t)texel_w * texel_h * 4;
+	const int64_t reach_bytes = (int64_t)texel_w * texel_h;
 	light_texels.resize(bytes);
 	light_base.resize(bytes);
-	if (light_texels.size() != bytes || light_base.size() != bytes) {  // never write through null
+	light_reach.resize(reach_bytes);
+	light_reach_base.resize(reach_bytes);
+	if (light_texels.size() != bytes || light_base.size() != bytes ||
+	    light_reach.size() != reach_bytes || light_reach_base.size() != reach_bytes) {  // never write through null
 		reset_light_stats();
 		hide_light_backdrop();
 		hide_light_overlay();
@@ -615,6 +637,8 @@ void PixelWorld::build_light_frame() {
 	const auto start = std::chrono::steady_clock::now();
 	LightTexel *texels = reinterpret_cast<LightTexel *>(light_texels.ptrw());
 	LightTexel *base = reinterpret_cast<LightTexel *>(light_base.ptrw());
+	uint8_t *reach = reinterpret_cast<uint8_t *>(light_reach.ptrw());
+	uint8_t *reach_base = reinterpret_cast<uint8_t *>(light_reach_base.ptrw());
 	const bool area_changed = light_base_area.x0 != area.x0 || light_base_area.y0 != area.y0 ||
 	                          light_base_area.w != area.w || light_base_area.h != area.h ||
 	                          light_base_area.scale != area.scale;
@@ -649,19 +673,23 @@ void PixelWorld::build_light_frame() {
 		// A different area on any of its five fields (origin, width, height, scale) falls back to the
 		// whole-area build, which is also what a never-built base hits: its remembered area starts
 		// zeroed. The first frame after a change must show the new terrain.
-		build_light_inputs(*grid, light_palette, area, base, pool.get());
+		build_light_inputs(*grid, light_palette, area, base, reach_base, pool.get());
 		grid->for_each_chunk([](Chunk &chunk) { chunk.light_dirty.store(false); });
 		light_spot_rects.clear();
 		memcpy(texels, base, (size_t)bytes);
+		memcpy(reach, reach_base, (size_t)reach_bytes);
 		light_base_area = area;
 	} else {
-		build_light_rects(*grid, light_palette, area, repainted, base, pool.get());
+		build_light_rects(*grid, light_palette, area, repainted, base, reach_base, pool.get());
 		for (const LightRect &rect : repainted)
-			for (int ty = rect.y; ty < rect.y + rect.h; ++ty)
+			for (int ty = rect.y; ty < rect.y + rect.h; ++ty) {
 				memcpy(texels + (size_t)ty * texel_w + rect.x,
 				       base + (size_t)ty * texel_w + rect.x, (size_t)rect.w * sizeof(LightTexel));
+				memcpy(reach + (size_t)ty * texel_w + rect.x, reach_base + (size_t)ty * texel_w + rect.x,
+				       (size_t)rect.w);
+			}
 		// Undo the last frame's spots before adding this frame's, instead of copying the base.
-		restore_light_rects(area, light_spot_rects, base, texels);
+		restore_light_rects(area, light_spot_rects, base, reach_base, texels, reach);
 	}
 
 	std::vector<LightSpot> spots;
@@ -678,8 +706,16 @@ void PixelWorld::build_light_frame() {
 	const LightSpot marker{0.0f, 0.0f, marker_light_color.r, marker_light_color.g,
 	                       marker_light_color.b, marker_light_energy, marker_light_radius};
 	collect_marker_lights(*grid, area, marker, spots);
-	add_light_spots(area, spots, texels);
+	add_light_spots(area, spots, texels, reach);
 	light_spot_rects = spot_rects(area, spots);
+
+	// Light past the largest reach is not computed, so only the cascades that cover it run. The
+	// shader fades on the ceil-rounded reach code, so count from that: a count from the un-rounded
+	// reach leaves the top cascade ending short of where the falloff reaches zero.
+	float max_reach_cells = emission_reach;
+	for (const LightSpot &spot : spots) max_reach_cells = std::max(max_reach_cells, std::min(spot.radius, 1020.0f));
+	const int cascade_count =
+	    light_cascade_count(LIGHT_REACH_UNIT * pack_reach(max_reach_cells) / (float)area.scale);
 
 	light_spots = (int)spots.size();
 	// The build, the repaints and the spots are all of the input budget. The job stores the same
@@ -689,7 +725,7 @@ void PixelWorld::build_light_frame() {
 	    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
 	light_ran_this_frame = true;
 	update_light_backdrop(area);
-	render_light_frame(area, light_texels);
+	render_light_frame(area, light_texels, light_reach, cascade_count);
 	light_gpu_ms = light_renderer ? light_renderer->gpu_ms() : 0.0;
 }
 
@@ -731,7 +767,8 @@ void PixelWorld::hide_light_backdrop() {
 
 // Queues one frame of the GPU pass. The job holds the renderer by shared_ptr and its own copy of
 // the texels, so a queued call stays valid even if this node dies first.
-void PixelWorld::render_light_frame(const LightArea &p_area, const PackedByteArray &p_texels) {
+void PixelWorld::render_light_frame(const LightArea &p_area, const PackedByteArray &p_texels,
+                                    const PackedByteArray &p_reach, int p_cascade_count) {
 	RenderingServer *rs = RenderingServer::get_singleton();
 	if (!rs) return;
 	if (light_overlay_broken) {
@@ -747,15 +784,16 @@ void PixelWorld::render_light_frame(const LightArea &p_area, const PackedByteArr
 	// The job stores the same copy-on-write buffer as light_texels: the next frame's ptrw() detaches
 	// (copies) it if the render thread has not consumed this one, so the two never share storage.
 	rs->call_on_render_thread(
-	    Callable(memnew(LightRenderJob(light_renderer, p_texels, p_area, bloom_threshold,
-	                                    light_surface_passes(light_surface_depth, p_area.scale), false))));
+	    Callable(memnew(LightRenderJob(light_renderer, p_texels, p_reach, p_area, bloom_threshold,
+	                                    light_surface_radius(light_surface_depth, p_area.scale),
+	                                    p_cascade_count, false))));
 	update_light_overlay(p_area);
 }
 
-// Two canvas items over the lit area: one multiplies by ambient + light, one adds bloom. The
-// texture wrappers are re-pointed when the render thread recreates them, and the overlay is
-// hidden until the renderer has rendered this exact area, so a stale texture is never stretched
-// over a new area.
+// Two canvas items over the lit area: one multiplies by ambient * ambient_tint + light, one adds
+// bloom. The texture wrappers are re-pointed when the render thread recreates them, and the
+// overlay is hidden until the renderer has rendered this exact area, so a stale texture is never
+// stretched over a new area.
 void PixelWorld::update_light_overlay(const LightArea &p_area) {
 	RenderingServer *rs = RenderingServer::get_singleton();
 	if (!rs || !light_renderer || p_area.scale < 1) return;
@@ -833,6 +871,7 @@ void PixelWorld::update_light_overlay(const LightArea &p_area) {
 	}
 
 	rs->material_set_param(light_material, "ambient", ambient);
+	rs->material_set_param(light_material, "ambient_tint", ambient_tint);
 	rs->material_set_param(light_material, "light_exposure", light_exposure);
 	rs->material_set_param(bloom_material, "bloom_strength", bloom_strength);
 	if (!light_overlay_visible) {
@@ -895,21 +934,24 @@ void PixelWorld::upload_dirty_chunks() {
 
 	for (size_t i = 0; i < upload_chunks.size(); ++i) {
 		const Chunk &chunk = *upload_chunks[i];
-		memcpy(upload_image->ptrw(), &upload_pixels[i * chunk_texels], chunk_texels * sizeof(uint32_t));
-
+		const uint32_t *const rgba = &upload_pixels[i * chunk_texels];
 		ChunkView &view = view_for(chunk.coord);
 		if (view.has_texture) {
+			memcpy(upload_image->ptrw(), rgba, chunk_texels * sizeof(uint32_t));
 			rs->texture_2d_update(view.texture, upload_image, 0);
-		} else {
-			const auto create_start = std::chrono::steady_clock::now();
-			view.texture = rs->texture_2d_create(upload_image);
-			const Vector2 origin((float)(chunk.coord.x * CHUNK), (float)(chunk.coord.y * CHUNK));
-			rs->canvas_item_add_texture_rect(view.canvas_item, Rect2(origin, Vector2(CHUNK, CHUNK)), view.texture);
-			view.has_texture = true;
-			first_upload +=
-			    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - create_start)
-			        .count();
+			continue;
 		}
+		const auto create_start = std::chrono::steady_clock::now();
+		const Vector2 origin((float)(chunk.coord.x * CHUNK), (float)(chunk.coord.y * CHUNK));
+		const Rect2 rect(origin, Vector2(CHUNK, CHUNK));
+		view.has_back = back_wall_enabled && chunk_has_wall(chunk);
+		memcpy(upload_image->ptrw(), rgba, chunk_texels * sizeof(uint32_t));
+		view.texture = rs->texture_2d_create(upload_image);
+		rs->canvas_item_add_texture_rect(view.canvas_item, rect, view.texture);
+		view.has_texture = true;
+		first_upload +=
+		    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - create_start)
+		        .count();
 	}
 	first_upload_ms = first_upload;
 
@@ -933,13 +975,28 @@ Color PixelWorld::cell_color(const Cell &p_cell) const {
 	return color;
 }
 
-// Runs on the pool: reads only the chunk and cell_rgba. An id past the palette draws nothing,
-// like cell_color().
+// Runs on the pool: reads only the chunk and cell_rgba, plus back_wall_enabled and
+// chunk.back_wall, which is safe because parallel_for joins before it returns and every setter
+// runs on the main thread. An id past the palette draws nothing, like cell_color().
+//
+// The back wall is baked in instead of being a second texture drawn underneath: a second texture
+// per chunk costs a texture create per chunk, which is the whole of this streamer's worst-frame
+// time. It is composited under a see-through cell and replaced by an opaque one, so a translucent
+// cell never hides the wall.
 void PixelWorld::write_chunk_image(const Chunk &chunk, uint32_t *out) const {
 	const size_t mats = palette.size();
+	const bool bake_wall =
+	    back_wall_enabled && chunk.back_wall.size() == (size_t)CHUNK * CHUNK;
 	for (size_t i = 0; i < (size_t)CHUNK * CHUNK; ++i) {
 		const Cell &cell = chunk.cells[i];
-		out[i] = cell.mat < mats ? cell_rgba[((size_t)cell.mat * 2 + (cell.flags & FLAG_BURNING)) * 256 + cell.shade] : 0u;
+		const uint32_t px = cell.mat < mats ? cell_rgba[((size_t)cell.mat * 2 + (cell.flags & FLAG_BURNING)) * 256 + cell.shade] : 0u;
+		// Alpha is the top byte of these R, G, B, A words: an opaque cell covers the wall, and
+		// with no wall baked in the cell is all there is.
+		if (!bake_wall || (px >> 24) == 255u) {
+			out[i] = px;
+			continue;
+		}
+		out[i] = back_wall_composite(px, chunk.back_wall[i]);
 	}
 }
 
@@ -961,6 +1018,18 @@ void PixelWorld::drop_view(ChunkCoord coord) {
 	if (it->second.texture.is_valid()) rs->free_rid(it->second.texture);
 	if (it->second.canvas_item.is_valid()) rs->free_rid(it->second.canvas_item);
 	views.erase(it);
+}
+
+// The wall is baked into the chunk texture, so a toggle drops every view and marks its chunk
+// dirty: the next upload rebuilds each texture from the cells the chunk still holds.
+void PixelWorld::set_back_wall_enabled(bool p_value) {
+	if (back_wall_enabled == p_value) return;
+	back_wall_enabled = p_value;
+	if (!grid) return;
+	for (const ChunkCoord &coord : loaded) {
+		if (Chunk *chunk = grid->find(coord)) chunk->render_dirty.store(true);
+		drop_view(coord);
+	}
 }
 
 bool PixelWorld::set_cell(const Vector2i &p_pos, const StringName &p_material) {
@@ -1142,6 +1211,10 @@ Dictionary PixelWorld::get_stats() const {
 	stats["chunks_generated"] = streamer ? chunks_generated : (int64_t)0;
 	stats["stream_ms"] = streamer ? insert_evict_ms + first_upload_ms : 0.0;
 	stats["view_missing"] = streamer ? view_missing : 0;
+	int back_walls = 0;
+	for (const auto &kv : views)
+		if (kv.second.has_back) ++back_walls;
+	stats["back_walls"] = back_walls;
 	stats["particles_material"] = particles ? (int64_t)particles->material().size() : (int64_t)0;
 	stats["particles_visual"] = particles ? (int64_t)particles->visual().size() : (int64_t)0;
 	stats["particles_dropped"] = particles ? particles->stats().dropped : (int64_t)0;

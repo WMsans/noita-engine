@@ -43,11 +43,13 @@ class PixelRigidBody;
 class PixelWorld : public Node2D {
 	GDCLASS(PixelWorld, Node2D)
 
-	// One per loaded chunk: the canvas item parented to this node's, and its texture RID.
+	// One per loaded chunk: the canvas item parented to this node's, and its texture RID. The
+	// back wall is baked into that texture, so it is one texture per chunk.
 	struct ChunkView {
 		RID canvas_item;
 		RID texture;
 		bool has_texture = false;
+		bool has_back = false;
 	};
 
 	// Per-material render state, resolved once at _ready so the pixel loop stays floats only.
@@ -67,19 +69,22 @@ class PixelWorld : public Node2D {
 	int discard_hysteresis = 2;
 	// Lighting settings: all live, read every lit frame.
 	bool lighting_enabled = true;
-	float ambient = 0.05f;
+	float ambient = 0.40f;
+	Color ambient_tint = Color(0.62f, 0.69f, 1.0f);
 	float light_exposure = 1.0f;
 	int light_margin = 240;
 	int light_resolution = 1;  // world cells per light texel, 1..4: 1 = full, 2 = half, 4 = quarter
-	int light_surface_depth = 10;  // cells of light into solid surfaces, 0..LIGHT_SURFACE_MAX_DEPTH; 0 = off
+	int light_surface_depth = 40;  // cells of light into solid surfaces, 0..LIGHT_SURFACE_MAX_DEPTH; 0 = off
 	Color backdrop_color = Color(0.07f, 0.05f, 0.04f);
+	bool back_wall_enabled = true;  // draw the chunks' generated back wall under their cells
 	Color fire_glow_color = Color(1.0f, 0.6f, 0.2f);
 	float fire_glow_energy = 1.5f;
+	float emission_reach = 40.0f;  // cells an emitter's light carries before it fades to zero
 	Color marker_light_color = Color(1.0f, 0.75f, 0.4f);
 	float marker_light_energy = 1.5f;
 	float marker_light_radius = 48.0f;
-	float bloom_threshold = 1.0f;
-	float bloom_strength = 0.6f;
+	float bloom_threshold = 2.5f;
+	float bloom_strength = 0.35f;
 	NodePath follow_target;
 	Vector2i load_radius = Vector2i(6, 4);
 	Rect2i arena = Rect2i(-512, -256, 1024, 512);
@@ -122,9 +127,12 @@ class PixelWorld : public Node2D {
 	// This frame's lit area and its RGBA8 inputs (r,g,b emission, a opacity), for the renderer.
 	LightArea light_area_now;
 	PackedByteArray light_texels;  // upload buffer: base + this frame's spots
+	// One reach code per texel, same layout as light_texels: how far each texel's light carries.
+	PackedByteArray light_reach;
 	// The same texels with no spots in them, plus the texels the last lit frame's spots wrote, so
 	// the next frame can undo them and repaint only what changed.
 	PackedByteArray light_base;
+	PackedByteArray light_reach_base;
 	LightArea light_base_area;
 	std::vector<LightRect> light_spot_rects;
 	bool light_ran_this_frame = false;
@@ -179,7 +187,8 @@ class PixelWorld : public Node2D {
 	void build_light_frame();
 	void update_light_backdrop(const LightArea &p_area);
 	void hide_light_backdrop();
-	void render_light_frame(const LightArea &p_area, const PackedByteArray &p_texels);
+	void render_light_frame(const LightArea &p_area, const PackedByteArray &p_texels,
+	                        const PackedByteArray &p_reach, int p_cascade_count);
 	void update_light_overlay(const LightArea &p_area);
 	void hide_light_overlay();
 	void free_light_overlay();
@@ -246,6 +255,9 @@ public:
 	void set_ambient(float p_value) { ambient = p_value; }
 	float get_ambient() const { return ambient; }
 
+	void set_ambient_tint(const Color &p_value) { ambient_tint = p_value; }
+	Color get_ambient_tint() const { return ambient_tint; }
+
 	void set_light_exposure(float p_value) { light_exposure = p_value; }
 	float get_light_exposure() const { return light_exposure; }
 
@@ -263,6 +275,11 @@ public:
 	void set_backdrop_color(const Color &p_value) { backdrop_color = p_value; }
 	Color get_backdrop_color() const { return backdrop_color; }
 
+	// Toggling drops every view and marks its chunk dirty, so the next upload rebuilds each
+	// chunk's texture in draw order.
+	void set_back_wall_enabled(bool p_value);
+	bool get_back_wall_enabled() const { return back_wall_enabled; }
+
 	void set_fire_glow_color(const Color &p_value) {
 		fire_glow_color = p_value;
 		rebuild_light_palette();
@@ -274,6 +291,12 @@ public:
 		rebuild_light_palette();
 	}
 	float get_fire_glow_energy() const { return fire_glow_energy; }
+
+	void set_emission_reach(float p_value) {
+		emission_reach = p_value;
+		rebuild_light_palette();
+	}
+	float get_emission_reach() const { return emission_reach; }
 
 	void set_marker_light_color(const Color &p_value) { marker_light_color = p_value; }
 	Color get_marker_light_color() const { return marker_light_color; }

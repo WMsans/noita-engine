@@ -15,16 +15,25 @@ namespace {
 // Rows per job: each row walks chunk by chunk, so one find() per 64 cells.
 constexpr int LIGHT_ROW_BAND = 16;
 
-// One cell's light texel: its material's emission and opacity, plus the fire glow when it burns.
-// Both the scale-1 row and the block path pack a cell through here, so they cannot drift apart.
-static inline LightTexel cell_texel(const Cell& cell, const LightPalette& palette) {
-	LightTexel t = cell.mat < palette.mats.size() ? palette.mats[cell.mat] : LightTexel{0, 0, 0, 0};
+// One cell's light texel and reach code: its material's emission and opacity, plus the fire glow
+// when it burns. Both the scale-1 row and the block path pack a cell through here, so they cannot
+// drift apart.
+struct CellLight {
+	LightTexel texel;
+	uint8_t reach = 0;
+};
+
+static inline CellLight cell_texel(const Cell& cell, const LightPalette& palette) {
+	CellLight c;
+	c.texel = cell.mat < palette.mats.size() ? palette.mats[cell.mat] : LightTexel{0, 0, 0, 0};
+	c.reach = cell.mat < palette.reach.size() ? palette.reach[cell.mat] : 0;
 	if (cell.flags & FLAG_BURNING) {  // per-channel max of material and fire
-		if (palette.fire.r > t.r) t.r = palette.fire.r;
-		if (palette.fire.g > t.g) t.g = palette.fire.g;
-		if (palette.fire.b > t.b) t.b = palette.fire.b;
+		if (palette.fire.r > c.texel.r) c.texel.r = palette.fire.r;
+		if (palette.fire.g > c.texel.g) c.texel.g = palette.fire.g;
+		if (palette.fire.b > c.texel.b) c.texel.b = palette.fire.b;
+		if (palette.fire_reach > c.reach) c.reach = palette.fire_reach;
 	}
-	return t;
+	return c;
 }
 
 uint8_t pack_emission(float e) {
@@ -36,10 +45,12 @@ uint8_t pack_opacity(float a) {
 }
 
 void build_row(const WorldGrid& grid, const LightPalette& palette, const LightArea& area, int row,
-               int tx0, int tx1, LightTexel* out) {
+               int tx0, int tx1, LightTexel* out, uint8_t* reach_out) {
 	const int wy = area.y0 + row;
 	const int ly = floor_mod(wy, CHUNK);
-	LightTexel* dst = out + (size_t)row * light_texel_w(area) + tx0;
+	const int texel_w = light_texel_w(area);
+	LightTexel* dst = out + (size_t)row * texel_w + tx0;
+	uint8_t* reach_dst = reach_out + (size_t)row * texel_w + tx0;
 	const int wx_end = area.x0 + tx1;
 	for (int wx = area.x0 + tx0; wx < wx_end;) {
 		Chunk* chunk = grid.find(chunk_of(wx, wy));  // once per 64 cells of the row
@@ -47,24 +58,35 @@ void build_row(const WorldGrid& grid, const LightPalette& palette, const LightAr
 		const int n = std::min(CHUNK - lx, wx_end - wx);
 		if (chunk) {
 			const Cell* src = &chunk->cells[(size_t)ly * CHUNK + lx];
-			for (int i = 0; i < n; ++i) dst[i] = cell_texel(src[i], palette);
+			for (int i = 0; i < n; ++i) {
+				const CellLight c = cell_texel(src[i], palette);
+				dst[i] = c.texel;
+				reach_dst[i] = c.reach;
+			}
 		} else {
 			const LightTexel dark{0, 0, 0, 255};  // unloaded chunks are opaque and dark
 			for (int i = 0; i < n; ++i) dst[i] = dark;
+			std::fill(reach_dst, reach_dst + n, 0);  // and they do not reach
 		}
 		dst += n;
+		reach_dst += n;
 		wx += n;
 	}
 }
 
 void build_texel_row(const WorldGrid& grid, const LightPalette& palette, const LightArea& area,
-                     int texel_row, int tx0, int tx1, LightTexel* out, uint32_t* opacity_sum) {
+                     int texel_row, int tx0, int tx1, LightTexel* out, uint8_t* reach_out,
+                     uint32_t* opacity_sum) {
 	const int scale = area.scale;
 	const int texel_w = light_texel_w(area);
 	const int y0 = area.y0 + texel_row * scale;
 	const int y1 = std::min(y0 + scale, area.y0 + area.h);
 	LightTexel* const dst = out + (size_t)texel_row * texel_w;
-	for (int tx = tx0; tx < tx1; ++tx) dst[tx] = LightTexel{0, 0, 0, 0};
+	uint8_t* const reach_dst = reach_out + (size_t)texel_row * texel_w;
+	for (int tx = tx0; tx < tx1; ++tx) {
+		dst[tx] = LightTexel{0, 0, 0, 0};
+		reach_dst[tx] = 0;
+	}
 	std::fill(opacity_sum + tx0, opacity_sum + tx1, 0u);
 	const int x_end = area.x0 + std::min(tx1 * scale, area.w);
 	for (int wy = y0; wy < y1; ++wy) {
@@ -79,12 +101,14 @@ void build_texel_row(const WorldGrid& grid, const LightPalette& palette, const L
 			const Cell* src = chunk ? &chunk->cells[(size_t)ly * CHUNK + lx] : nullptr;
 			for (int i = 0; i < n; ++i) {
 				// Unloaded chunks are opaque and dark.
-				const LightTexel t = src ? cell_texel(src[i], palette) : LightTexel{0, 0, 0, 255};
+				const CellLight c =
+				    src ? cell_texel(src[i], palette) : CellLight{LightTexel{0, 0, 0, 255}, 0};
 				LightTexel& d = dst[tx];
-				if (t.r > d.r) d.r = t.r;
-				if (t.g > d.g) d.g = t.g;
-				if (t.b > d.b) d.b = t.b;
-				opacity_sum[tx] += t.a;
+				if (c.texel.r > d.r) d.r = c.texel.r;
+				if (c.texel.g > d.g) d.g = c.texel.g;
+				if (c.texel.b > d.b) d.b = c.texel.b;
+				if (c.reach > reach_dst[tx]) reach_dst[tx] = c.reach;
+				opacity_sum[tx] += c.texel.a;
 				if (--left == 0) {
 					++tx;
 					left = scale;
@@ -160,21 +184,46 @@ bool light_area_fits(const LightArea& area) {
 }
 
 LightPalette LightPalette::build(const MaterialTable& table, float fire_r, float fire_g,
-                                float fire_b, float fire_energy) {
+                                float fire_b, float fire_energy, float emission_reach) {
 	LightPalette pal;
 	pal.mats.resize(table.size());
+	pal.reach.assign(table.size(), 0);
 	for (size_t id = 0; id < table.size(); ++id) {
 		const CompiledMaterial& m = table.get((MatId)id);
 		pal.mats[id] = LightTexel{pack_emission(m.emission_r * m.emission_energy),
 		                          pack_emission(m.emission_g * m.emission_energy),
 		                          pack_emission(m.emission_b * m.emission_energy),
 		                          pack_opacity(m.light_opacity)};
+		// Reach only means something where there is emission to carry.
+		if (pal.mats[id].r || pal.mats[id].g || pal.mats[id].b)
+			pal.reach[id] = pack_reach(emission_reach);
 	}
 	// The implicit air def keeps the 1.0 default opacity; air must not block light.
 	pal.mats[MAT_AIR] = LightTexel{0, 0, 0, 0};
+	pal.reach[MAT_AIR] = 0;
 	pal.fire = LightTexel{pack_emission(fire_r * fire_energy), pack_emission(fire_g * fire_energy),
 	                      pack_emission(fire_b * fire_energy), 0};
+	// Burning cells reach like the emissive materials, unless the fire glow emits nothing.
+	pal.fire_reach =
+	    (pal.fire.r || pal.fire.g || pal.fire.b) ? pack_reach(emission_reach) : (uint8_t)0;
 	return pal;
+}
+
+uint8_t pack_reach(float reach_cells) {
+	if (!std::isfinite(reach_cells) || reach_cells <= 0.0f) return 1;
+	return (uint8_t)std::min(std::ceil(reach_cells / LIGHT_REACH_UNIT), 255.0f);
+}
+
+int light_cascade_count(float max_reach_texels) {
+	// Level L covers the distances from (4^L - 1) / 3 up: skip the levels that start beyond
+	// every reach in use, because their probes cannot see an emitter.
+	int count = 0;
+	for (int level = 0, start = 0, step = 1; level < LIGHT_CASCADES; ++level) {
+		if ((float)start < max_reach_texels) count = level + 1;
+		start += step;
+		step *= 4;
+	}
+	return std::max(1, count);
 }
 
 std::vector<LightRect> light_disjoint_rects(const std::vector<LightRect>& rects) {
@@ -202,7 +251,8 @@ std::vector<LightRect> light_disjoint_rects(const std::vector<LightRect>& rects)
 // Rows banded across the pool: the whole-area build is this over every texel, so the incremental
 // path cannot drift from it.
 void build_light_rects(const WorldGrid& grid, const LightPalette& palette, const LightArea& area,
-                       const std::vector<LightRect>& rects, LightTexel* out, JobPool* pool) {
+                       const std::vector<LightRect>& rects, LightTexel* out, uint8_t* reach_out,
+                       JobPool* pool) {
 	if (area.w <= 0 || area.h <= 0 || area.scale < 1) return;
 	const int texel_w = light_texel_w(area);
 	const std::vector<LightRect> jobs = light_disjoint_rects(rects);
@@ -227,9 +277,9 @@ void build_light_rects(const WorldGrid& grid, const LightPalette& palette, const
 		for (int r = r0; r < r1; ++r) {
 			// Scale 1 is the default path and stays one texel per cell, cell for cell.
 			if (area.scale == 1)
-				build_row(grid, palette, area, r, rect.x, rect.x + rect.w, out);
+				build_row(grid, palette, area, r, rect.x, rect.x + rect.w, out, reach_out);
 			else
-				build_texel_row(grid, palette, area, r, rect.x, rect.x + rect.w, out, sum);
+				build_texel_row(grid, palette, area, r, rect.x, rect.x + rect.w, out, reach_out, sum);
 		}
 	};
 	// A single band is a small region: one pool handshake costs more than the rows themselves.
@@ -240,10 +290,12 @@ void build_light_rects(const WorldGrid& grid, const LightPalette& palette, const
 }
 
 void build_light_inputs(const WorldGrid& grid, const LightPalette& palette,
-                        const LightArea& area, LightTexel* out, JobPool* pool) {
+                        const LightArea& area, LightTexel* out, uint8_t* reach_out,
+                        JobPool* pool) {
 	if (area.w <= 0 || area.h <= 0 || area.scale < 1) return;
 	build_light_rects(grid, palette, area,
-	                  {LightRect{0, 0, light_texel_w(area), light_texel_h(area)}}, out, pool);
+	                  {LightRect{0, 0, light_texel_w(area), light_texel_h(area)}}, out, reach_out,
+	                  pool);
 }
 
 LightRect light_region_rect(const LightArea& area, int cx0, int cy0, int cx1, int cy1) {
@@ -269,10 +321,11 @@ LightRect light_region_rect(const LightArea& area, int cx0, int cy0, int cx1, in
 }
 
 void build_light_region(const WorldGrid& grid, const LightPalette& palette, const LightArea& area,
-                        int cx0, int cy0, int cx1, int cy1, LightTexel* out, JobPool* pool) {
+                        int cx0, int cy0, int cx1, int cy1, LightTexel* out, uint8_t* reach_out,
+                        JobPool* pool) {
 	const LightRect rect = light_region_rect(area, cx0, cy0, cx1, cy1);
 	if (rect.w <= 0 || rect.h <= 0) return;
-	build_light_rects(grid, palette, area, {rect}, out, pool);
+	build_light_rects(grid, palette, area, {rect}, out, reach_out, pool);
 }
 
 // ponytail: radius -> source disc is a tuning knob, not physics. In 2D radiance cascades a
@@ -286,17 +339,18 @@ int spot_source_radius(float radius) {
 	return (int)std::lround(r);
 }
 
-int light_surface_passes(int depth_cells, int scale) {
+int light_surface_radius(int depth_cells, int scale) {
 	if (scale < 1 || depth_cells <= 0) return 0;
 	const int depth = std::min(depth_cells, LIGHT_SURFACE_MAX_DEPTH);
 	return (depth + scale - 1) / scale;
 }
 
-float light_surface_falloff(int passes) {
-	return passes <= 0 ? 1.0f : std::pow(LIGHT_SURFACE_FADE, 1.0f / (float)passes);
+float light_surface_falloff(int radius) {
+	return radius <= 0 ? 1.0f : std::pow(LIGHT_SURFACE_FADE, 1.0f / (float)radius);
 }
 
-void add_light_spots(const LightArea& area, const std::vector<LightSpot>& spots, LightTexel* out) {
+void add_light_spots(const LightArea& area, const std::vector<LightSpot>& spots, LightTexel* out,
+                     uint8_t* reach_out) {
 	if (area.w <= 0 || area.h <= 0 || area.scale < 1 || light_texel_w(area) <= 0) return;
 	const int texel_w = light_texel_w(area);
 	for (const LightSpot& s : spots) {
@@ -304,10 +358,12 @@ void add_light_spots(const LightArea& area, const std::vector<LightSpot>& spots,
 		if (!spot_disc(area, s, disc)) continue;
 		const LightTexel add{pack_emission(s.r * s.energy), pack_emission(s.g * s.energy),
 		                     pack_emission(s.b * s.energy), 0};
+		const uint8_t reach_code = pack_reach(s.radius);
 		const float r2 = (float)(disc.sr * disc.sr);
 		for (int ty = disc.rect.y; ty < disc.rect.y + disc.rect.h; ++ty) {
 			const float dy = (float)ty - disc.y;
 			LightTexel* row = out + (size_t)ty * texel_w;
+			uint8_t* reach_row = reach_out + (size_t)ty * texel_w;
 			for (int tx = disc.rect.x; tx < disc.rect.x + disc.rect.w; ++tx) {
 				const float dx = (float)tx - disc.x;
 				if (dx * dx + dy * dy > r2) continue;
@@ -315,6 +371,7 @@ void add_light_spots(const LightArea& area, const std::vector<LightSpot>& spots,
 				t.r = (uint8_t)std::min(255, t.r + add.r);
 				t.g = (uint8_t)std::min(255, t.g + add.g);
 				t.b = (uint8_t)std::min(255, t.b + add.b);
+				if (reach_code > reach_row[tx]) reach_row[tx] = reach_code;
 			}
 		}
 	}
@@ -331,7 +388,8 @@ std::vector<LightRect> spot_rects(const LightArea& area, const std::vector<Light
 }
 
 void restore_light_rects(const LightArea& area, const std::vector<LightRect>& rects,
-                         const LightTexel* base, LightTexel* out) {
+                         const LightTexel* base, const uint8_t* reach_base, LightTexel* out,
+                         uint8_t* reach_out) {
 	if (area.w <= 0 || area.h <= 0 || area.scale < 1) return;
 	const int texel_w = light_texel_w(area);
 	const int texel_h = light_texel_h(area);
@@ -339,9 +397,12 @@ void restore_light_rects(const LightArea& area, const std::vector<LightRect>& re
 		const int x0 = std::max(r.x, 0), x1 = std::min(r.x + r.w, texel_w);
 		const int y0 = std::max(r.y, 0), y1 = std::min(r.y + r.h, texel_h);
 		if (x0 >= x1) continue;
-		for (int ty = y0; ty < y1; ++ty)
+		for (int ty = y0; ty < y1; ++ty) {
 			memcpy(out + (size_t)ty * texel_w + x0, base + (size_t)ty * texel_w + x0,
 			       (size_t)(x1 - x0) * sizeof(LightTexel));
+			memcpy(reach_out + (size_t)ty * texel_w + x0, reach_base + (size_t)ty * texel_w + x0,
+			       (size_t)(x1 - x0));
+		}
 	}
 }
 

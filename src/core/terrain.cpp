@@ -307,6 +307,8 @@ std::unique_ptr<TerrainGenerator> TerrainGenerator::compile(const TerrainConfig&
 			gen->slab_quantiles_[q] = samples[(size_t)q * (samples.size() - 1) / QUANTILE_STEPS];
 	}
 
+	if (cfg.back_wall.enabled) gen->back_wall_ = std::make_unique<BackWall>(cfg.back_wall, seed);
+
 	return gen;
 }
 
@@ -508,6 +510,11 @@ int TerrainGenerator::biome_at(int wx, int wy) const {
 	return pick_from(weights_at(wx, wy), wx, wy);
 }
 
+MatId TerrainGenerator::biome_base(int biome) const {
+	if (biome < 0 || biome >= (int)ids_.size()) return MAT_AIR;
+	return ids_[biome].base;
+}
+
 double TerrainGenerator::taper_at(int wx, int depth) const {
 	double taper = 1.0;
 	if (config_.cave_taper_depth > 0) {
@@ -681,6 +688,8 @@ void TerrainGenerator::generate(ChunkCoord coord, Chunk& out, uint32_t seed) con
 		                    floor_div(base_y, config_.room_cell_size));
 	const RoomDef* room_def = room ? &config_.rooms[room->room] : nullptr;
 	const std::vector<MatId>* room_cells = room ? &room_pixels_[room->room] : nullptr;
+	// The wall takes its biome from these instead of re-deriving it per cell.
+	int biome_of[CHUNK * CHUNK];
 	for (int lx = 0; lx < CHUNK; ++lx) {
 		const int wx = base_x + lx;
 		const int h = surface_height(wx);
@@ -689,12 +698,13 @@ void TerrainGenerator::generate(ChunkCoord coord, Chunk& out, uint32_t seed) con
 			const int wy = base_y + ly;
 			const int depth = wy - h;
 			MatId mat = MAT_AIR;
+			int picked = -1;  // no biome above the surface, where there is no wall either
 			if (depth >= 0) {
 				// shortcut: every cell re-computes the biome weights; the plan's single-biome
 				// column fast path is deferred. CPU only, generation runs in the background.
 				const BiomeWeights weights = weights_col(wx, xw, wy, depth);
 				const Blended amounts = blend(weights);
-				const int picked = pick_from(weights, wx, wy);
+				picked = pick_from(weights, wx, wy);
 				const BiomeIds& ids = ids_[picked];
 				const int top = (int)std::lround(amounts.surface_depth);
 				const int crust = (int)std::lround(amounts.crust_depth);
@@ -730,7 +740,12 @@ void TerrainGenerator::generate(ChunkCoord coord, Chunk& out, uint32_t seed) con
 				mat = MAT_AIR;
 				out.light_markers.push_back((uint16_t)(ly * CHUNK + lx));
 			}
+			biome_of[ly * CHUNK + lx] = picked;
 			out.at(lx, ly) = spawn_cell(mat, table_, seed_, wx, wy);
 		}
 	}
+	if (back_wall_)
+		back_wall_->fill(*this, table_, coord, biome_of, out.back_wall);
+	else
+		out.back_wall.clear();
 }

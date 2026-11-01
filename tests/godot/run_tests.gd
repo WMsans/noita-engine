@@ -1019,7 +1019,8 @@ func test_lighting_settings_defaults() -> bool:
 	var light: PixelLight = PixelLight.new()
 	var defaults := {
 		"lighting_enabled": true,
-		"ambient": 0.05,
+		"ambient": 0.40,
+		"ambient_tint": Color(0.62, 0.69, 1.0),
 		"light_exposure": 1.0,
 		"light_margin": 240,
 		"backdrop_color": Color(0.07, 0.05, 0.04),
@@ -1028,13 +1029,15 @@ func test_lighting_settings_defaults() -> bool:
 		"marker_light_color": Color(1, 0.75, 0.4),
 		"marker_light_energy": 1.5,
 		"marker_light_radius": 48.0,
-		"bloom_threshold": 1.0,
-		"bloom_strength": 0.6,
-		"light_surface_depth": 10,
+		"bloom_threshold": 2.5,
+		"bloom_strength": 0.35,
+		"emission_reach": 40.0,
+		"light_surface_depth": 40,
 	}
 	var written := {
 		"lighting_enabled": false,
 		"ambient": 0.2,
+		"ambient_tint": Color(1, 1, 1),
 		"light_exposure": 2.0,
 		"light_margin": 64,
 		"backdrop_color": Color(0.1, 0.2, 0.3),
@@ -1045,6 +1048,7 @@ func test_lighting_settings_defaults() -> bool:
 		"marker_light_radius": 24.0,
 		"bloom_threshold": 2.0,
 		"bloom_strength": 0.9,
+		"emission_reach": 24.0,
 		"light_surface_depth": 4,
 	}
 	var light_defaults := {"color": Color(1, 0.75, 0.4), "energy": 1.5, "radius": 48.0, "flicker": 0.0, "enabled": true}
@@ -1136,12 +1140,11 @@ func test_pixel_light_free_order() -> bool:
 
 
 # The surface light depth: how many cells light spreads into solids. The setter clamps into
-# 0..32. Odd and even pass counts route the output pass differently, so flipping while running
-# must not error.
+# 0..96. Flipping it while running must not error.
 func test_light_surface_depth_clamped_and_live() -> bool:
 	var world: PixelWorld = PixelWorld.new()
 	var bad: PackedStringArray = []
-	for pair: Array in [[0, 0], [32, 32], [-3, 0], [99, 32], [10, 10]]:
+	for pair: Array in [[0, 0], [96, 96], [-3, 0], [200, 96], [40, 40]]:
 		world.light_surface_depth = pair[0]
 		if world.light_surface_depth != pair[1]:
 			bad.append("light_surface_depth = %d reads %d, expected %d" % [pair[0], world.light_surface_depth, pair[1]])
@@ -1217,8 +1220,10 @@ func test_bench_light_gpu_gate_exemption() -> bool:
 	return true
 
 
+# Every demo except the acceptance scene keeps lighting off: they were tuned as unlit scenes, and
+# turning lighting on is a per-scene choice. world_demo is the scene tuned by eye for lighting.
 func test_existing_scenes_opt_out() -> bool:
-	var scenes: Array[String] = ["res://demo/world_demo.tscn", "res://demo/paint_demo.tscn", "res://demo/bodies_demo.tscn", "res://demo/creatures_demo.tscn", "res://bench/bench.tscn"]
+	var scenes: Array[String] = ["res://demo/paint_demo.tscn", "res://demo/bodies_demo.tscn", "res://demo/creatures_demo.tscn", "res://bench/bench.tscn"]
 	for path: String in scenes:
 		var scene: Node = load(path).instantiate()
 		var world: PixelWorld = scene.get_node_or_null("PixelWorld")
@@ -1227,4 +1232,100 @@ func test_existing_scenes_opt_out() -> bool:
 			scene.free()
 			return false
 		scene.free()
+	var tuned: Node = load("res://demo/world_demo.tscn").instantiate()
+	var tuned_world: PixelWorld = tuned.get_node_or_null("PixelWorld")
+	var lit: bool = tuned_world != null and tuned_world.lighting_enabled
+	tuned.free()
+	if not lit:
+		printerr("  res://demo/world_demo.tscn: PixelWorld lighting_enabled is off, expected on")
+		return false
+	return true
+
+
+# --- back wall (Plan 7) ---------------------------------------------------------------------
+
+# Every BackWallConfig field is a property on the generator, so a scene can tune the wall. The
+# spot checks below mirror the defaults the core sets (src/core/back_wall.h).
+func test_back_wall_generator_defaults() -> bool:
+	var gen: PixelWorldGenerator = PixelWorldGenerator.new()
+	var bad: PackedStringArray = []
+	if gen.back_wall_enabled != true:
+		bad.append("back_wall_enabled reads %s, expected true" % gen.back_wall_enabled)
+	if not is_equal_approx(gen.back_wall_darken, 0.54):
+		bad.append("back_wall_darken reads %s, expected 0.54" % gen.back_wall_darken)
+	if not is_equal_approx(gen.back_wall_hollow_frequency, 0.008):
+		bad.append("back_wall_hollow_frequency reads %s, expected 0.008" % gen.back_wall_hollow_frequency)
+	if not is_equal_approx(gen.back_wall_hollow_stretch, 4.0):
+		bad.append("back_wall_hollow_stretch reads %s, expected 4.0" % gen.back_wall_hollow_stretch)
+	if not is_equal_approx(gen.back_wall_hollow_amount, 0.38):
+		bad.append("back_wall_hollow_amount reads %s, expected 0.38" % gen.back_wall_hollow_amount)
+	if gen.back_wall_stalactite_length != 20:
+		bad.append("back_wall_stalactite_length reads %s, expected 20" % gen.back_wall_stalactite_length)
+	if gen.back_wall_stalagmite_length != 8:
+		bad.append("back_wall_stalagmite_length reads %s, expected 8" % gen.back_wall_stalagmite_length)
+	if gen.back_wall_tooth_period != 7:
+		bad.append("back_wall_tooth_period reads %s, expected 7" % gen.back_wall_tooth_period)
+	if not bad.is_empty():
+		printerr("  " + ", ".join(bad))
+		return false
+	return true
+
+
+func _make_back_wall_world(target: Node2D, enabled: bool) -> PixelWorld:
+	var world: PixelWorld = PixelWorld.new()
+	world.material_set = load("res://materials/default_set.tres")
+	world.generator = load("res://worldgen/default_generator.tres")
+	world.worker_threads = 1
+	world.generator_threads = 2
+	world.simulating = false
+	world.lighting_enabled = false  # the wall is unlit, and --headless has no RenderingDevice
+	world.back_wall_enabled = enabled
+	world.follow_target = target.get_path()
+	root.add_child(world)
+	await process_frame
+	return world
+
+
+# The wall draws from the chunk bytes without the light pass, survives unload + regenerate, and
+# is gone entirely when the world's back_wall_enabled is false.
+func test_back_wall_draws_without_lighting() -> bool:
+	var bad: PackedStringArray = []
+	var below := Rect2i(0, 4 * 64, 64, 64)
+
+	var target: Node2D = Node2D.new()
+	root.add_child(target)
+	var world: PixelWorld = await _make_back_wall_world(target, true)
+	var ready: bool = await _await_ready(world, below)
+	var drawn: int = world.get_stats()["back_walls"]
+	if not ready or drawn <= 0:
+		bad.append("chunk(0,4) ready=%s, back_walls=%d (expected > 0)" % [ready, drawn])
+
+	target.position = Vector2(20000, 0)
+	for i: int in 600:
+		if not world.is_chunk_loaded(Vector2i(0, 4)):
+			break
+		await process_frame
+	var unloaded: bool = not world.is_chunk_loaded(Vector2i(0, 4))
+	target.position = Vector2.ZERO
+	var back_ready: bool = await _await_ready(world, below)
+	var regenerated: int = world.get_stats()["back_walls"]
+	if not unloaded or not back_ready or regenerated <= 0:
+		bad.append("after unload=%s ready=%s, back_walls=%d (expected > 0)" % [unloaded, back_ready, regenerated])
+	world.free()
+
+	var off_target: Node2D = Node2D.new()
+	root.add_child(off_target)
+	var off: PixelWorld = await _make_back_wall_world(off_target, false)
+	for i: int in 10:
+		await process_frame
+	var off_drawn: int = off.get_stats()["back_walls"]
+	if off_drawn != 0:
+		bad.append("back_wall_enabled=false: back_walls=%d, expected 0" % off_drawn)
+	off.free()
+	off_target.free()
+	target.free()
+
+	if not bad.is_empty():
+		printerr("  " + ", ".join(bad))
+		return false
 	return true

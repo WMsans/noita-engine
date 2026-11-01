@@ -182,7 +182,7 @@ in `docs/superpowers/specs/assets/2026-11-01-light-reach/`).
   - `back wall chunk matches per-cell reference`: for chunks (0,2), (−1,3), (−3,−1) and (5,4), `fill` equals `colour_at` at every cell.
   - `back wall deterministic`: two generators with the same seed give identical `fill` bytes for (2,3); a different seed differs somewhere.
   - `back wall hollow share`: over the 16 chunks (0..3, 3..6), the share of cells with `hollow_at` (teeth applied) among wall cells is within [0.15, 0.55]; and every `hollow_at` cell's colour is darker than every non-hollow wall cell of the same biome in that chunk.
-  - `back wall darker than terrain`: every wall cell's max channel < `darken + 0.1` × the max channel of its biome's base material colour (×255).
+  - `back wall darker than terrain`: every wall cell's max channel < `darken + 0.1` × the max channel of its biome's base material colour (×255). [Superseded: the test now asserts a config-independent `WALL_MAX_RATIO = 0.75` bound — shade and pebbles scale a wall cell by up to 1.1845, so `darken + 0.1` would have capped the tunable `darken` itself instead of judging the picture.]
   - `back wall disabled`: `enabled = false` → `generate` leaves `back_wall` empty.
 
 - [ ] **Step 2: Run** `scons tests && build/tests/run_tests -tc='back wall*'`; expected: compile failure.
@@ -207,7 +207,7 @@ in `docs/superpowers/specs/assets/2026-11-01-light-reach/`).
 
 **Interfaces:**
 - Consumes: `Chunk::back_wall`, `BackWallConfig`.
-- Produces: `PixelWorld.back_wall_enabled` (bool, default true); `ChunkView` gains `RID back_texture; bool has_back = false;`.
+- Produces: `PixelWorld.back_wall_enabled` (bool, default true); `ChunkView` gains `RID back_texture; bool has_back = false;`. [Superseded: there is no second texture — the wall is composited into the chunk texture by `back_wall_composite`, because a second texture create per chunk dominated the streamer's worst frame.]
 
 - [ ] **Step 1: Failing Godot tests.**
   - `test_back_wall_generator_defaults`: `PixelWorldGenerator.new()` has `back_wall_enabled == true`, `back_wall_darken ≈ 0.38`, `back_wall_hollow_amount ≈ 0.35`, `back_wall_stalactite_length == 14`.
