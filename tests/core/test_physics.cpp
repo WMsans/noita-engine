@@ -33,6 +33,10 @@ struct World {
 	// One row of air chunks above y = 0, so a body spawned near the top keeps loaded chunks
 	// all around it (a body next to an unloaded chunk is disabled).
 	explicit World(int w = SIZE, int h = SIZE) { phystest::arena(grid, t, 0, -CHUNK, w, h); }
+	explicit World(MaterialTable table, int w = SIZE, int h = SIZE)
+	    : t(std::move(table)), grid{t, 1} {
+		phystest::arena(grid, t, 0, -CHUNK, w, h);
+	}
 	MatId id(const char* name) const { return t.id_of(name); }
 };
 
@@ -185,6 +189,23 @@ int count_body_cells(WorldGrid& grid) {
 	return n;
 }
 
+// The cell stamp() assigned to body pixel (px, py): the one whose centre maps to that pixel,
+// the same cell-centre rule stamp() uses, so it is unambiguous when a pixel straddles cells.
+bool stamped_cell(WorldGrid& grid, b2BodyId body, int w, int h, int px, int py, Cell& out) {
+	const b2AABB box = b2Body_ComputeBounds(body);
+	for (int wy = (int)std::floor(box.lowerBound.y); wy < (int)std::ceil(box.upperBound.y); ++wy)
+		for (int wx = (int)std::floor(box.lowerBound.x); wx < (int)std::ceil(box.upperBound.x); ++wx) {
+			Cell c{};
+			if (!grid.get(wx, wy, c) || !(c.flags & FLAG_BODY)) continue;
+			const b2Vec2 local = b2Body_GetLocalPoint(body, {wx + 0.5f, wy + 0.5f});
+			if ((int)std::floor(local.x + w * 0.5f) == px && (int)std::floor(local.y + h * 0.5f) == py) {
+				out = c;
+				return true;
+			}
+		}
+	return false;
+}
+
 std::vector<Cell> snapshot(WorldGrid& grid, const std::vector<ChunkCoord>& coords) {
 	std::vector<Cell> out;
 	for (ChunkCoord c : coords) {
@@ -240,6 +261,33 @@ TEST_CASE("stamp and unstamp restore held cells exactly") {
 
 	CHECK(count_body_cells(w.grid) == 0);
 	CHECK(same_cells(before, snapshot(w.grid, ALL_CHUNKS)));
+}
+
+TEST_CASE("a falling body keeps its texture") {
+	World w(phystest::table(true));
+	PhysicsWorld physics(w.grid, GRAVITY);
+	const int crate = physics.add_body(phystest::box(w.t, "wood", 12, 12, 128, 20));
+	REQUIRE(crate >= 0);
+
+	// The cell under body pixel (3, 4) carries that pixel's texel.
+	physics.stamp();
+	Cell c{};
+	REQUIRE(stamped_cell(w.grid, physics.body_id(crate), 12, 12, 3, 4, c));
+	CHECK(c.mat == w.id("wood"));
+	CHECK(c.shade == texel_index(3, 4));
+	physics.unstamp();
+
+	// After the body has fallen 5 cells, pixel (3, 4) still carries its own texel.
+	for (int i = 0; i < 120; ++i) {
+		physics.update_terrain();
+		physics.step();
+		if (phystest::pos(physics, crate).y >= 25.0f) break;
+	}
+	REQUIRE(phystest::pos(physics, crate).y >= 25.0f);
+	physics.stamp();
+	REQUIRE(stamped_cell(w.grid, physics.body_id(crate), 12, 12, 3, 4, c));
+	CHECK(c.shade == texel_index(3, 4));
+	physics.unstamp();
 }
 
 TEST_CASE("sand piles on a body") {

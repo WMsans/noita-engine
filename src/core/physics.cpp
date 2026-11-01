@@ -521,7 +521,8 @@ void PhysicsWorld::stamp() {
 					body.sum_y += wy + 0.5f;
 				}
 				body.held.push_back({wx, wy, cell});
-				cell = spawn_cell(mat, mt, grid.seed(), wx, wy);
+				// Body-local texel: a moving body keeps its texture instead of re-sampling world coords.
+				cell = spawn_cell(mat, mt, grid.seed(), wx, wy, px, py);
 				cell.flags |= FLAG_BODY;
 				if (body.stamped_awake) grid.wake(wx, wy);
 			}
