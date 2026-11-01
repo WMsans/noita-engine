@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "FastNoiseLite/FastNoiseLite.h"
+#include "back_wall.h"
 #include "generator.h"
 #include "material.h"
 
@@ -75,6 +76,7 @@ struct TerrainConfig {
 	std::vector<BiomeDef> biomes;
 	std::vector<PaletteEntry> palette;
 	std::vector<RoomDef> rooms;
+	BackWallConfig back_wall;
 };
 
 struct BiomeWeights {
@@ -93,6 +95,9 @@ public:
 	int surface_height(int wx) const;               // h(wx): first ground row
 	BiomeWeights weights_at(int wx, int wy) const;  // count 0 above the surface
 	int biome_at(int wx, int wy) const;             // dithered pick; -1 above the surface
+	MatId biome_base(int biome) const;  // the biome's base material; MAT_AIR for an unknown one
+	// The back wall generator, null when config.back_wall.enabled is false.
+	const BackWall* back_wall() const { return back_wall_.get(); }
 	bool cave_at(int wx, int wy) const;  // tunnel || cavern, thresholds blended, taper applied
 	// The column is a cave entrance: caves carve through its surface and crust.
 	bool entrance_at(int wx) const;
@@ -145,6 +150,7 @@ private:
 	std::vector<Band> bands_;
 	std::vector<int> region_offset_;  // per band, from a hash of the seed
 	std::vector<BiomeIds> ids_;
+	std::unique_ptr<BackWall> back_wall_;
 	// One field per noise source, built once. GetNoise is const, so delegates may share them.
 	FastNoiseLite n_surface_, n_band_, n_region_, n_tunnel_, n_cavern_, n_pocket_, n_pool_,
 	    n_entrance_, n_slab_, n_slab_warp_, n_slab_rough_, n_slab_hole_, n_slab_seam_;

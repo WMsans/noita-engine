@@ -39,6 +39,8 @@ struct Chunk {
 	std::atomic<bool> light_dirty{true};
 	// Local indices (ly * CHUNK + lx) of the @light room markers stamped in this chunk.
 	std::vector<uint16_t> light_markers;
+	// CHUNK x CHUNK RGBA8 (0xRRGGBBAA) wall painted behind the cells; empty = none.
+	std::vector<uint32_t> back_wall;
 
 	Cell& at(int lx, int ly) {
 		assert(lx >= 0 && lx < CHUNK && ly >= 0 && ly < CHUNK);  // debug only

@@ -307,6 +307,8 @@ std::unique_ptr<TerrainGenerator> TerrainGenerator::compile(const TerrainConfig&
 			gen->slab_quantiles_[q] = samples[(size_t)q * (samples.size() - 1) / QUANTILE_STEPS];
 	}
 
+	if (cfg.back_wall.enabled) gen->back_wall_ = std::make_unique<BackWall>(cfg.back_wall, seed);
+
 	return gen;
 }
 
@@ -506,6 +508,11 @@ int TerrainGenerator::pick_from(const BiomeWeights& w, int wx, int wy) const {
 
 int TerrainGenerator::biome_at(int wx, int wy) const {
 	return pick_from(weights_at(wx, wy), wx, wy);
+}
+
+MatId TerrainGenerator::biome_base(int biome) const {
+	if (biome < 0 || biome >= (int)ids_.size()) return MAT_AIR;
+	return ids_[biome].base;
 }
 
 double TerrainGenerator::taper_at(int wx, int depth) const {
@@ -733,4 +740,8 @@ void TerrainGenerator::generate(ChunkCoord coord, Chunk& out, uint32_t seed) con
 			out.at(lx, ly) = spawn_cell(mat, table_, seed_, wx, wy);
 		}
 	}
+	if (back_wall_)
+		back_wall_->fill(*this, table_, coord, out.back_wall);
+	else
+		out.back_wall.clear();
 }
