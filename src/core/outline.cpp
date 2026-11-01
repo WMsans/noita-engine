@@ -34,12 +34,16 @@ float segment_distance(b2Vec2 p, b2Vec2 a, b2Vec2 b) {
 }
 
 // Douglas-Peucker on the open run loop[i..j] (indices modulo n), marking points to keep.
+// One-sided: a point on the solid side of the chord (cross > 0, with the winding trace_loops
+// gives) always stays, so the chord never runs through air. A two-sided chord could sit a
+// cell above a floor beside a bump, inside a body resting there, and Box2D would lift it.
 void dp(const Loop& loop, size_t i, size_t j, float eps, std::vector<uint8_t>& keep) {
 	const size_t n = loop.size();
 	float best = -1;
 	size_t best_k = i;
 	for (size_t k = (i + 1) % n; k != j; k = (k + 1) % n) {
-		const float d = segment_distance(loop[k], loop[i], loop[j]);
+		float d = segment_distance(loop[k], loop[i], loop[j]);
+		if (cross(loop[i], loop[j], loop[k]) > 0.0f) d = INFINITY;
 		if (d > best) {
 			best = d;
 			best_k = k;

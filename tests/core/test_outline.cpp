@@ -153,6 +153,34 @@ TEST_CASE("simplify keeps shape within epsilon") {
 	CHECK(square.size() >= 3);
 }
 
+TEST_CASE("simplify never puts air inside the shape") {
+	// A floor with one sand cell on it, as beside a crate resting on that floor. Dropping the
+	// concave corner at the bump's foot would leave a chord a cell above the floor, under the
+	// crate, and Box2D would lift the crate out of it.
+	const int n = 64;
+	Mask m((size_t)n * n, 0);
+	for (int y = 36; y < n; ++y)
+		for (int x = 0; x < n; ++x) m[(size_t)y * n + x] = 1;
+	m[(size_t)35 * n + 38] = 1;
+	const std::vector<Loop> loops = trace_loops(m, n, n);
+	REQUIRE(loops.size() == 1);
+	const Loop simple = simplify_loop(loops[0], 1.0f);
+	int air_inside = 0;
+	for (int y = 0; y < n; ++y)
+		for (int x = 0; x < n; ++x) {
+			if (m[(size_t)y * n + x]) continue;
+			const float px = x + 0.5f, py = y + 0.5f;
+			bool inside = false;  // even-odd crossing test
+			for (size_t i = 0, j = simple.size() - 1; i < simple.size(); j = i++) {
+				const b2Vec2 a = simple[i], b = simple[j];
+				if ((a.y > py) != (b.y > py) && px < (b.x - a.x) * (py - a.y) / (b.y - a.y) + a.x)
+					inside = !inside;
+			}
+			if (inside) ++air_inside;
+		}
+	CHECK(air_inside == 0);
+}
+
 TEST_CASE("pixel hull") {
 	Mask full((size_t)8 * 8, 1);
 	const Loop square = pixel_hull(full, 8, 8);
