@@ -790,10 +790,10 @@ void PixelWorld::render_light_frame(const LightArea &p_area, const PackedByteArr
 	update_light_overlay(p_area);
 }
 
-// Two canvas items over the lit area: one multiplies by ambient + light, one adds bloom. The
-// texture wrappers are re-pointed when the render thread recreates them, and the overlay is
-// hidden until the renderer has rendered this exact area, so a stale texture is never stretched
-// over a new area.
+// Two canvas items over the lit area: one multiplies by ambient * ambient_tint + light, one adds
+// bloom. The texture wrappers are re-pointed when the render thread recreates them, and the
+// overlay is hidden until the renderer has rendered this exact area, so a stale texture is never
+// stretched over a new area.
 void PixelWorld::update_light_overlay(const LightArea &p_area) {
 	RenderingServer *rs = RenderingServer::get_singleton();
 	if (!rs || !light_renderer || p_area.scale < 1) return;
@@ -975,13 +975,14 @@ Color PixelWorld::cell_color(const Cell &p_cell) const {
 	return color;
 }
 
-// Runs on the pool: reads only the chunk and cell_rgba. An id past the palette draws nothing,
-// like cell_color().
+// Runs on the pool: reads only the chunk and cell_rgba, plus back_wall_enabled and
+// chunk.back_wall, which is safe because parallel_for joins before it returns and every setter
+// runs on the main thread. An id past the palette draws nothing, like cell_color().
 //
-// The back wall is baked in where the cell is transparent instead of being a second texture
-// drawn underneath: a second texture per chunk costs a texture create per chunk, which is the
-// whole of this streamer's worst-frame time. Every material is opaque, so a wall pixel is only
-// ever visible through air and the image is the same either way.
+// The back wall is baked in instead of being a second texture drawn underneath: a second texture
+// per chunk costs a texture create per chunk, which is the whole of this streamer's worst-frame
+// time. It is composited under a see-through cell and replaced by an opaque one, so a translucent
+// cell never hides the wall.
 void PixelWorld::write_chunk_image(const Chunk &chunk, uint32_t *out) const {
 	const size_t mats = palette.size();
 	const bool bake_wall =
@@ -989,12 +990,13 @@ void PixelWorld::write_chunk_image(const Chunk &chunk, uint32_t *out) const {
 	for (size_t i = 0; i < (size_t)CHUNK * CHUNK; ++i) {
 		const Cell &cell = chunk.cells[i];
 		const uint32_t px = cell.mat < mats ? cell_rgba[((size_t)cell.mat * 2 + (cell.flags & FLAG_BURNING)) * 256 + cell.shade] : 0u;
-		// Alpha is the top byte of these R, G, B, A words. Transparent: the wall shows through.
-		if ((px >> 24) != 0u || !bake_wall) {
+		// Alpha is the top byte of these R, G, B, A words: an opaque cell covers the wall, and
+		// with no wall baked in the cell is all there is.
+		if (!bake_wall || (px >> 24) == 255u) {
 			out[i] = px;
 			continue;
 		}
-		back_wall_rgba8_bytes(chunk.back_wall[i], (uint8_t *)&out[i]);
+		out[i] = back_wall_composite(px, chunk.back_wall[i]);
 	}
 }
 

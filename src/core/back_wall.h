@@ -39,6 +39,29 @@ inline void back_wall_rgba8_bytes(uint32_t packed, uint8_t *out) {
 	out[3] = (uint8_t)packed;
 }
 
+// The pixel write_chunk_image stores for one cell: the plain cell where it is opaque, the plain
+// wall where it is transparent, and the source-over blend of the two in between, so a translucent
+// cell hides nothing behind it. `cell_px` is in the chunk image's word order (memory bytes
+// R, G, B, A, so alpha is its top byte); `wall_px` is fill()'s 0xRRGGBBAA packing. Returns the
+// chunk image word order. A wall cell is opaque or absent by construction, so no wall leaves the
+// cell untouched and a wall always makes the blend opaque. Allocation-free.
+inline uint32_t back_wall_composite(uint32_t cell_px, uint32_t wall_px) {
+	const uint32_t alpha = cell_px >> 24;
+	if (alpha == 255u) return cell_px;
+	// The wall in the chunk image word order, i.e. the packing byte-reversed.
+	uint32_t wall = 0;
+	for (unsigned i = 0; i < 4; ++i)
+		wall |= ((wall_px >> (24u - 8u * i)) & 0xFFu) << (8u * i);
+	if (alpha == 0u) return wall;
+	if ((wall >> 24) == 0u) return cell_px;
+	uint32_t out = 0xFF000000u;
+	for (unsigned shift = 0; shift < 24; shift += 8) {
+		const uint32_t cell = (cell_px >> shift) & 0xFFu, behind = (wall >> shift) & 0xFFu;
+		out |= ((cell * alpha + behind * (255u - alpha) + 127u) / 255u) << shift;
+	}
+	return out;
+}
+
 // The back wall of one chunk: CHUNK x CHUNK RGBA8 packed 0xRRGGBBAA, alpha 0 where there is
 // no wall (above the surface) and 255 everywhere below. Built from world coordinates and the
 // seed alone, so neighbouring chunks agree at their shared edges.
@@ -82,9 +105,6 @@ private:
 	double tri(int wx, uint32_t salt) const;  // triangle wave in [0, 1]
 	double amp(int wx) const;                 // 1-D noise in [0, 1], biased low
 	double hollow_value(int wx, int wy) const;
-	// Rows above / below a cell that teeth can read, and so the hollow field window's slack.
-	int down_reach() const { return std::max(cfg_.stalactite_length, 0); }
-	int up_reach() const { return std::max(cfg_.stalagmite_length, 0); }
 
 	const BackWallConfig cfg_;
 	const uint32_t seed_;

@@ -31,6 +31,12 @@ std::unique_ptr<TerrainGenerator> compile_or_fail(const TerrainConfig& cfg,
 
 uint8_t alpha_of(uint32_t rgba) { return (uint8_t)(rgba & 0xFFu); }
 
+// A chunk-image word: memory bytes R, G, B, A, so alpha is the top byte (what write_chunk_image
+// reads). Spelled with shifts so the test says the same thing on any byte order.
+uint32_t rgba_word(uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
+	return ((uint32_t)a << 24) | ((uint32_t)b << 16) | ((uint32_t)g << 8) | (uint32_t)r;
+}
+
 int max_channel(uint32_t rgba) {
 	return std::max({(int)((rgba >> 24) & 0xFFu), (int)((rgba >> 16) & 0xFFu),
 	                 (int)((rgba >> 8) & 0xFFu)});
@@ -65,6 +71,30 @@ TEST_CASE("back wall rgba8 bytes follow the packed order") {
 	// And a filled wall cell is opaque.
 	back_wall_rgba8_bytes(0x102030FFu, px);
 	CHECK(px[3] == 255);
+}
+
+TEST_CASE("back wall composite keeps the wall under a see-through cell") {
+	// A wall cell in fill()'s 0xRRGGBBAA packing, fully opaque: R 16, G 32, B 48.
+	const uint32_t wall = 0x102030FFu;
+
+	// A fully transparent cell shows the wall as it is.
+	const uint32_t clear_cell = rgba_word(0, 0, 0, 0);
+	CHECK(back_wall_composite(clear_cell, wall) == rgba_word(16, 32, 48, 255));
+	// ... and above the surface there is no wall to show.
+	CHECK(back_wall_composite(clear_cell, 0u) == rgba_word(0, 0, 0, 0));
+
+	// A fully opaque cell hides the wall, byte for byte.
+	const uint32_t solid_cell = rgba_word(0x44, 0x55, 0x66, 255);
+	CHECK(back_wall_composite(solid_cell, wall) == solid_cell);
+
+	// Alpha 128: (cell * 128 + wall * 127) / 255 per channel, rounded. Worked out by hand:
+	// R (200*128 + 16*127)/255 = 108.36 -> 108, G (100*128 + 32*127)/255 = 66.13 -> 66,
+	// B (50*128 + 48*127)/255 = 49.00 -> 49. The wall is opaque, so the blend is too.
+	const uint32_t half_cell = rgba_word(200, 100, 50, 128);
+	CHECK(back_wall_composite(half_cell, wall) == rgba_word(108, 66, 49, 255));
+
+	// A see-through cell with no wall behind it is left exactly as it was.
+	CHECK(back_wall_composite(half_cell, 0u) == half_cell);
 }
 
 TEST_CASE("back wall absent above the surface") {
@@ -274,7 +304,7 @@ TEST_CASE("back wall darker than terrain") {
 				const double ratio = (double)cell / (double)terrain;
 				REQUIRE_MESSAGE(ratio <= WALL_MAX_RATIO,
 				                "wall " << cell << " at (" << wx << ", " << wy << ") is " << ratio
-				                        << " of its terrain's " << terrain << ", not under "
+				                        << " of its terrain's " << terrain << ", which is over "
 				                        << WALL_MAX_RATIO);
 			}
 		}

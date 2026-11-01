@@ -275,8 +275,8 @@ public:
 	void set_backdrop_color(const Color &p_value) { backdrop_color = p_value; }
 	Color get_backdrop_color() const { return backdrop_color; }
 
-	// Toggling drops every view and marks its chunk dirty, so the next upload rebuilds both
-	// textures of each chunk in draw order.
+	// Toggling drops every view and marks its chunk dirty, so the next upload rebuilds each
+	// chunk's texture in draw order.
 	void set_back_wall_enabled(bool p_value);
 	bool get_back_wall_enabled() const { return back_wall_enabled; }
 
