@@ -13,16 +13,16 @@ class TerrainGenerator;
 // tuning by eye, not a settled look.
 struct BackWallConfig {
 	bool enabled = true;
-	float darken = 0.38f;     // wall brightness against the biome's base material
+	float darken = 0.54f;     // wall brightness against the biome's base material
 	float desaturate = 0.5f;  // share of the way to grey
 	int edge_rough = 4;       // cells the wall's top edge wanders below the surface
-	float hollow_frequency = 0.012f;
-	float hollow_stretch = 3.0f;  // hollows are wide horizontally and squat vertically
-	float hollow_amount = 0.35f;  // share of wall cells that are hollow before the teeth
-	float hollow_darken = 0.3f;   // hollow brightness against the wall
-	int stalactite_length = 14;   // longest tooth hanging from a hollow's ceiling
-	int stalagmite_length = 6;    // longest tooth rising from its floor
-	int tooth_period = 8;         // cells between tooth peaks
+	float hollow_frequency = 0.008f;
+	float hollow_stretch = 4.0f;   // hollows are wide horizontally and squat vertically
+	float hollow_amount = 0.38f;   // share of wall cells that are hollow before the teeth
+	float hollow_darken = 0.3f;    // hollow brightness against the wall
+	int stalactite_length = 20;    // longest tooth hanging from a hollow's ceiling
+	int stalagmite_length = 8;     // longest tooth rising from its floor
+	int tooth_period = 7;          // cells between tooth peaks
 	float crack_frequency = 0.04f;
 	float crack_width = 0.04f;
 	float crack_darken = 0.75f;

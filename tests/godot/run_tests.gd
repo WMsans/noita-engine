@@ -1220,8 +1220,10 @@ func test_bench_light_gpu_gate_exemption() -> bool:
 	return true
 
 
+# Every demo except the acceptance scene keeps lighting off: they were tuned as unlit scenes, and
+# turning lighting on is a per-scene choice. world_demo is the scene tuned by eye for lighting.
 func test_existing_scenes_opt_out() -> bool:
-	var scenes: Array[String] = ["res://demo/world_demo.tscn", "res://demo/paint_demo.tscn", "res://demo/bodies_demo.tscn", "res://demo/creatures_demo.tscn", "res://bench/bench.tscn"]
+	var scenes: Array[String] = ["res://demo/paint_demo.tscn", "res://demo/bodies_demo.tscn", "res://demo/creatures_demo.tscn", "res://bench/bench.tscn"]
 	for path: String in scenes:
 		var scene: Node = load(path).instantiate()
 		var world: PixelWorld = scene.get_node_or_null("PixelWorld")
@@ -1230,6 +1232,13 @@ func test_existing_scenes_opt_out() -> bool:
 			scene.free()
 			return false
 		scene.free()
+	var tuned: Node = load("res://demo/world_demo.tscn").instantiate()
+	var tuned_world: PixelWorld = tuned.get_node_or_null("PixelWorld")
+	var lit: bool = tuned_world != null and tuned_world.lighting_enabled
+	tuned.free()
+	if not lit:
+		printerr("  res://demo/world_demo.tscn: PixelWorld lighting_enabled is off, expected on")
+		return false
 	return true
 
 
@@ -1242,12 +1251,12 @@ func test_back_wall_generator_defaults() -> bool:
 	var bad: PackedStringArray = []
 	if gen.back_wall_enabled != true:
 		bad.append("back_wall_enabled reads %s, expected true" % gen.back_wall_enabled)
-	if not is_equal_approx(gen.back_wall_darken, 0.38):
-		bad.append("back_wall_darken reads %s, expected 0.38" % gen.back_wall_darken)
-	if not is_equal_approx(gen.back_wall_hollow_amount, 0.35):
-		bad.append("back_wall_hollow_amount reads %s, expected 0.35" % gen.back_wall_hollow_amount)
-	if gen.back_wall_stalactite_length != 14:
-		bad.append("back_wall_stalactite_length reads %s, expected 14" % gen.back_wall_stalactite_length)
+	if not is_equal_approx(gen.back_wall_darken, 0.54):
+		bad.append("back_wall_darken reads %s, expected 0.54" % gen.back_wall_darken)
+	if not is_equal_approx(gen.back_wall_hollow_amount, 0.38):
+		bad.append("back_wall_hollow_amount reads %s, expected 0.38" % gen.back_wall_hollow_amount)
+	if gen.back_wall_stalactite_length != 20:
+		bad.append("back_wall_stalactite_length reads %s, expected 20" % gen.back_wall_stalactite_length)
 	if not bad.is_empty():
 		printerr("  " + ", ".join(bad))
 		return false

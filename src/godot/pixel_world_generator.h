@@ -48,16 +48,16 @@ class PixelWorldGenerator : public Resource {
 	float room_chance = 0.25f;
 	// BackWallConfig, field for field.
 	bool back_wall_enabled = true;
-	float back_wall_darken = 0.38f;
+	float back_wall_darken = 0.54f;
 	float back_wall_desaturate = 0.5f;
 	int back_wall_edge_rough = 4;
-	float back_wall_hollow_frequency = 0.012f;
-	float back_wall_hollow_stretch = 3.0f;
-	float back_wall_hollow_amount = 0.35f;
+	float back_wall_hollow_frequency = 0.008f;
+	float back_wall_hollow_stretch = 4.0f;
+	float back_wall_hollow_amount = 0.38f;
 	float back_wall_hollow_darken = 0.3f;
-	int back_wall_stalactite_length = 14;
-	int back_wall_stalagmite_length = 6;
-	int back_wall_tooth_period = 8;
+	int back_wall_stalactite_length = 20;
+	int back_wall_stalagmite_length = 8;
+	int back_wall_tooth_period = 7;
 	float back_wall_crack_frequency = 0.04f;
 	float back_wall_crack_width = 0.04f;
 	float back_wall_crack_darken = 0.75f;
