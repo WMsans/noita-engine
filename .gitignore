@@ -6,9 +6,7 @@
 .worktrees/
 
 # build artifacts
-bin/*.so
-bin/*.dylib
-bin/*.framework
+bin/
 build/
 .sconsign.dblite
 src/**/*.os

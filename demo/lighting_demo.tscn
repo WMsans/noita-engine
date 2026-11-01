@@ -14,8 +14,7 @@ load_radius = Vector2i(16, 8)
 ambient = 0.38
 light_exposure = 2.0
 light_surface_depth = 16
-bloom_threshold = 2.5
-bloom_strength = 0.35
+emission_reach = 200.0
 
 [node name="Camera2D" type="Camera2D" parent="." unique_id=464238181]
 
