@@ -1,0 +1,176 @@
+<h2>Back wall + lighting, v2: deep terrain light, short reach</h2>
+<p class="subtitle">Procedural stand-in at 1 cell = 1 pixel (240×135, scaled up). Not tuned, just the idea of the layers. Toggle to compare against today's look.</p>
+
+<div style="display:flex;gap:8px;margin:12px 0;flex-wrap:wrap">
+  <button class="mock-button" onclick="draw('today')">Today</button>
+  <button class="mock-button" onclick="draw('proposed')">Proposed</button>
+  <button class="mock-button" onclick="draw('unlit')">Proposed, albedo only (no light)</button>
+  <button class="mock-button" onclick="reseed()">New seed</button>
+</div>
+
+<canvas id="c" width="240" height="135" style="width:100%;max-width:960px;image-rendering:pixelated;border:1px solid #333;background:#000"></canvas>
+
+<div class="section" style="margin-top:16px">
+<h3>What's in the picture</h3>
+<ul>
+  <li><b>Open sky</b> above the dunes: no back wall, just dark air (your call).</li>
+  <li><b>Terrain</b> (foreground cells): the simulated world, unchanged.</li>
+  <li><b>Back wall</b>, shown only behind carved caves: a darker copy of the biome's rock, with crack detail.</li>
+  <li><b>Hollows</b> in the back wall: horizontal pockets with stalactite teeth hanging from their top edges and shorter stalagmites below, near-black inside, like the Noita references.</li>
+  <li><b>Light reach</b>: each light fades to nothing at a set distance (lava ~40 cells, torch ~30) instead of trailing off forever, so the pool lights its surroundings but not the ceiling.</li>
+  <li><b>Light into terrain</b>: ~40 cells deep with a smooth fade, instead of today's 10.</li>
+  <li><b>Floor</b>: a cool blue-grey ambient so unlit rock is dim but readable.</li>
+</ul>
+</div>
+
+<script>
+let seed = 7;
+let MODE_TODAY = false;
+function hash(x, y) {
+  let h = (x * 374761393 + y * 668265263 + seed * 2246822519) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967295;
+}
+function vnoise(x, y) {
+  const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi;
+  const s = t => t * t * (3 - 2 * t);
+  const a = hash(xi, yi), b = hash(xi + 1, yi), c = hash(xi, yi + 1), d = hash(xi + 1, yi + 1);
+  return a + (b - a) * s(xf) + (c - a) * s(yf) + (a - b - c + d) * s(xf) * s(yf);
+}
+function fbm(x, y, o = 4) {
+  let v = 0, amp = 0.5, f = 1;
+  for (let i = 0; i < o; i++) { v += amp * vnoise(x * f, y * f); f *= 2; amp *= 0.5; }
+  return v / (1 - Math.pow(0.5, o));
+}
+const W = 240, H = 135;
+let world;
+function build() {
+  const solid = new Uint8Array(W * H), sky = new Uint8Array(W * H), lava = new Uint8Array(W * H);
+  const hollow = new Uint8Array(W * H);
+  const surf = x => 14 + Math.sin(x * 0.045) * 5 + fbm(x * 0.05, 3.3) * 6;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const i = y * W + x;
+    if (y < surf(x)) { sky[i] = 1; continue; }
+    const depth = y - surf(x);
+    const n = fbm(x * 0.022, y * 0.04);
+    const ex = (x - 120) / 70, ey = (y - 78) / (24 + fbm(x * 0.05, 7.7) * 10);
+    const open = depth > 8 && (n > 0.56 || ex * ex + ey * ey < 1);
+    solid[i] = open ? 0 : 1;
+  }
+  // lava pool: find the lowest open floor cell in the middle third, flood fill open cells up to 5 cells above it
+  let best = null;
+  for (let x = 110; x < 140; x++) for (let y = H - 2; y > 30; y--) {
+    const i = y * W + x;
+    if (!solid[i] && solid[i + W]) { if (!best || y > best.y) best = { x, y }; break; }
+  }
+  if (best) {
+    const top = best.y - 4, stack = [best.y * W + best.x];
+    while (stack.length) {
+      const i = stack.pop(), x = i % W, y = Math.floor(i / W);
+      if (Math.abs(x - best.x) > 22 || y < top || y >= H || solid[i] || lava[i]) continue;
+      lava[i] = 1;
+      stack.push(i - 1, i + 1, i + W, i - W);
+    }
+  }
+  // back wall hollows: horizontal band noise, then stalactite / stalagmite teeth
+  const base = new Uint8Array(W * H);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++)
+    base[y * W + x] = fbm(x * 0.018 + 40, y * 0.075 + 40, 3) > 0.56 ? 1 : 0;
+  const toothLen = (x, up) => {
+    const period = 7 + Math.floor(hash(Math.floor(x / 9), up ? 1 : 2) * 5);
+    const tri = 1 - Math.abs(((x % period) / period) * 2 - 1);
+    const amp = (up ? 14 : 6) * Math.pow(vnoise(x * 0.12, up ? 50 : 60), 1.5);
+    return Math.floor(Math.pow(tri, 1.6) * amp);
+  };
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const i = y * W + x;
+    if (!base[i]) continue;
+    let h = 1;
+    const down = toothLen(x, true), upL = toothLen(x, false);
+    for (let d = 1; d <= down && h; d++) if (y - d >= 0 && !base[i - d * W]) h = 0;
+    for (let d = 1; d <= upL && h; d++) if (y + d < H && !base[i + d * W]) h = 0;
+    hollow[i] = h;
+  }
+  const torch = { x: 0, y: 0 };
+  // place torch in an open cave cell on the left side
+  torch.x = 80; for (let y = 78; y < H - 1; y++) if (solid[y * W + 80]) { torch.y = y - 6; break; }
+  world = { solid, sky, lava, hollow, torch };
+}
+
+function lights() {
+  const L = [];
+  for (let i = 0; i < W * H; i += 2) if (world.lava[i] && !world.lava[i - W]) L.push({ x: i % W, y: Math.floor(i / W) - 1, c: [1, 0.45, 0.1], e: 0.4, r: 55, reach: 42 });
+  L.push({ x: world.torch.x, y: world.torch.y, c: [1, 0.75, 0.45], e: 2.2, r: 34, reach: 30 });
+  return L;
+}
+function visible(x0, y0, x1, y1) {
+  const dx = x1 - x0, dy = y1 - y0, n = Math.max(Math.abs(dx), Math.abs(dy));
+  for (let s = 1; s < n; s++) {
+    const x = Math.round(x0 + dx * s / n), y = Math.round(y0 + dy * s / n);
+    if (world.solid[y * W + x] && !world.lava[y * W + x]) return false;
+  }
+  return true;
+}
+
+function albedo(x, y, mode) {
+  const i = y * W + x, w = world;
+  const g = hash(x, y) * 0.08;
+  if (w.lava[i]) return [1, 0.55 + g, 0.15];
+  if (w.sky[i]) return mode === 'today' ? [0.07, 0.05, 0.04] : [0.05, 0.06, 0.09];
+  if (w.solid[i]) {
+    const n = fbm(x * 0.15, y * 0.15, 2) * 0.12;
+    return [0.42 + n + g, 0.40 + n + g, 0.44 + n + g];
+  }
+  if (mode === 'today') return [0.07, 0.05, 0.04];
+  if (w.hollow[i]) return [0.035, 0.04, 0.055];
+  // back wall: darker, cooler copy of the rock, with ridged crack lines
+  const ridge = Math.abs(fbm(x * 0.06 + 11, y * 0.06 + 3, 3) - 0.5);
+  const crack = ridge < 0.025 ? -0.05 : 0;
+  const n = fbm(x * 0.1, y * 0.1, 2) * 0.04;
+  return [0.17 + n + crack, 0.18 + n + crack, 0.23 + n + crack];
+}
+
+function draw(mode) {
+  const ctx = document.getElementById('c').getContext('2d');
+  const img = ctx.createImageData(W, H);
+  const L = mode === 'unlit' ? [] : lights();
+  const amb = mode === 'today' ? [0.05, 0.05, 0.05] : [0.16, 0.18, 0.26];
+  const light = new Float32Array(W * H * 3);
+  MODE_TODAY = mode === 'today';
+  if (mode !== 'unlit') for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const i = y * W + x;
+    if (world.solid[i] && !world.lava[i]) continue;
+    for (const l of L) {
+      const d2 = (x - l.x) ** 2 + (y - l.y) ** 2;
+      if (!MODE_TODAY && d2 > l.reach * l.reach) continue;
+      if (!visible(l.x, l.y, x, y)) continue;
+      const f = MODE_TODAY ? l.e / (1 + d2 / (l.r * l.r) * 4) : l.e * Math.pow(Math.max(0, 1 - Math.sqrt(d2) / l.reach), 2);
+      for (let k = 0; k < 3; k++) light[i * 3 + k] += l.c[k] * f;
+    }
+  }
+  // surface skin: solid cells take neighbour light with falloff (today: 10-cell skin, proposed: same)
+  const passes = MODE_TODAY ? 6 : 40, fall = MODE_TODAY ? 0.72 : 0.955;
+  if (mode !== 'unlit') for (let pass = 0; pass < passes; pass++) for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) {
+    const i = y * W + x;
+    if (!world.solid[i] || world.lava[i]) continue;
+    for (const j of [i - 1, i + 1, i - W, i + W]) for (let k = 0; k < 3; k++)
+      light[i * 3 + k] = Math.max(light[i * 3 + k], Math.min(light[j * 3 + k], 1) * fall);
+  }
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const i = y * W + x, a = albedo(x, y, mode);
+    for (let k = 0; k < 3; k++) {
+      let v;
+      if (mode === 'unlit') v = a[k];
+      else if (world.lava[i]) v = a[k];
+      else v = a[k] * Math.min(amb[k] + light[i * 3 + k], 1);
+      if (mode === 'today' && !world.lava[i]) v += Math.min(light[i * 3 + k] * 0.25, 0.6);
+      img.data[i * 4 + k] = Math.min(255, v * 255);
+    }
+    img.data[i * 4 + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+}
+function reseed() { seed = (seed * 31 + 17) % 100000; build(); draw('proposed'); }
+build();
+draw('proposed');
+</script>
