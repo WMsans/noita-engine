@@ -1031,7 +1031,7 @@ func test_lighting_settings_defaults() -> bool:
 		"bloom_threshold": 1.0,
 		"bloom_strength": 0.6,
 		"emission_reach": 40.0,
-		"light_surface_depth": 10,
+		"light_surface_depth": 40,
 	}
 	var written := {
 		"lighting_enabled": false,
@@ -1138,12 +1138,11 @@ func test_pixel_light_free_order() -> bool:
 
 
 # The surface light depth: how many cells light spreads into solids. The setter clamps into
-# 0..32. Odd and even pass counts route the output pass differently, so flipping while running
-# must not error.
+# 0..96. Flipping it while running must not error.
 func test_light_surface_depth_clamped_and_live() -> bool:
 	var world: PixelWorld = PixelWorld.new()
 	var bad: PackedStringArray = []
-	for pair: Array in [[0, 0], [32, 32], [-3, 0], [99, 32], [10, 10]]:
+	for pair: Array in [[0, 0], [96, 96], [-3, 0], [200, 96], [40, 40]]:
 		world.light_surface_depth = pair[0]
 		if world.light_surface_depth != pair[1]:
 			bad.append("light_surface_depth = %d reads %d, expected %d" % [pair[0], world.light_surface_depth, pair[1]])

@@ -94,12 +94,12 @@ struct LightSpot {
 int spot_source_radius(float radius);  // clamp(lround(radius / 6), 1, 32)
 
 // Solid surfaces: the light pass spreads light this many cells into solids, at most.
-constexpr int LIGHT_SURFACE_MAX_DEPTH = 32;
+constexpr int LIGHT_SURFACE_MAX_DEPTH = 96;
 // ponytail: one fade for every solid, tuned by eye; per-material depth would replace it.
 // The light left after a full skin depth.
 constexpr float LIGHT_SURFACE_FADE = 0.05f;
-int light_surface_passes(int depth_cells, int scale);  // ceil(clamp(depth, 0, MAX) / scale)
-float light_surface_falloff(int passes);  // per-step factor: FADE after `passes` steps; 1 at 0
+int light_surface_radius(int depth_cells, int scale);  // ceil(clamp(depth, 0, MAX) / scale)
+float light_surface_falloff(int radius);  // per-texel factor: FADE after `radius` texels; 1 at 0
 
 // Adds colour·energy (packed) to rgb of every texel within the source radius of the spot,
 // saturating at 255; opacity untouched. The spot's position and source radius are in world cells

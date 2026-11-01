@@ -1,6 +1,5 @@
 #include "light_renderer.h"
 
-#include <cmath>
 #include <cstring>
 
 #include <godot_cpp/classes/rd_sampler_state.hpp>
@@ -78,7 +77,7 @@ void LightRenderJob::call(const Variant **p_arguments, int p_argcount, Variant &
 	if (free_only) {
 		renderer->free_all();
 	} else {
-		renderer->render(texels, reach, area, bloom_threshold, surface_passes, cascade_count);
+		renderer->render(texels, reach, area, bloom_threshold, surface_radius, cascade_count);
 	}
 }
 
@@ -211,8 +210,8 @@ bool LightRenderer::create_textures(int p_w, int p_h) {
 
 	const int final_parity = (LIGHT_CASCADES - 1) % 2;  // cascade 0 lands in this one
 
-	// The output lands wherever leaves the last surface pass writing light_texture.
-	for (int target = 0; target < 2; ++target) {
+	// The output lands in light_texture; the surface passes read and write both textures.
+	{
 		Ref<RDUniform> cascade_uniform;
 		cascade_uniform.instantiate();
 		cascade_uniform->set_uniform_type(RenderingDevice::UNIFORM_TYPE_IMAGE);
@@ -222,11 +221,11 @@ bool LightRenderer::create_textures(int p_w, int p_h) {
 		light_uniform.instantiate();
 		light_uniform->set_uniform_type(RenderingDevice::UNIFORM_TYPE_IMAGE);
 		light_uniform->set_binding(1);
-		light_uniform->add_id(target == 0 ? light_texture : surface_texture);
+		light_uniform->add_id(light_texture);
 		TypedArray<Ref<RDUniform>> uniforms;
 		uniforms.push_back(cascade_uniform);
 		uniforms.push_back(light_uniform);
-		output_sets[target] = rd->uniform_set_create(uniforms, output_shader, 0);
+		output_set = rd->uniform_set_create(uniforms, output_shader, 0);
 	}
 	{
 		Ref<RDUniform> light_uniform;
@@ -346,30 +345,32 @@ bool LightRenderer::create_input_texture(int p_w, int p_h) {
 		cascade_sets[level] = rd->uniform_set_create(uniforms, cascade_shader, 0);
 	}
 
-	// The surface passes read the input's opacity, so they are built with it.
-	for (int dir = 0; dir < 2; ++dir) {
+	// The surface passes read the input's opacity, so they are built with it. Both passes bind the
+	// light and the surface texture as images: the horizontal one reads light and writes surface,
+	// the vertical one reads surface and writes light.
+	{
 		Ref<RDUniform> input_uniform;
 		input_uniform.instantiate();
 		input_uniform->set_uniform_type(RenderingDevice::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE);
 		input_uniform->set_binding(0);
 		input_uniform->add_id(sampler);
 		input_uniform->add_id(input_texture);
-		Ref<RDUniform> src_uniform;
-		src_uniform.instantiate();
-		src_uniform->set_uniform_type(RenderingDevice::UNIFORM_TYPE_IMAGE);
-		src_uniform->set_binding(1);
-		src_uniform->add_id(dir == 0 ? light_texture : surface_texture);
-		Ref<RDUniform> dst_uniform;
-		dst_uniform.instantiate();
-		dst_uniform->set_uniform_type(RenderingDevice::UNIFORM_TYPE_IMAGE);
-		dst_uniform->set_binding(2);
-		dst_uniform->add_id(dir == 0 ? surface_texture : light_texture);
+		Ref<RDUniform> light_uniform;
+		light_uniform.instantiate();
+		light_uniform->set_uniform_type(RenderingDevice::UNIFORM_TYPE_IMAGE);
+		light_uniform->set_binding(1);
+		light_uniform->add_id(light_texture);
+		Ref<RDUniform> surface_uniform;
+		surface_uniform.instantiate();
+		surface_uniform->set_uniform_type(RenderingDevice::UNIFORM_TYPE_IMAGE);
+		surface_uniform->set_binding(2);
+		surface_uniform->add_id(surface_texture);
 		TypedArray<Ref<RDUniform>> uniforms;
 		uniforms.push_back(input_uniform);
-		uniforms.push_back(src_uniform);
-		uniforms.push_back(dst_uniform);
-		surface_sets[dir] = rd->uniform_set_create(uniforms, surface_shader, 0);
-		if (!surface_sets[dir].is_valid()) return false;
+		uniforms.push_back(light_uniform);
+		uniforms.push_back(surface_uniform);
+		surface_set = rd->uniform_set_create(uniforms, surface_shader, 0);
+		if (!surface_set.is_valid()) return false;
 	}
 	return true;
 }
@@ -453,17 +454,15 @@ void LightRenderer::destroy_textures() {
 		if (set.is_valid()) rd->free_rid(set);
 	for (RID &set : mip_sets)
 		if (set.is_valid()) rd->free_rid(set);
-	for (RID &set : output_sets)
-		if (set.is_valid()) rd->free_rid(set);
-	for (RID &set : surface_sets)
-		if (set.is_valid()) rd->free_rid(set);
+	if (output_set.is_valid()) rd->free_rid(output_set);
+	if (surface_set.is_valid()) rd->free_rid(surface_set);
 	if (bloom_down_set.is_valid()) rd->free_rid(bloom_down_set);
 	for (RID &set : bloom_blur_sets)
 		if (set.is_valid()) rd->free_rid(set);
 	for (RID &set : cascade_sets) set = RID();
 	for (RID &set : mip_sets) set = RID();
-	for (RID &set : output_sets) set = RID();
-	for (RID &set : surface_sets) set = RID();
+	output_set = RID();
+	surface_set = RID();
 	bloom_down_set = RID();
 	for (RID &set : bloom_blur_sets) set = RID();
 
@@ -485,7 +484,7 @@ void LightRenderer::destroy_textures() {
 }
 
 void LightRenderer::render(const PackedByteArray &p_texels, const PackedByteArray &p_reach,
-                           const LightArea &p_area, float p_bloom_threshold, int p_surface_passes,
+                           const LightArea &p_area, float p_bloom_threshold, int p_surface_radius,
                            int p_cascade_count) {
 	if (state_now.load(std::memory_order_acquire) == STATE_UNINITIALISED) {
 		// First frame: compile the shaders here, on the render thread, like every other call.
@@ -589,33 +588,35 @@ void LightRenderer::render(const PackedByteArray &p_texels, const PackedByteArra
 		rd->compute_list_add_barrier(list);
 	}
 
-	// Light output: average the four directions of cascade 0. With an odd number of surface
-	// passes it lands in surface_texture, so the last pass writes light_texture either way.
-	const int passes = MAX(p_surface_passes, 0);
+	// Light output: average the four directions of cascade 0 into light_texture.
 	{
 		OutputParams params{};
 		params.area_x = area_w;
 		params.area_y = area_h;
 		const PackedByteArray bytes = push_bytes(params);
 		rd->compute_list_bind_compute_pipeline(list, output_pipeline);
-		rd->compute_list_bind_uniform_set(list, output_sets[passes % 2], 0);
+		rd->compute_list_bind_uniform_set(list, output_set, 0);
 		rd->compute_list_set_push_constant(list, bytes, (uint32_t)bytes.size());
 		rd->compute_list_dispatch(list, groups(area_w), groups(area_h), 1);
 		rd->compute_list_add_barrier(list);
 	}
 
-	// Light into solid surfaces, one cell deeper per pass, before bloom reads the light.
-	if (passes > 0) {
+	// Light into solids: one horizontal then one vertical max pass, each reaching `radius` texels,
+	// so the light lands that deep in two dispatches instead of one texel per pass.
+	const int radius = MAX(p_surface_radius, 0);
+	if (radius > 0) {
 		SurfaceParams params{};
 		params.size_x = area_w;
 		params.size_y = area_h;
-		params.falloff = light_surface_falloff(passes);
-		params.falloff_diag = std::pow(params.falloff, 1.41421356f);
-		const PackedByteArray bytes = push_bytes(params);
+		params.radius = radius;
+		params.falloff = light_surface_falloff(radius);
 		rd->compute_list_bind_compute_pipeline(list, surface_pipeline);
-		for (int i = 0; i < passes; ++i) {
-			// (passes - i) passes remain: an even count means the light is in light_texture now.
-			rd->compute_list_bind_uniform_set(list, surface_sets[(passes - i) % 2], 0);
+		rd->compute_list_bind_uniform_set(list, surface_set, 0);
+		for (int pass = 0; pass < 2; ++pass) {
+			params.dir_x = pass == 0 ? 1 : 0;
+			params.dir_y = pass == 0 ? 0 : 1;
+			params.final_pass = pass;
+			const PackedByteArray bytes = push_bytes(params);
 			rd->compute_list_set_push_constant(list, bytes, (uint32_t)bytes.size());
 			rd->compute_list_dispatch(list, groups(area_w), groups(area_h), 1);
 			rd->compute_list_add_barrier(list);

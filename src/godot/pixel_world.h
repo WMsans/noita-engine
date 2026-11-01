@@ -71,7 +71,7 @@ class PixelWorld : public Node2D {
 	float light_exposure = 1.0f;
 	int light_margin = 240;
 	int light_resolution = 1;  // world cells per light texel, 1..4: 1 = full, 2 = half, 4 = quarter
-	int light_surface_depth = 10;  // cells of light into solid surfaces, 0..LIGHT_SURFACE_MAX_DEPTH; 0 = off
+	int light_surface_depth = 40;  // cells of light into solid surfaces, 0..LIGHT_SURFACE_MAX_DEPTH; 0 = off
 	Color backdrop_color = Color(0.07f, 0.05f, 0.04f);
 	Color fire_glow_color = Color(1.0f, 0.6f, 0.2f);
 	float fire_glow_energy = 1.5f;

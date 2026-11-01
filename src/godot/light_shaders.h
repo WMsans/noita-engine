@@ -72,7 +72,7 @@ layout(push_constant, std430) uniform Params {
 	int rays;
 	int has_upper;
 	float step_texels;  // texels per march step (2^(level-1)); level 0 unused
-	float reach_unit;   // world cells per reach code = LIGHT_REACH_UNIT / area.scale
+	float reach_unit;   // level-0 texels per reach code = LIGHT_REACH_UNIT / area.scale
 } params;
 
 layout(set = 0, binding = 0) uniform sampler2D input_tex;
@@ -206,10 +206,13 @@ void main() {
 }
 )GLSL";
 
-// One step of light into solid surfaces. A solid cell's own probe sits inside it, so every ray
-// it casts is blocked by the next cell and the cascades leave it dark. Each step lets a solid
-// texel take its brightest neighbour's light, dimmed by falloff; repeated, light reaches one cell
-// deeper per step. Open texels copy through untouched, so shadows in open air stay hard.
+// Light into solid surfaces, as a separable max filter: a solid cell's own probe sits inside it,
+// so every ray it casts is blocked by the next cell and the cascades leave it dark. A horizontal
+// pass keeps each row's brightest reachable light, faded by distance; a vertical pass then lets a
+// solid take the best of its own light and that column's, so light lands `radius` texels deep in
+// two dispatches instead of one cell per dispatch. Only open texels feed the spread, so light goes
+// into solids and never comes back out into air (shadows in open air stay hard), and open texels
+// are copied through untouched by the last pass.
 inline constexpr const char *LIGHT_SURFACE_COMPUTE = R"GLSL(
 #version 450
 
@@ -217,42 +220,61 @@ layout(local_size_x = 8, local_size_y = 8) in;
 
 layout(push_constant, std430) uniform Params {
 	ivec2 size;
-	float falloff;
-	float falloff_diag;
+	ivec2 dir;       // the axis this pass runs along: (1,0) horizontal, (0,1) vertical
+	int radius;      // texels of reach along that axis
+	float falloff;   // per-texel factor k: k^radius is LIGHT_SURFACE_FADE
+	int final_pass;  // 0 writes the row results into surface, 1 writes the light
+	int pad;
 } params;
 
 layout(set = 0, binding = 0) uniform sampler2D input_tex;
-layout(rgba16f, set = 0, binding = 1) uniform image2D src;
-layout(rgba16f, set = 0, binding = 2) uniform image2D dst;
+layout(rgba16f, set = 0, binding = 1) uniform image2D light;
+layout(rgba16f, set = 0, binding = 2) uniform image2D surface;
 
 // Input opacity at or above this is a solid surface; liquids and gases are lit by the rays.
 const float SOLID_OPACITY = 0.5;
+
+bool solid(ivec2 q) {
+	return texelFetch(input_tex, q, 0).a >= SOLID_OPACITY;
+}
+
+// What a spread can carry: an open texel's light capped at 1 (the overlay saturates there, so HDR
+// light next to lava would otherwise end the skin in a hard contour); a solid texel carries
+// nothing, so the spread cannot travel through or out of solids.
+vec3 spread_source(ivec2 q) {
+	return solid(q) ? vec3(0.0) : min(imageLoad(light, q).rgb, vec3(1.0));
+}
 
 void main() {
 	ivec2 p = ivec2(gl_GlobalInvocationID.xy);
 	if (p.x >= params.size.x || p.y >= params.size.y) {
 		return;
 	}
-	vec4 c = imageLoad(src, p);
-	if (texelFetch(input_tex, p, 0).a < SOLID_OPACITY) {
-		imageStore(dst, p, c);
+	ivec2 hi = params.size - 1;
+	if (params.final_pass == 0) {
+		vec3 acc = spread_source(p);
+		float w = 1.0;
+		for (int i = 1; i <= params.radius; ++i) {
+			w *= params.falloff;
+			acc = max(acc, spread_source(clamp(p + params.dir * i, ivec2(0), hi)) * w);
+			acc = max(acc, spread_source(clamp(p - params.dir * i, ivec2(0), hi)) * w);
+		}
+		imageStore(surface, p, vec4(acc, 1.0));
 		return;
 	}
-	ivec2 hi = params.size - 1;
-	vec3 edge = max(max(imageLoad(src, clamp(p + ivec2(1, 0), ivec2(0), hi)).rgb,
-	                    imageLoad(src, clamp(p - ivec2(1, 0), ivec2(0), hi)).rgb),
-	                max(imageLoad(src, clamp(p + ivec2(0, 1), ivec2(0), hi)).rgb,
-	                    imageLoad(src, clamp(p - ivec2(0, 1), ivec2(0), hi)).rgb));
-	vec3 diag = max(max(imageLoad(src, clamp(p + ivec2(1, 1), ivec2(0), hi)).rgb,
-	                    imageLoad(src, clamp(p + ivec2(-1, 1), ivec2(0), hi)).rgb),
-	                max(imageLoad(src, clamp(p + ivec2(1, -1), ivec2(0), hi)).rgb,
-	                    imageLoad(src, clamp(p + ivec2(-1, -1), ivec2(0), hi)).rgb));
-	// The spread source is capped at 1 (the overlay saturates there anyway): HDR light next to lava
-	// would otherwise still be bright at the last pass and end the skin in a hard contour.
-	edge = min(edge, vec3(1.0));
-	diag = min(diag, vec3(1.0));
-	vec3 lit = max(c.rgb, max(edge * params.falloff, diag * params.falloff_diag));
-	imageStore(dst, p, vec4(lit, 1.0));
+	// Open texels keep the light the cascades gave them.
+	if (!solid(p)) {
+		return;
+	}
+	vec4 own = imageLoad(light, p);
+	vec3 acc = vec3(0.0);
+	float w = 1.0;
+	for (int i = 1; i <= params.radius; ++i) {
+		w *= params.falloff;
+		acc = max(acc, imageLoad(surface, clamp(p + params.dir * i, ivec2(0), hi)).rgb * w);
+		acc = max(acc, imageLoad(surface, clamp(p - params.dir * i, ivec2(0), hi)).rgb * w);
+	}
+	imageStore(light, p, vec4(max(own.rgb, acc), own.a));
 }
 )GLSL";
 

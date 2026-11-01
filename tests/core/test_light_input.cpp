@@ -743,18 +743,17 @@ TEST_CASE("spot rects restore the base") {
 	}
 }
 
-TEST_CASE("surface light passes and falloff") {
-	CHECK(light_surface_passes(10, 1) == 10);
-	CHECK(light_surface_passes(10, 2) == 5);
-	CHECK(light_surface_passes(9, 2) == 5);  // rounds up: never a shallower skin
-	CHECK(light_surface_passes(10, 4) == 3);
-	CHECK(light_surface_passes(0, 1) == 0);
-	CHECK(light_surface_passes(-5, 1) == 0);
-	CHECK(light_surface_passes(1000, 1) == LIGHT_SURFACE_MAX_DEPTH);
-	CHECK(light_surface_passes(10, 0) == 0);
+TEST_CASE("light surface radius") {
+	CHECK(light_surface_radius(40, 1) == 40);
+	CHECK(light_surface_radius(40, 2) == 20);  // half resolution reaches as far in cells
+	CHECK(light_surface_radius(200, 1) == 96);
+	CHECK(light_surface_radius(0, 1) == 0);
+	CHECK(light_surface_radius(-3, 1) == 0);
+	CHECK(LIGHT_SURFACE_MAX_DEPTH == 96);
+	CHECK(light_surface_radius(10, 0) == 0);
 	CHECK(light_surface_falloff(0) == 1.0f);
-	CHECK(std::pow(light_surface_falloff(10), 10.0f) == doctest::Approx(LIGHT_SURFACE_FADE));
-	CHECK(light_surface_falloff(5) < light_surface_falloff(10));  // fewer steps fade faster
+	CHECK(std::pow(light_surface_falloff(40), 40.0f) == doctest::Approx(LIGHT_SURFACE_FADE));
+	CHECK(light_surface_falloff(20) < light_surface_falloff(40));  // fewer cells fade faster
 }
 
 TEST_CASE("pack reach") {
