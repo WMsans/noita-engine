@@ -3,7 +3,8 @@ extends Node2D
 # Paint demo: WASD pans the camera that PixelWorld follows (hold Shift for 4x), left mouse
 # paints the selected material in a radius-6 circle, right mouse paints air, 1-0 pick one of
 # the ten starter materials, H sleeps the main thread for the hitch check. Middle mouse
-# explodes, F sprays visual sparks and G sprays water particles at the mouse.
+# explodes, F sprays visual sparks and G sprays water particles at the mouse, C drops a crate
+# and B a boulder there.
 
 const MATERIALS: Array[StringName] = [&"rock", &"wood", &"sand", &"water", &"oil", &"lava", &"acid", &"fire", &"steam", &"smoke"]
 const BRUSH_RADIUS := 6
@@ -32,7 +33,7 @@ func _process(delta: float) -> void:
 	_pan(delta)
 	_paint()
 	var stats: Dictionary = world.get_stats()
-	info.text = "material: %s (%d)   brush: %d\n[1-0] pick  [LMB] paint  [RMB] air  [MMB] explode  [F] sparks  [G] water  [WASD] pan  [Shift] fast  [H] hitch\ntick %d   sim %.2f ms   upload %.2f ms\nchunks %d   active %d   simulated %d   cells %d\ngen pending %d   gen %.2f ms   stream %.2f ms   view missing %d\nparticles %d / visual %d   particle %.2f ms   dropped %d" % [
+	info.text = "material: %s (%d)   brush: %d\n[1-0] pick  [LMB] paint  [RMB] air  [MMB] explode  [F] sparks  [G] water  [C] crate  [B] boulder  [WASD] pan  [Shift] fast  [H] hitch\ntick %d   sim %.2f ms   upload %.2f ms\nchunks %d   active %d   simulated %d   cells %d\ngen pending %d   gen %.2f ms   stream %.2f ms   view missing %d\nparticles %d / visual %d   particle %.2f ms   dropped %d" % [
 		MATERIALS[selected], selected + 1, BRUSH_RADIUS,
 		stats.tick, stats.sim_ms, stats.upload_ms,
 		stats.chunks_loaded, stats.chunks_active, stats.chunks_simulated, stats.cells_updated,
@@ -86,9 +87,48 @@ func _unhandled_key_input(event: InputEvent) -> void:
 	if key.physical_keycode == KEY_G:
 		world.spawn_particles(&"water", get_global_mouse_position(), Vector2(0, -200), 40, 0.6)
 		return
+	if key.physical_keycode == KEY_C:
+		add_body(texture_box(12, 12, Color(0.55, 0.35, 0.18)), &"wood", get_global_mouse_position())
+		return
+	if key.physical_keycode == KEY_B:
+		add_body(texture_disc(14, Color(0.45, 0.45, 0.48)), &"rock", get_global_mouse_position(), PixelRigidBody.SHAPE_CIRCLE)
+		return
 	var index := _material_index(key.physical_keycode)
 	if index >= 0:
 		selected = index
+
+
+func add_body(texture: Texture2D, material: StringName, at: Vector2, shape: int = PixelRigidBody.SHAPE_HULL) -> PixelRigidBody:
+	var body := PixelRigidBody.new()
+	body.texture = texture
+	body.pixel_material = material
+	body.shape = shape
+	body.position = at
+	add_child(body)
+	return body
+
+
+func texture_box(w: int, h: int, colour: Color) -> ImageTexture:
+	var image := Image.create(w, h, false, Image.FORMAT_RGBA8)
+	image.fill(colour)
+	for x: int in w:
+		image.set_pixel(x, 0, colour.darkened(0.3))
+		image.set_pixel(x, h - 1, colour.darkened(0.3))
+	for y: int in h:
+		image.set_pixel(0, y, colour.darkened(0.3))
+		image.set_pixel(w - 1, y, colour.darkened(0.3))
+	return ImageTexture.create_from_image(image)
+
+
+func texture_disc(diameter: int, colour: Color) -> ImageTexture:
+	var image := Image.create(diameter, diameter, false, Image.FORMAT_RGBA8)
+	var r := diameter / 2.0
+	for y: int in diameter:
+		for x: int in diameter:
+			var dx := x + 0.5 - r
+			var dy := y + 0.5 - r
+			image.set_pixel(x, y, colour.lightened(0.15 * float(x < r)) if dx * dx + dy * dy <= r * r else Color(0, 0, 0, 0))
+	return ImageTexture.create_from_image(image)
 
 
 func _material_index(keycode: Key) -> int:
