@@ -89,7 +89,7 @@ in `docs/superpowers/specs/assets/2026-11-01-light-reach/`).
 - Produces:
   - `PixelWorld.emission_reach` (float, cells, default 40.0, range 1..1020) — rebuilds the light palette on set, like `fire_glow_energy`.
   - `PixelLight.radius` and `marker_light_radius` are now reaches (no new properties).
-  - `LightRenderJob` / `LightRenderer::render(texels, reach, area, bloom_threshold, surface_passes, cascade_count)` (Task 3 renames `surface_passes` to `surface_radius`)`; `reach` is a `PackedByteArray` of texel_w × texel_h bytes.
+  - `LightRenderJob` / `LightRenderer::render(texels, reach, area, bloom_threshold, surface_passes, cascade_count)` (Task 3 renames `surface_passes` to `surface_radius`); `reach` is a `PackedByteArray` of texel_w × texel_h bytes.
 
 - [ ] **Step 1: Write the failing Godot test** in `run_tests.gd`: add `"emission_reach": 40.0` to `test_lighting_settings_defaults` defaults and `"emission_reach": 24.0` to its written values.
 
