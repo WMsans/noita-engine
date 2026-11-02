@@ -424,6 +424,33 @@ TEST_CASE("crust only on crust materials next to open space") {
 	}
 }
 
+// A blob stamped from an edge cell next to the region border must stop at the border: past
+// it, the row-major index wraps onto the far side of the region (or off either end of the
+// vectors, corrupting the heap).
+TEST_CASE("crust blobs stay inside the region") {
+	MaterialTable table = terraintest::crust_table();
+	const MatId rock = table.id_of("rock");
+	const int n = 32, src_x = 1, src_y = n / 2;
+	const int reach = (int)std::ceil(6 * 1.3f + 2.0f);
+	GenRegion region;
+	region.size = n;
+	region.mat.assign((size_t)n * n, rock);
+	region.mat[(size_t)src_y * n + 0] = MAT_AIR;  // makes (1, 16) the only edge rock cell
+	region.flags.assign((size_t)n * n, 0);
+	CrustPass pass(table, test_seed(), 1.0f, 6);
+	pass.apply(region);
+
+	int crust_cells = 0;
+	for (int y = 0; y < n; ++y)
+		for (int x = 0; x < n; ++x) {
+			if (!(region.flags[(size_t)y * n + x] & FLAG_CRUST)) continue;
+			++crust_cells;
+			CHECK_MESSAGE(std::hypot((double)(x - src_x), (double)(y - src_y)) <= reach,
+			              "crust at (" << x << ", " << y << ") is out of the source's reach");
+		}
+	CHECK(crust_cells > 0);
+}
+
 TEST_CASE("no passes without a crust material") {
 	MaterialTable table = terraintest::terrain_table();  // no textures at all
 	std::unique_ptr<TerrainGenerator> gen =

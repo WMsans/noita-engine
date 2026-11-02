@@ -1,5 +1,6 @@
 #include "crust_pass.h"
 
+#include <algorithm>
 #include <cmath>
 
 #include "rng.h"
@@ -45,8 +46,12 @@ void CrustPass::apply(GenRegion& region) const {
 			if (hash_unit(hash5(seed_, 0, wx, wy, SALT_CRUST)) >= chance_) continue;
 			const float r =
 			    (float)radius_ * (0.7f + 0.6f * hash_unit(hash5(seed_, 1, wx, wy, SALT_CRUST)));
-			for (int ny = wy - reach; ny <= wy + reach; ++ny)
-				for (int nx = wx - reach; nx <= wx + reach; ++nx) {
+			// The blob is clipped at the region border: past it the index would wrap onto the far
+			// side or off the vectors. Cells margin() in still get every blob that reaches them.
+			const int ny0 = std::max(wy - reach, region.y0), ny1 = std::min(wy + reach, region.y0 + n - 1);
+			const int nx0 = std::max(wx - reach, region.x0), nx1 = std::min(wx + reach, region.x0 + n - 1);
+			for (int ny = ny0; ny <= ny1; ++ny)
+				for (int nx = nx0; nx <= nx1; ++nx) {
 					if (!crusted(nx, ny)) continue;
 					// The blob edge wobbles by +/-2 cells of value noise (GetNoise is [-1, 1]).
 					const double edge = std::hypot((double)(nx - wx), (double)(ny - wy)) +
