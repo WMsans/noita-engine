@@ -125,8 +125,12 @@ void PixelRigidBody::set_texture(const Ref<Texture2D> &p_value) {
 }
 
 // A definition that was refused may become valid once the shape or the mass is set.
-// Only applies at join: BodyProps has no size field, so a joined body is not resized.
+// Only applies at join: BodyProps has no size field, and rebuilding the shape of a joined body
+// would mean restamping its cells, so the joined body keeps the shape it joined with.
 void PixelRigidBody::set_body_size(const Vector2i &p_value) {
+	if (!B2_IS_NULL(body()) && body_size != p_value) {
+		UtilityFunctions::push_warning("PixelRigidBody.body_size only applies at join; the shape is fixed once joined");
+	}
 	body_size = p_value;
 	refused = false;
 }

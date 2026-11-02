@@ -7,16 +7,6 @@
 
 namespace {
 
-uint32_t class_bit(MatClass cls) {
-	switch (cls) {
-		case MatClass::Solid: return RAY_SOLID;
-		case MatClass::Powder: return RAY_POWDER;
-		case MatClass::Liquid: return RAY_LIQUID;
-		case MatClass::Gas: return RAY_GAS;
-		default: return 0;
-	}
-}
-
 // One axis of the DDA: the cell step, and the ray parameter t (0..1) of the next border.
 struct Axis {
 	int step = 0;

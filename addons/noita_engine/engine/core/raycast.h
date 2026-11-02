@@ -2,11 +2,23 @@
 #include <cstdint>
 
 #include "cell.h"
+#include "material.h"
 
 class WorldGrid;
 
 // Material classes a ray stops at. Unloaded cells always stop a ray with a non-zero mask.
 enum RayMask : uint32_t { RAY_SOLID = 1, RAY_POWDER = 2, RAY_LIQUID = 4, RAY_GAS = 8 };
+
+// The RAY_* bit of a material class; 0 for Empty.
+inline uint32_t class_bit(MatClass cls) {
+	switch (cls) {
+		case MatClass::Solid: return RAY_SOLID;
+		case MatClass::Powder: return RAY_POWDER;
+		case MatClass::Liquid: return RAY_LIQUID;
+		case MatClass::Gas: return RAY_GAS;
+		default: return 0;
+	}
+}
 
 struct RayHit {
 	bool hit = false;

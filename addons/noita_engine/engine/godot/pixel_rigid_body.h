@@ -57,6 +57,7 @@ public:
 	float get_restitution() const { return restitution; }
 
 	// The shape when there is no texture: an unstamped box, which is how a character body is made.
+	// Read at join; setting it on a joined body warns and keeps the shape it has.
 	void set_body_size(const Vector2i &p_value);
 	Vector2i get_body_size() const { return body_size; }
 	// 0 = from pixels; get_mass() is the effective Box2D mass.

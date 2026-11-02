@@ -886,11 +886,21 @@ func test_batched_query_rejects_bad_input() -> bool:
 	var displaced: PackedInt32Array = world.displace_cells(PackedVector2Array([Vector2(0, 0)]),
 	    PackedVector2Array([Vector2(4, 4)]), PixelWorld.RAY_SOLID, PackedVector2Array(),
 	    PackedInt32Array([1]), false, 0.5)
+	# So large that narrowing it would be undefined: rejected before the round.
+	var enormous: PackedByteArray = world.probe_boxes(PackedVector2Array([Vector2(0, 0)]),
+	    PackedVector2Array([Vector2(1e30, 4)]), PixelWorld.RAY_SOLID)
+	# The rounding boundary: 64.4 is 64 cells and accepted, 64.5 is 65 and not.
+	var rounded: PackedByteArray = world.probe_boxes(PackedVector2Array([Vector2(0, 0)]),
+	    PackedVector2Array([Vector2(64.4, 4)]), PixelWorld.RAY_SOLID)
+	var unrounded: PackedByteArray = world.probe_boxes(PackedVector2Array([Vector2(0, 0)]),
+	    PackedVector2Array([Vector2(64.5, 4)]), PixelWorld.RAY_SOLID)
 	world.free()
 	var ok: bool = swept.is_empty() and too_big.is_empty() and too_small.is_empty() \
-	    and scanned.is_empty() and displaced.is_empty()
+	    and scanned.is_empty() and displaced.is_empty() and enormous.is_empty() \
+	    and rounded.size() == 1 and unrounded.is_empty()
 	if not ok:
-		printerr("  bad input returned %s %s %s %s %s" % [swept, too_big, too_small, scanned, displaced])
+		printerr("  bad input returned %s %s %s %s %s %s %s %s" \
+		    % [swept, too_big, too_small, scanned, displaced, enormous, rounded, unrounded])
 	return ok
 
 

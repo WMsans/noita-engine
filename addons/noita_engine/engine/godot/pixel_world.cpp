@@ -72,14 +72,15 @@ bool read_query_sizes(const char *p_name, const PackedVector2Array &p_sizes, int
 			UtilityFunctions::push_error(vformat("PixelWorld.%s: size %d is not finite", p_name, i));
 			return false;
 		}
-		const int w = (int)std::lround(size.x), h = (int)std::lround(size.y);
-		if (w <= 0 || h <= 0 || w > MAX_QUERY_BOX || h > MAX_QUERY_BOX) {
+		// Compare before narrowing: lround of a finite float above LONG_MAX is undefined.
+		if (size.x < 0.5f || size.y < 0.5f || size.x >= (float)MAX_QUERY_BOX + 0.5f ||
+		    size.y >= (float)MAX_QUERY_BOX + 0.5f) {
 			UtilityFunctions::push_error(
 			    vformat("PixelWorld.%s: size %s is outside 1..%d cells", p_name, size, MAX_QUERY_BOX));
 			return false;
 		}
-		r_w[(size_t)i] = w;
-		r_h[(size_t)i] = h;
+		r_w[(size_t)i] = (int)std::lround(size.x);
+		r_h[(size_t)i] = (int)std::lround(size.y);
 	}
 	return true;
 }

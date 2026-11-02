@@ -23,17 +23,6 @@ struct Cells {
 	    : x0(first_cell(x - w * 0.5f)), y0(first_cell(y - h * 0.5f)), x1(last_cell(x + w * 0.5f)),
 	      y1(last_cell(y + h * 0.5f)) {}
 };
-
-uint32_t class_bit(MatClass cls) {
-	switch (cls) {
-		case MatClass::Solid: return RAY_SOLID;
-		case MatClass::Powder: return RAY_POWDER;
-		case MatClass::Liquid: return RAY_LIQUID;
-		case MatClass::Gas: return RAY_GAS;
-		default: return 0;
-	}
-}
-
 }  // namespace
 
 bool cell_blocks(const WorldGrid& grid, int x, int y, uint32_t mask) {

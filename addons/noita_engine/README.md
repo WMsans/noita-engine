@@ -4,6 +4,9 @@ Pixel-world simulation: a native library (`PixelWorld`, `PixelMaterial`,
 `PixelReaction`, `PixelRigidBody`, ...) plus the GDScript `PixelCharacter` and
 `CharacterSystem`, demos and example data.
 
+A `PixelRigidBody` takes its shape at join: `body_size` on a joined body only emits a
+warning, because resizing it would mean restamping its cells.
+
 ## Use it in your project
 
 Copy this folder to `res://addons/noita_engine/` (its `.gdextension` file refers to
@@ -62,10 +65,10 @@ from shipped game code, as it is example data that may move or change.
 
 ## Global class names
 
-The addon registers the global `class_name`s `PixelCharacter`, `CharacterSystem` and
-`CarController`. Godot class names are global across a project, so if your project
-already uses any of them the addon's script will not load. Rename yours (or the
-addon's, plus its references) before copying the folder in.
+The addon registers the global `class_name`s `PixelCharacter`, `CharacterSystem`,
+`CarController` and `TexturesUtil`. Godot class names are global across a project, so if
+your project already uses any of them the addon's script will not load. Rename yours (or
+the addon's, plus its references) before copying the folder in.
 
 The native classes above are registered by the GDExtension under their `Pixel*`
 names and cannot be renamed.

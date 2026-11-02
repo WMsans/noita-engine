@@ -168,6 +168,8 @@ if ! thirdparty_ok "$THIRDPARTY"; then
 		git -C "$1" checkout "$3" || { echo "build.sh: git checkout $3 in $1 failed" >&2; return 1; }
 	}
 	mkdir -p "$THIRDPARTY"
+	# The addon lives under res://, so a cloned tree needs this or the editor imports it.
+	: > "$THIRDPARTY/.gdignore"
 	fetch_repo "$THIRDPARTY/godot-cpp" https://github.com/godotengine/godot-cpp.git "$GODOT_CPP_SHA"
 	git -C "$THIRDPARTY/godot-cpp" submodule update --init --recursive
 	fetch_repo "$THIRDPARTY/box2d" https://github.com/erincatto/box2d.git "$BOX2D_SHA"
@@ -294,8 +296,9 @@ if [ "$RUN_VERIFY" -eq 1 ]; then
 	# cannot free the emitter itself). Godot names the object only as <Object#id>, so that
 	# entry cannot name PixelWorld; it is pinned to the exact message and the count below
 	# requires it exactly once, so a free-during-emission bug in any other test or class
-	# still fails the run.
-	allowed_errors='^ERROR: PixelWorld: unknown material .|^ERROR: PixelWorld\.(sweep_boxes|probe_boxes|scan_boxes|displace_cells): .*|^ERROR: PixelWorld\.explode: radius 1000 is over the limit of 256$|^ERROR: PixelWorld\.spawn(_visual)?_particles: position is not finite$|^ERROR: Object '\''<Object#[0-9]+>'\'' was freed or unreferenced while a signal is being emitted from it\.|^ERROR: PixelRigidBody .*: (has no texture|texture has no opaque pixels|pixel .* colour .* is not a material in the palette|pixel_material .* is not a material)$|^ERROR: PixelMaterial .*: (crust )?texture must be 16x16'
+	# still fails the run. The batched-query entries are the exact five messages that test
+	# provokes, one per bad input, so a real query error elsewhere still fails the run.
+	allowed_errors='^ERROR: PixelWorld: unknown material .|^ERROR: PixelWorld\.sweep_boxes: 1 starts but 2 ends$|^ERROR: PixelWorld\.probe_boxes: size (\(0\.0, 4\.0\)|\(64\.5, 4\.0\)|\(65\.0, 4\.0\)|\([0-9]{20,}\.0, 4\.0\)) is outside 1\.\.64 cells$|^ERROR: PixelWorld\.scan_boxes: 2 boxes but 1 sizes$|^ERROR: PixelWorld\.displace_cells: 1 boxes, 0 velocities, 1 max_cells$|^ERROR: PixelWorld\.explode: radius 1000 is over the limit of 256$|^ERROR: PixelWorld\.spawn(_visual)?_particles: position is not finite$|^ERROR: Object '\''<Object#[0-9]+>'\'' was freed or unreferenced while a signal is being emitted from it\.|^ERROR: PixelRigidBody .*: (has no texture|texture has no opaque pixels|pixel .* colour .* is not a material in the palette|pixel_material .* is not a material)$|^ERROR: PixelMaterial .*: (crust )?texture must be 16x16'
 	unexpected="$(printf '%s\n' "$out" | grep -E '(^| )ERROR' | grep -vE "$allowed_errors" || true)"
 	if [ -n "$unexpected" ]; then
 		printf '%s\n' "$unexpected" >&2

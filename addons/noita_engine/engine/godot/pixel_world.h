@@ -325,7 +325,6 @@ public:
 	PhysicsWorld *get_physics() const { return physics.get(); }
 	int register_body(PixelRigidBody *p_body);  // handle, or -1 after reporting why
 	void unregister_body(int p_handle);  // the Box2D body and its node slot
-	StringName material_name(MatId p_id) const { return StringName(table.name_of(p_id).c_str()); }
 
 	bool set_cell(const Vector2i &p_pos, const StringName &p_material);
 	StringName get_material_at(const Vector2i &p_pos) const;
