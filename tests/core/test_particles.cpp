@@ -210,7 +210,7 @@ int non_air_in_disc(WorldGrid& grid, int cx, int cy, int r) {
 	int n = 0;
 	for (int dy = -r; dy <= r; ++dy)
 		for (int dx = -r; dx <= r; ++dx)
-			if (dx * dx + dy * dy <= r * r && simtest::mat_at(grid, cx + dx, cy + dy) != MAT_AIR) ++n;
+			if (in_blast(dx, dy, r) && simtest::mat_at(grid, cx + dx, cy + dy) != MAT_AIR) ++n;
 	return n;
 }
 
@@ -235,6 +235,136 @@ TEST_CASE("explode clears the radius and conserves the count") {
 	CHECK(r.removed == r.thrown + r.vanished);
 	CHECK(r.thrown == (int)pool.material().size());
 	CHECK(r.thrown > 0);
+}
+
+TEST_CASE("explode's crater has no one-cell spikes at the compass points") {
+	MaterialTable table = simtest::movement_table();
+	WorldGrid grid(table, 1);
+	arena(grid, table);
+	simtest::paint(grid, {{0, 0, ARENA, ARENA, table.id_of("rock")}});
+	ParticlePool pool(grid, DEFAULT_PARTICLE_CAPACITY);
+
+	explode(grid, pool, 60, 60, 10, 8.0f, 1);
+
+	// A lone cell at (60, 50) with rock either side reads as a spike on the rim.
+	for (const auto& [dx, dy] : {std::pair{0, -10}, {0, 10}, {-10, 0}, {10, 0}}) {
+		CHECK(simtest::mat_at(grid, 60 + dx, 60 + dy) == MAT_AIR);
+		CHECK(simtest::mat_at(grid, 60 + dx + (dx == 0), 60 + dy + (dy == 0)) == MAT_AIR);
+		CHECK(simtest::mat_at(grid, 60 + dx - (dx == 0), 60 + dy - (dy == 0)) == MAT_AIR);
+	}
+}
+
+TEST_CASE("explode sprays sparks coloured by the cells that vanished") {
+	MaterialTable table = simtest::movement_table();
+	const MatId rock = table.id_of("rock");
+	WorldGrid grid(table, 1);
+	arena(grid, table);
+	simtest::paint(grid, {{0, 0, ARENA, ARENA, rock}});
+	ParticlePool pool(grid, DEFAULT_PARTICLE_CAPACITY);
+	const auto colour = [&](const Cell& c) { return c.mat == rock ? 0x11223344u : 0xFFFFFFFFu; };
+
+	ExplodeStyle style;
+	style.spark_color = colour;
+	const ExplodeResult r = explode(grid, pool, 60, 60, 10, 8.0f, 1, style);
+
+	CHECK(r.vanished == r.removed);  // rock never flies as material
+	CHECK(r.sparks > 0);
+	CHECK(r.sparks <= r.vanished);
+	REQUIRE(r.sparks == (int)pool.visual().size());
+	for (const VisualParticle& p : pool.visual()) CHECK(p.rgba == 0x11223344u);
+}
+
+TEST_CASE("a ragged explode cuts lobes into the disc but stays inside it") {
+	MaterialTable table = simtest::movement_table();
+	const MatId rock = table.id_of("rock");
+	WorldGrid grid(table, 1);
+	arena(grid, table);
+	simtest::paint(grid, {{0, 0, ARENA, ARENA, rock}});
+	ParticlePool pool(grid, DEFAULT_PARTICLE_CAPACITY);
+	ExplodeStyle style;
+	style.rim_noise = 0.35f;
+
+	const ExplodeResult r = explode(grid, pool, 60, 60, 16, 8.0f, 7, style);
+
+	int disc = 0, spared = 0, outside = 0;
+	for (int dy = -18; dy <= 18; ++dy)
+		for (int dx = -18; dx <= 18; ++dx) {
+			const bool air = simtest::mat_at(grid, 60 + dx, 60 + dy) == MAT_AIR;
+			if (in_blast(dx, dy, 16)) {
+				++disc;
+				spared += !air;
+			} else {
+				outside += air;
+			}
+		}
+	CHECK(outside == 0);
+	CHECK(spared > disc / 10);  // lobes bite a visible share out of the disc
+	CHECK(r.removed == disc - spared);
+	for (int dy = -5; dy <= 5; ++dy)  // the core always goes
+		for (int dx = -5; dx <= 5; ++dx) CHECK(simtest::mat_at(grid, 60 + dx, 60 + dy) != rock);
+}
+
+TEST_CASE("a ragged explode differs from blast to blast") {
+	MaterialTable table = simtest::movement_table();
+	const MatId rock = table.id_of("rock");
+	ExplodeStyle style;
+	style.rim_noise = 0.35f;
+	std::vector<MatId> shapes[2];
+	for (uint32_t salt : {1u, 2u}) {
+		WorldGrid grid(table, 1);
+		arena(grid, table);
+		simtest::paint(grid, {{0, 0, ARENA, ARENA, rock}});
+		ParticlePool pool(grid, DEFAULT_PARTICLE_CAPACITY);
+		explode(grid, pool, 60, 60, 16, 8.0f, salt, style);
+		for (int dy = -16; dy <= 16; ++dy)
+			for (int dx = -16; dx <= 16; ++dx) shapes[salt - 1].push_back(simtest::mat_at(grid, 60 + dx, 60 + dy));
+	}
+	CHECK(shapes[0] != shapes[1]);
+}
+
+TEST_CASE("explode leaves its gases in the crater and flashes") {
+	MaterialTable table = simtest::movement_table();
+	const MatId rock = table.id_of("rock"), steam = table.id_of("steam");
+	WorldGrid grid(table, 1);
+	arena(grid, table);
+	simtest::paint(grid, {{0, 0, ARENA, ARENA, rock}});
+	ParticlePool pool(grid, DEFAULT_PARTICLE_CAPACITY);
+	ExplodeStyle style;
+	style.fire = steam;
+	style.fire_chance = 0.1f;
+	style.flash_rgba = 0xFFAA33FFu;
+	style.flash_sparks = 40;
+
+	const ExplodeResult r = explode(grid, pool, 60, 60, 10, 8.0f, 1, style);
+
+	int gas = 0;
+	for (int dy = -12; dy <= 12; ++dy)
+		for (int dx = -12; dx <= 12; ++dx)
+			if (simtest::mat_at(grid, 60 + dx, 60 + dy) == steam) {
+				++gas;
+				CHECK(in_blast(dx, dy, 10));
+			}
+	CHECK(gas > 0);
+	CHECK(gas < r.removed / 4);
+	REQUIRE(pool.visual().size() == 40);
+	for (const VisualParticle& p : pool.visual()) {
+		CHECK(p.rgba == 0xFFAA33FFu);
+		CHECK_FALSE(p.collides);  // the flash draws over the terrain
+	}
+}
+
+TEST_CASE("explode without a spark colour sprays no sparks") {
+	MaterialTable table = simtest::movement_table();
+	WorldGrid grid(table, 1);
+	arena(grid, table);
+	simtest::paint(grid, {{0, 0, ARENA, ARENA, table.id_of("rock")}});
+	ParticlePool pool(grid, DEFAULT_PARTICLE_CAPACITY);
+
+	const ExplodeResult r = explode(grid, pool, 60, 60, 10, 8.0f, 1);
+
+	CHECK(r.removed > 0);
+	CHECK(r.sparks == 0);
+	CHECK(pool.visual().empty());
 }
 
 TEST_CASE("explode with a full pool still conserves") {

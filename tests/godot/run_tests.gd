@@ -301,7 +301,8 @@ func test_explode_and_raycast() -> bool:
 	var centre: StringName = world.get_material_at(Vector2i(0, 0))
 	var hit: Dictionary = world.raycast(Vector2(-30.5, 0.5), Vector2(0.5, 0.5), PixelWorld.RAY_POWDER)
 	world.free()
-	if removed <= 0 or centre != &"air":
+	# A blast may leave fire or smoke behind; it must not leave sand.
+	if removed <= 0 or not centre in [&"air", &"fire", &"smoke"]:
 		printerr("  explode removed %d, centre is '%s'" % [removed, centre])
 		return false
 	if hit.is_empty() or hit.position != Vector2i(-20, 0) or hit.normal != Vector2i(-1, 0) or hit.material != &"sand":

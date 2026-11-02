@@ -13,6 +13,12 @@ namespace {
 constexpr uint32_t SALT_THROW = 101;
 constexpr uint32_t SALT_SPEED = 102;
 constexpr uint32_t SALT_ANGLE = 103;
+constexpr uint32_t SALT_SPARK = 104;
+constexpr uint32_t SALT_LIFE = 105;
+constexpr uint32_t SALT_RAG = 106;
+constexpr uint32_t SALT_GAS = 107;
+constexpr uint32_t SALT_LOBE = 110;   // 110..112
+constexpr uint32_t SALT_FLASH = 120;  // 120.., three per flash spark
 
 float finite(float v) { return std::isfinite(v) ? v : 0.0f; }
 float clamp_speed(float v) { return std::clamp(finite(v), -MAX_PARTICLE_SPEED, MAX_PARTICLE_SPEED); }
@@ -136,11 +142,28 @@ void ParticlePool::step() {
 }
 
 ExplodeResult explode(WorldGrid& grid, ParticlePool& pool, int cx, int cy, int radius,
-                      float power, uint32_t salt) {
+                      float power, uint32_t salt, const ExplodeStyle& style) {
 	ExplodeResult result;
 	if (radius <= 0) return result;
 	const MaterialTable& mt = grid.materials();
 	const uint32_t seed = grid.seed();
+	const SparkColor& spark_color = style.spark_color;
+	const float noise = std::clamp(finite(style.rim_noise), 0.0f, 1.0f);
+
+	// Three sine lobes at random phases give the rim a different bulge per blast, and a per-cell
+	// dice frays the last cell or two. The centre always goes.
+	float phase[3];
+	for (int k = 0; k < 3; ++k) phase[k] = hash_unit(hash5(seed, salt, cx, cy, SALT_LOBE + k)) * 6.2831853f;
+	auto inside = [&](int dx, int dy) {
+		if (!in_blast(dx, dy, radius)) return false;
+		if (noise <= 0 || (dx == 0 && dy == 0)) return true;
+		const float a = std::atan2((float)dy, (float)dx);
+		const float lobe = 0.5f + 0.25f * std::sin(3 * a + phase[0]) + 0.15f * std::sin(5 * a + phase[1]) +
+		                   0.1f * std::sin(9 * a + phase[2]);  // 0..1
+		const float edge = radius * (1.0f - noise * lobe) + 0.5f -
+		                   1.5f * hash_unit(hash5(seed, salt, cx + dx, cy + dy, SALT_RAG));
+		return (float)(dx * dx + dy * dy) <= edge * edge;
+	};
 
 	// Clear everything first and throw afterwards, so a full pool's write-back lands in the
 	// crater rather than being cleared again.
@@ -148,25 +171,29 @@ ExplodeResult explode(WorldGrid& grid, ParticlePool& pool, int cx, int cy, int r
 		int dx, dy;
 		Cell cell;
 	};
-	std::vector<Loose> loose;
+	std::vector<Loose> loose, gone;  // gone: vanished cells, kept only to spark
+	std::vector<std::pair<int, int>> cleared;
 	for (int dy = -radius; dy <= radius; ++dy)
 		for (int dx = -radius; dx <= radius; ++dx) {
-			if (dx * dx + dy * dy > radius * radius) continue;
+			if (!inside(dx, dy)) continue;
 			const int x = cx + dx, y = cy + dy;
 			Cell c{};
 			if (!grid.get(x, y, c) || c.mat == MAT_AIR || (c.flags & FLAG_BODY)) continue;
 			++result.removed;
 			grid.set(x, y, MAT_AIR);
+			cleared.push_back({dx, dy});
 			const MatClass cls = mt.get(c.mat).cls;
 			const bool is_loose = cls == MatClass::Powder || cls == MatClass::Liquid;
 			if (is_loose && hash_unit(hash5(seed, salt, x, y, SALT_THROW)) < EXPLODE_THROW_CHANCE) {
 				loose.push_back({dx, dy, c});
 			} else {
 				++result.vanished;
+				if (spark_color) gone.push_back({dx, dy, c});
 			}
 		}
 
-	for (const Loose& l : loose) {
+	// Outward from the centre, full `power` there and none at the rim, plus a lift.
+	auto velocity = [&](const Loose& l, float& vx, float& vy) {
 		const int x = cx + l.dx, y = cy + l.dy;
 		const float d = std::sqrt((float)(l.dx * l.dx + l.dy * l.dy));
 		float ux, uy;
@@ -178,13 +205,67 @@ ExplodeResult explode(WorldGrid& grid, ParticlePool& pool, int cx, int cy, int r
 			ux = std::cos(angle);
 			uy = std::sin(angle);
 		}
-		const float speed =
-		    power * (1.0f - d / radius) * (0.5f + 0.5f * hash_unit(hash5(seed, salt, x, y, SALT_SPEED)));
-		if (pool.emit(x + 0.5f, y + 0.5f, ux * speed, uy * speed - 0.25f * power, l.cell)) {
+		const float speed = power * std::max(0.0f, 1.0f - d / radius) *
+		                    (0.5f + 0.5f * hash_unit(hash5(seed, salt, x, y, SALT_SPEED)));
+		vx = ux * speed;
+		vy = uy * speed - 0.25f * power;
+	};
+
+	for (const Loose& l : loose) {
+		float vx, vy;
+		velocity(l, vx, vy);
+		if (pool.emit(cx + l.dx + 0.5f, cy + l.dy + 0.5f, vx, vy, l.cell)) {
 			++result.thrown;
 		} else {
 			++result.vanished;
+			if (spark_color) gone.push_back(l);
 		}
+	}
+
+	// Gases go in after the throw: both are passable, so the ejecta still fly through them.
+	for (const auto& [dx, dy] : cleared) {
+		const int x = cx + dx, y = cy + dy;
+		const float roll = hash_unit(hash5(seed, salt, x, y, SALT_GAS));
+		MatId gas = NO_MAT;
+		if (style.fire != NO_MAT && roll < style.fire_chance) {
+			gas = style.fire;
+		} else if (style.smoke != NO_MAT && roll < style.fire_chance + style.smoke_chance) {
+			gas = style.smoke;
+		}
+		Cell c{};
+		if (gas != NO_MAT && grid.get(x, y, c) && c.mat == MAT_AIR) grid.set(x, y, gas);
+	}
+
+	for (const Loose& g : gone) {
+		const int x = cx + g.dx, y = cy + g.dy;
+		if (hash_unit(hash5(seed, salt, x, y, SALT_SPARK)) >= EXPLODE_SPARK_CHANCE) continue;
+		VisualParticle p;
+		p.x = x + 0.5f;
+		p.y = y + 0.5f;
+		velocity(g, p.vx, p.vy);
+		p.rgba = spark_color(g.cell);
+		p.lifetime = p.life =
+		    (uint16_t)(EXPLODE_SPARK_LIFE + hash_unit(hash5(seed, salt, x, y, SALT_LIFE)) * EXPLODE_SPARK_LIFE);
+		if (!pool.emit_visual(p)) return result;  // full: every later spark would fail too
+		++result.sparks;
+	}
+
+	// The flash: fast, light and over the terrain, out to about twice the radius.
+	for (int i = 0; i < style.flash_sparks; ++i) {
+		const float angle = hash_unit(hash5(seed, salt, cx, cy, SALT_FLASH + 3 * (uint32_t)i)) * 6.2831853f;
+		const float speed = power * (0.3f + 0.7f * hash_unit(hash5(seed, salt, cx, cy, SALT_FLASH + 3 * (uint32_t)i + 1)));
+		VisualParticle p;
+		p.x = cx + 0.5f;
+		p.y = cy + 0.5f;
+		p.vx = std::cos(angle) * speed;
+		p.vy = std::sin(angle) * speed;
+		p.gravity_scale = 0.3f;
+		p.collides = false;
+		p.rgba = style.flash_rgba;
+		p.lifetime = p.life = (uint16_t)(EXPLODE_FLASH_LIFE + hash_unit(hash5(seed, salt, cx, cy, SALT_FLASH + 3 * (uint32_t)i + 2)) *
+		                                                   EXPLODE_FLASH_LIFE);
+		if (!pool.emit_visual(p)) break;
+		++result.sparks;
 	}
 	return result;
 }

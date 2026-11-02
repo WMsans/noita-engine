@@ -48,6 +48,13 @@ constexpr float TICKS_PER_SECOND = 60.0f;
 constexpr int FLOATS_PER_PARTICLE = 12;
 // Four chunks: past this a blast is a script bug, and the disc loop would stall the frame.
 constexpr int MAX_EXPLODE_RADIUS = 256;
+// How a PixelWorld blast looks: a lobed, ragged crater, some fire and smoke left in it, and an
+// orange flash of sparks over the terrain.
+constexpr float EXPLODE_RIM_NOISE = 0.25f;
+constexpr float EXPLODE_FIRE_CHANCE = 0.06f;
+constexpr float EXPLODE_SMOKE_CHANCE = 0.12f;
+constexpr uint32_t EXPLODE_FLASH_COLOR = 0xFFB03CFF;
+constexpr int EXPLODE_FLASH_PER_RADIUS = 6;
 
 } // namespace
 
@@ -400,6 +407,10 @@ void PixelWorld::create_particle_view() {
 	particle_canvas_item = rs->canvas_item_create();
 	rs->canvas_item_set_parent(particle_canvas_item, get_canvas_item());
 	rs->canvas_item_set_z_index(particle_canvas_item, 1);  // above chunk views made later
+	// The canvas item culls on its MultiMesh's bounds, which the canvas caches when the multimesh
+	// is added and never refreshes on multimesh_set_buffer: particles away from where the pool
+	// stood then were culled. Particles live anywhere, so the rect covers everything.
+	rs->canvas_item_set_custom_rect(particle_canvas_item, true, Rect2(-1e9f, -1e9f, 2e9f, 2e9f));
 	rs->canvas_item_add_multimesh(particle_canvas_item, particle_multimesh);
 	particle_buffer.resize((int64_t)max_particles * FLOATS_PER_PARTICLE);
 }
@@ -1170,8 +1181,17 @@ int PixelWorld::explode(const Vector2i &p_position, int p_radius, float p_power)
 		UtilityFunctions::push_error(vformat("PixelWorld.explode: radius %d is over the limit of %d", p_radius, MAX_EXPLODE_RADIUS));
 		return 0;
 	}
+	ExplodeStyle style;
+	style.spark_color = [this](const Cell &p_cell) { return cell_color(p_cell).to_rgba32(); };
+	style.rim_noise = EXPLODE_RIM_NOISE;
+	style.fire = table.id_of("fire");  // NO_MAT in a set without them: then nothing is left
+	style.fire_chance = EXPLODE_FIRE_CHANCE;
+	style.smoke = table.id_of("smoke");
+	style.smoke_chance = EXPLODE_SMOKE_CHANCE;
+	style.flash_rgba = EXPLODE_FLASH_COLOR;
+	style.flash_sparks = std::max(0, p_radius) * EXPLODE_FLASH_PER_RADIUS;
 	return ::explode(*grid, *particles, p_position.x, p_position.y, p_radius, p_power / TICKS_PER_SECOND,
-	                 sim->tick_count())
+	                 sim->tick_count(), style)
 	    .removed;
 }
 
