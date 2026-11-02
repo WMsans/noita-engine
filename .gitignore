@@ -13,6 +13,3 @@ tests/**/*.os
 tests/**/*.o
 *.o.tmp
 .superpowers/
-addons/noita_engine/bin/
-addons/noita_engine/build/
-addons/noita_engine/thirdparty/
