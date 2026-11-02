@@ -15,13 +15,24 @@ class ParticlePool;
 
 enum class BodyShape { Hull, Circle, Boxes };
 
+// How a body meets the world: what the shape filter does and whether it gets cell proxies.
+struct BodyProps {
+	float mass = 0;  // 0 = from pixels
+	float gravity_scale = 1, linear_damping = 0, angular_damping = 0;
+	bool lock_rotation = false, terrain_collision = true, can_sleep = true;
+	bool cell_proxies = false;
+	int proxy_step_height = 0;
+};
+
 // A body's pixels and spawn pose. Box2D works in cells (see PhysicsWorld), y down.
 struct BodyDef {
 	int w = 0, h = 0;
 	std::vector<MatId> pixels;  // w*h row-major, NO_MAT = transparent
+	int box_w = 0, box_h = 0;   // used when pixels is empty: an unstamped box
 	BodyShape shape = BodyShape::Hull;
 	float friction = 0.6f, restitution = 0.1f;
 	float x = 0, y = 0, angle = 0;  // the image centre's world position, radians
+	BodyProps props;
 };
 
 // An upright creature: a w x h box that collides with bodies and creatures in Box2D and with
@@ -67,7 +78,10 @@ struct WheelParams {
 constexpr uint64_t CAT_TERRAIN = 1;
 constexpr uint64_t CAT_BODY = 2;
 constexpr uint64_t CAT_CREATURE = 4;
-constexpr uint64_t CAT_PROXY = 8;  // a creature's grid proxies; meet only their own creature (group)
+constexpr uint64_t CAT_PROXY = 8;  // a body's grid proxies; meet only their own body (group)
+// A body the terrain shapes ignore (terrain's mask is CAT_BODY only), so it can be driven by the
+// grid instead. It still meets other bodies and creatures.
+constexpr uint64_t CAT_BODY_NO_TERRAIN = 16;
 constexpr float TERRAIN_FRICTION = 0.8f;
 // A chunk's shapes rebuild at most this often (ticks): terrain collision may lag the pixels by
 // up to 50 ms, and a chunk under a sand faucet costs a quarter of the builds.
@@ -91,6 +105,15 @@ public:
 	int add_creature(const CreatureDef& def);
 	bool is_creature(int handle) const;
 	const CreatureState& creature_state(int handle) const;
+	// Live: applies to the running b2Body and rebuilds the filter and proxies as needed.
+	void set_props(int handle, const BodyProps& props);
+	const BodyProps& props(int handle) const;
+	// The pose recorded at the start of the last step.
+	b2Vec2 previous_position(int handle) const;
+	// Places the proxies of every enabled body with props.cell_proxies; safe every tick.
+	void place_cell_proxies();
+	// BoxSide bits of the touching contacts, the body's own proxies excluded.
+	int contact_sides(int handle) const;
 	void set_particle_pool(ParticlePool* pool) { particles = pool; }  // knock-out and splashes
 	void remove_body(int handle);      // also destroys its joints
 	// Moves a body, waking what was resting on it at its old place.
@@ -125,8 +148,9 @@ private:
 	struct Body {
 		b2BodyId id;
 		int w, h;
-		std::vector<MatId> pixels;
+		std::vector<MatId> pixels;  // empty for an unstamped box body
 		int opaque = 0;
+		BodyProps props;
 		bool left = false;  // reported by take_left_world and not enabled since
 		// Creatures only.
 		bool creature = false;
@@ -161,6 +185,8 @@ private:
 
 	void apply_buoyancy(Body& body);
 	void creature_pass(Body& body);
+	void create_proxies(Body& body, int handle);
+	void destroy_proxies(Body& body);
 	void place_proxies(Body& body);
 	void set_proxy(Body& body, int side, bool on, float x, float y);
 

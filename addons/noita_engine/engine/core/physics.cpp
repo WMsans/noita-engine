@@ -6,7 +6,9 @@
 
 #include "creature.h"
 #include "generator.h"
+#include "grid_query.h"
 #include "material.h"
+#include "raycast.h"
 #include "world_grid.h"
 
 namespace {
@@ -20,13 +22,23 @@ double ms_since(Clock::time_point start) {
 void* handle_data(int handle) { return reinterpret_cast<void*>((intptr_t)handle + 1); }
 int handle_of(b2BodyId id) { return (int)(reinterpret_cast<intptr_t>(b2Body_GetUserData(id)) - 1); }
 
-b2ShapeDef body_shape_def(const BodyDef& def, float density) {
+b2Filter body_filter(const BodyProps& props, bool creature, int handle) {
+	b2Filter filter = {};
+	// The terrain shapes mask CAT_BODY only, so dropping it is how a body opts out of them.
+	filter.categoryBits = creature ? CAT_CREATURE : (props.terrain_collision ? CAT_BODY : CAT_BODY_NO_TERRAIN);
+	filter.maskBits = CAT_BODY | CAT_BODY_NO_TERRAIN | CAT_CREATURE;
+	if (!creature && props.terrain_collision) filter.maskBits |= CAT_TERRAIN;
+	// Its own proxies share the positive group and meet nothing else (their mask is 0).
+	filter.groupIndex = creature || props.cell_proxies ? handle + 1 : 0;
+	return filter;
+}
+
+b2ShapeDef body_shape_def(const BodyDef& def, int handle, float density) {
 	b2ShapeDef sd = b2DefaultShapeDef();
 	sd.density = density;
 	sd.material.friction = def.friction;
 	sd.material.restitution = def.restitution;
-	sd.filter.categoryBits = CAT_BODY;
-	sd.filter.maskBits = CAT_TERRAIN | CAT_BODY | CAT_CREATURE;
+	sd.filter = body_filter(def.props, false, handle);
 	sd.enableHitEvents = true;
 	return sd;
 }
@@ -62,21 +74,29 @@ PhysicsWorld::PhysicsWorld(WorldGrid& grid, float gravity) : grid(grid), gravity
 PhysicsWorld::~PhysicsWorld() { b2DestroyWorld(world); }
 
 int PhysicsWorld::add_body(const BodyDef& def) {
-	if (def.w <= 0 || def.h <= 0 || def.pixels.size() != (size_t)def.w * def.h) return -1;
+	const bool box = def.pixels.empty();  // an unstamped box: Box2D only, its mass from the props
+	if (box) {
+		if (def.box_w <= 0 || def.box_h <= 0 || def.props.mass <= 0) return -1;
+	} else if (def.w <= 0 || def.h <= 0 || def.pixels.size() != (size_t)def.w * def.h) {
+		return -1;
+	}
+	const int w = box ? def.box_w : def.w, h = box ? def.box_h : def.h;
 	const MaterialTable& mt = grid.materials();
-	Mask mask((size_t)def.w * def.h, 0);
+	Mask mask((size_t)w * h, 0);
 	float total_density = 0;
-	int minx = def.w, miny = def.h, maxx = -1, maxy = -1;
-	for (int y = 0; y < def.h; ++y)
-		for (int x = 0; x < def.w; ++x) {
-			const MatId m = def.pixels[(size_t)y * def.w + x];
-			if (m == NO_MAT) continue;
-			mask[(size_t)y * def.w + x] = 1;
-			total_density += mt.get(m).density;
-			minx = std::min(minx, x), maxx = std::max(maxx, x);
-			miny = std::min(miny, y), maxy = std::max(maxy, y);
-		}
-	if (maxx < 0) return -1;
+	int minx = w, miny = h, maxx = -1, maxy = -1;
+	if (!box) {
+		for (int y = 0; y < h; ++y)
+			for (int x = 0; x < w; ++x) {
+				const MatId m = def.pixels[(size_t)y * w + x];
+				if (m == NO_MAT) continue;
+				mask[(size_t)y * w + x] = 1;
+				total_density += mt.get(m).density;
+				minx = std::min(minx, x), maxx = std::max(maxx, x);
+				miny = std::min(miny, y), maxy = std::max(maxy, y);
+			}
+		if (maxx < 0) return -1;
+	}
 
 	const int handle = (int)bodies.size();
 	b2BodyDef bd = b2DefaultBodyDef();
@@ -85,47 +105,63 @@ int PhysicsWorld::add_body(const BodyDef& def) {
 	bd.rotation = b2MakeRot(def.angle);
 	bd.userData = handle_data(handle);
 	bd.allowFastRotation = def.shape == BodyShape::Circle;
+	bd.gravityScale = def.props.gravity_scale;
+	bd.linearDamping = def.props.linear_damping;
+	bd.angularDamping = def.props.angular_damping;
+	bd.motionLocks.angularZ = def.props.lock_rotation;
+	bd.enableSleep = def.props.can_sleep;
 	const b2BodyId id = b2CreateBody(world, &bd);
-	const b2Vec2 half = {def.w * 0.5f, def.h * 0.5f};
+	const b2Vec2 half = {w * 0.5f, h * 0.5f};
 
-	switch (def.shape) {
-		case BodyShape::Hull: {
-			Loop hull = pixel_hull(mask, def.w, def.h);
-			const b2ShapeDef sd = body_shape_def(def, total_density / polygon_area(hull));
-			for (b2Vec2& p : hull) p = b2Sub(p, half);
-			const b2Hull h = b2ComputeHull(hull.data(), (int)hull.size());
-			const b2Polygon poly = b2MakePolygon(&h, 0.0f);
-			b2CreatePolygonShape(id, &sd, &poly);
-			break;
-		}
-		case BodyShape::Circle: {
-			b2Circle circle;
-			circle.radius = std::max(maxx + 1 - minx, maxy + 1 - miny) * 0.5f;
-			circle.center = b2Sub({(minx + maxx + 1) * 0.5f, (miny + maxy + 1) * 0.5f}, half);
-			const b2ShapeDef sd = body_shape_def(def, total_density / (B2_PI * circle.radius * circle.radius));
-			b2CreateCircleShape(id, &sd, &circle);
-			break;
-		}
-		case BodyShape::Boxes:
-			for (const PixelRect& r : pixel_boxes(mask, def.w, def.h)) {
-				float density = 0;
-				for (int y = r.y; y < r.y + r.h; ++y)
-					for (int x = r.x; x < r.x + r.w; ++x) density += mt.get(def.pixels[(size_t)y * def.w + x]).density;
-				const b2ShapeDef sd = body_shape_def(def, density / (float)(r.w * r.h));
-				const b2Polygon box = b2MakeOffsetBox(r.w * 0.5f, r.h * 0.5f,
-				                                      b2Sub({r.x + r.w * 0.5f, r.y + r.h * 0.5f}, half), b2Rot_identity);
-				b2CreatePolygonShape(id, &sd, &box);
+	if (box) {
+		const b2ShapeDef sd = body_shape_def(def, handle, def.props.mass / ((float)w * (float)h));
+		const b2Polygon square = b2MakeBox(half.x, half.y);
+		b2CreatePolygonShape(id, &sd, &square);
+	} else {
+		switch (def.shape) {
+			case BodyShape::Hull: {
+				Loop hull = pixel_hull(mask, w, h);
+				const b2ShapeDef sd = body_shape_def(def, handle, total_density / polygon_area(hull));
+				for (b2Vec2& p : hull) p = b2Sub(p, half);
+				const b2Hull hh = b2ComputeHull(hull.data(), (int)hull.size());
+				const b2Polygon poly = b2MakePolygon(&hh, 0.0f);
+				b2CreatePolygonShape(id, &sd, &poly);
+				break;
 			}
-			break;
+			case BodyShape::Circle: {
+				b2Circle circle;
+				circle.radius = std::max(maxx + 1 - minx, maxy + 1 - miny) * 0.5f;
+				circle.center = b2Sub({(minx + maxx + 1) * 0.5f, (miny + maxy + 1) * 0.5f}, half);
+				const b2ShapeDef sd =
+				    body_shape_def(def, handle, total_density / (B2_PI * circle.radius * circle.radius));
+				b2CreateCircleShape(id, &sd, &circle);
+				break;
+			}
+			case BodyShape::Boxes:
+				for (const PixelRect& r : pixel_boxes(mask, w, h)) {
+					float density = 0;
+					for (int y = r.y; y < r.y + r.h; ++y)
+						for (int x = r.x; x < r.x + r.w; ++x)
+							density += mt.get(def.pixels[(size_t)y * w + x]).density;
+					const b2ShapeDef sd = body_shape_def(def, handle, density / (float)(r.w * r.h));
+					const b2Polygon box_shape =
+					    b2MakeOffsetBox(r.w * 0.5f, r.h * 0.5f,
+					                    b2Sub({r.x + r.w * 0.5f, r.y + r.h * 0.5f}, half), b2Rot_identity);
+					b2CreatePolygonShape(id, &sd, &box_shape);
+				}
+				break;
+		}
 	}
 
 	auto body = std::make_unique<Body>();
 	body->id = id;
-	body->w = def.w;
-	body->h = def.h;
+	body->w = w;
+	body->h = h;
 	body->pixels = def.pixels;
 	body->opaque = (int)std::count(mask.begin(), mask.end(), 1);
+	body->props = def.props;
 	bodies.push_back(std::move(body));
+	if (def.props.cell_proxies) create_proxies(*bodies.back(), handle);
 	++stats_.bodies;
 	return handle;
 }
@@ -134,8 +170,7 @@ void PhysicsWorld::remove_body(int handle) {
 	if (!has_body(handle)) return;
 	wake_footprint(*bodies[(size_t)handle]);
 	const bool creature = bodies[(size_t)handle]->creature;
-	if (creature)
-		for (b2BodyId proxy : bodies[(size_t)handle]->proxy) b2DestroyBody(proxy);
+	destroy_proxies(*bodies[(size_t)handle]);
 	b2DestroyBody(bodies[(size_t)handle]->id);
 	bodies[(size_t)handle].reset();
 	--(creature ? stats_.creatures : stats_.bodies);
@@ -144,52 +179,40 @@ void PhysicsWorld::remove_body(int handle) {
 int PhysicsWorld::add_creature(const CreatureDef& def) {
 	if (def.w <= 0 || def.h <= 0) return -1;
 	const int handle = (int)bodies.size();
+	// The creature is a grid-driven body: the same props and the same proxies as a box body,
+	// just with the horizontal handles as its shape.
+	BodyProps props;
+	props.terrain_collision = false;
+	props.cell_proxies = true;
+	props.proxy_step_height = def.step_height;
+	props.lock_rotation = true;
+	props.can_sleep = false;
+	props.gravity_scale = def.gravity_scale;
 	b2BodyDef bd = b2DefaultBodyDef();
 	bd.type = b2_dynamicBody;
 	bd.position = {def.x, def.y};
 	bd.userData = handle_data(handle);
-	bd.motionLocks.angularZ = true;  // creatures stay upright
-	bd.enableSleep = false;          // always driven by game code
-	bd.gravityScale = def.gravity_scale;
+	bd.motionLocks.angularZ = props.lock_rotation;  // creatures stay upright
+	bd.enableSleep = props.can_sleep;               // always driven by game code
+	bd.gravityScale = props.gravity_scale;
 	const b2BodyId id = b2CreateBody(world, &bd);
 	b2ShapeDef sd = b2DefaultShapeDef();
 	sd.density = def.mass / (float)(def.w * def.h);
 	sd.material.friction = def.friction;
-	sd.filter.categoryBits = CAT_CREATURE;
-	sd.filter.maskBits = CAT_BODY | CAT_CREATURE;  // terrain is the grid pass's job
-	sd.filter.groupIndex = handle + 1;              // ...except its own proxies (below)
+	sd.filter = body_filter(props, true, handle);
 	sd.enableHitEvents = true;
 	const b2Polygon box = b2MakeBox(def.w * 0.5f, def.h * 0.5f);
 	b2CreatePolygonShape(id, &sd, &box);
 
 	auto body = std::make_unique<Body>();
-	// The proxies: kinematic segments parked by place_proxies. Same positive group as their
-	// creature (always collide), mask 0 (nothing else), no friction (game code owns movement
-	// feel). Walls cover the box above step height, so a ledge it can step up stays a ledge.
-	const float half_w = def.w * 0.5f, half_h = def.h * 0.5f;
-	const float wall_bottom = std::max(-half_h + 1.0f, half_h - (float)def.step_height);
-	const b2Segment segments[4] = {{{-half_w, 0}, {half_w, 0}}, {{-half_w, 0}, {half_w, 0}},
-	                               {{0, -half_h}, {0, wall_bottom}}, {{0, -half_h}, {0, wall_bottom}}};
-	for (int side = 0; side < 4; ++side) {
-		b2BodyDef pd = b2DefaultBodyDef();
-		pd.type = b2_kinematicBody;
-		pd.position = {def.x, def.y};
-		pd.isEnabled = false;
-		body->proxy[side] = b2CreateBody(world, &pd);
-		b2ShapeDef ps = b2DefaultShapeDef();
-		ps.material.friction = 0.0f;
-		ps.filter.categoryBits = CAT_PROXY;
-		ps.filter.maskBits = 0;
-		ps.filter.groupIndex = handle + 1;
-		b2CreateSegmentShape(body->proxy[side], &ps, &segments[side]);
-	}
-
 	body->id = id;
 	body->w = def.w;
 	body->h = def.h;
 	body->creature = true;
 	body->step_height = def.step_height;
+	body->props = props;
 	bodies.push_back(std::move(body));
+	create_proxies(*bodies.back(), handle);
 	++stats_.creatures;
 	return handle;
 }
@@ -199,6 +222,77 @@ bool PhysicsWorld::is_creature(int handle) const { return has_body(handle) && bo
 const CreatureState& PhysicsWorld::creature_state(int handle) const {
 	static const CreatureState none;
 	return is_creature(handle) ? bodies[(size_t)handle]->state : none;
+}
+
+void PhysicsWorld::set_props(int handle, const BodyProps& props) {
+	if (!has_body(handle)) return;
+	Body& body = *bodies[(size_t)handle];
+	const BodyProps old = body.props;
+	body.props = props;
+	b2Body_SetGravityScale(body.id, props.gravity_scale);
+	b2Body_SetLinearDamping(body.id, props.linear_damping);
+	b2Body_SetAngularDamping(body.id, props.angular_damping);
+	b2MotionLocks locks = b2Body_GetMotionLocks(body.id);
+	locks.angularZ = props.lock_rotation;
+	b2Body_SetMotionLocks(body.id, locks);
+	b2Body_EnableSleeping(body.id, props.can_sleep);
+	if (props.mass > 0) {  // keep the shape's inertia to mass ratio
+		b2MassData md = b2Body_GetMassData(body.id);
+		if (md.mass > 0) {
+			md.rotationalInertia *= props.mass / md.mass;
+			md.mass = props.mass;
+			b2Body_SetMassData(body.id, md);
+		}
+	} else if (old.mass > 0) {
+		b2Body_UpdateMassFromShapes(body.id);  // mass 0 means "from pixels" again
+	}
+	const b2Filter filter = body_filter(props, body.creature, handle);
+	b2ShapeId shapes[8];
+	const int n = b2Body_GetShapes(body.id, shapes, 8);
+	for (int i = 0; i < n; ++i) b2Shape_SetFilter(shapes[i], filter);
+	if (props.cell_proxies != old.cell_proxies || props.proxy_step_height != old.proxy_step_height) {
+		destroy_proxies(body);
+		if (props.cell_proxies) create_proxies(body, handle);
+	}
+	b2Body_SetAwake(body.id, true);
+}
+
+const BodyProps& PhysicsWorld::props(int handle) const {
+	static const BodyProps none;
+	return has_body(handle) ? bodies[(size_t)handle]->props : none;
+}
+
+b2Vec2 PhysicsWorld::previous_position(int handle) const {
+	if (!has_body(handle)) return {0.0f, 0.0f};
+	return {bodies[(size_t)handle]->prev_x, bodies[(size_t)handle]->prev_y};
+}
+
+void PhysicsWorld::place_cell_proxies() {
+	for (const std::unique_ptr<Body>& body : bodies)
+		if (body && body->props.cell_proxies && b2Body_IsEnabled(body->id)) place_proxies(*body);
+}
+
+int PhysicsWorld::contact_sides(int handle) const {
+	if (!has_body(handle)) return 0;
+	const Body& body = *bodies[(size_t)handle];
+	b2ContactData contacts[16];
+	const int n = b2Body_GetContactData(body.id, contacts, 16);
+	int sides = 0;
+	for (int i = 0; i < n; ++i) {
+		if (contacts[i].manifold.pointCount == 0) continue;
+		const bool is_a = B2_ID_EQUALS(b2Shape_GetBody(contacts[i].shapeIdA), body.id);
+		const b2BodyId other = b2Shape_GetBody(is_a ? contacts[i].shapeIdB : contacts[i].shapeIdA);
+		bool own_proxy = false;
+		for (b2BodyId proxy : body.proxy) own_proxy = own_proxy || B2_ID_EQUALS(proxy, other);
+		if (own_proxy) continue;
+		const b2Vec2 normal = contacts[i].manifold.normal;  // from shape A to shape B
+		const float nx = is_a ? normal.x : -normal.x, ny = is_a ? normal.y : -normal.y;
+		if (ny > 0.7f) sides |= SIDE_FLOOR;
+		if (ny < -0.7f) sides |= SIDE_CEILING;
+		if (nx > 0.7f) sides |= SIDE_RIGHT;
+		if (nx < -0.7f) sides |= SIDE_LEFT;
+	}
+	return sides;
 }
 
 void PhysicsWorld::teleport(int handle, float x, float y, float angle) {
@@ -347,7 +441,7 @@ void PhysicsWorld::step() {
 		if (want != b2Body_IsEnabled(body->id)) {
 			if (want) b2Body_Enable(body->id);
 			else b2Body_Disable(body->id);
-			if (body->creature && !want)
+			if (!want && b2Body_IsValid(body->proxy[0]))
 				for (int side = 0; side < 4; ++side) set_proxy(*body, side, false, 0, 0);
 		}
 		if (want) {
@@ -364,11 +458,9 @@ void PhysicsWorld::step() {
 	for (const std::unique_ptr<Body>& body : bodies) {
 		if (!body || !b2Body_IsEnabled(body->id)) continue;
 		if (body->submerged > 0) apply_buoyancy(*body);
-		if (body->creature) {
-			const b2Vec2 p = b2Body_GetPosition(body->id);
-			body->prev_x = p.x;
-			body->prev_y = p.y;
-		}
+		const b2Vec2 p = b2Body_GetPosition(body->id);
+		body->prev_x = p.x;
+		body->prev_y = p.y;
 	}
 
 	b2World_Step(world, PHYSICS_DT, PHYSICS_SUBSTEPS);
@@ -433,21 +525,23 @@ void PhysicsWorld::creature_pass(Body& body) {
 
 // The nearest blocking cells around the box: the highest floor within FOOT_REACH under any
 // column, the lowest ceiling and the nearest wall column within PROXY_REACH (walls only count
-// above step height). The floor proxy sits at the real floor, not at the creature's feet, so
+// above proxy_step_height). The floor proxy sits at the real floor, not at the box's feet, so
 // walking down a slope or off a ledge still falls to the ground.
 void PhysicsWorld::place_proxies(Body& body) {
 	constexpr int FOOT_REACH = 4, PROXY_REACH = 2;
+	constexpr uint32_t BLOCKS = RAY_SOLID | RAY_POWDER;
+	if (!b2Body_IsValid(body.proxy[0])) return;
 	const b2Vec2 p = b2Body_GetPosition(body.id);
 	const int x0 = (int)std::floor(p.x - body.w * 0.5f + 1e-4f), x1 = (int)std::floor(p.x + body.w * 0.5f - 1e-4f);
 	const int y0 = (int)std::floor(p.y - body.h * 0.5f + 1e-4f), y1 = (int)std::floor(p.y + body.h * 0.5f - 1e-4f);
 	auto row_blocked = [&](int y) {
 		for (int x = x0; x <= x1; ++x)
-			if (creature_blocks(grid, x, y)) return true;
+			if (cell_blocks(grid, x, y, BLOCKS)) return true;
 		return false;
 	};
 	auto column_blocked = [&](int x) {
-		for (int y = y0; y <= y1 - body.step_height; ++y)
-			if (creature_blocks(grid, x, y)) return true;
+		for (int y = y0; y <= y1 - body.props.proxy_step_height; ++y)
+			if (cell_blocks(grid, x, y, BLOCKS)) return true;
 		return false;
 	};
 	int floor_row = y1 + 1;
@@ -472,6 +566,37 @@ void PhysicsWorld::set_proxy(Body& body, int side, bool on, float x, float y) {
 	body.proxy_on[side] = on;
 }
 
+// The proxies: kinematic segments parked by place_proxies. Same positive group as their body
+// (always collide), mask 0 (nothing else), no friction (game code owns movement feel).
+void PhysicsWorld::create_proxies(Body& body, int handle) {
+	const float half_w = body.w * 0.5f, half_h = body.h * 0.5f;
+	const float wall_bottom = std::max(-half_h + 1.0f, half_h - (float)body.props.proxy_step_height);
+	const b2Segment segments[4] = {{{-half_w, 0}, {half_w, 0}}, {{-half_w, 0}, {half_w, 0}},
+	                               {{0, -half_h}, {0, wall_bottom}}, {{0, -half_h}, {0, wall_bottom}}};
+	const b2Vec2 p = b2Body_GetPosition(body.id);
+	for (int side = 0; side < 4; ++side) {
+		b2BodyDef pd = b2DefaultBodyDef();
+		pd.type = b2_kinematicBody;
+		pd.position = p;
+		pd.isEnabled = false;
+		body.proxy[side] = b2CreateBody(world, &pd);
+		b2ShapeDef ps = b2DefaultShapeDef();
+		ps.material.friction = 0.0f;
+		ps.filter.categoryBits = CAT_PROXY;
+		ps.filter.maskBits = 0;
+		ps.filter.groupIndex = handle + 1;
+		b2CreateSegmentShape(body.proxy[side], &ps, &segments[side]);
+	}
+}
+
+void PhysicsWorld::destroy_proxies(Body& body) {
+	for (b2BodyId& proxy : body.proxy) {
+		if (b2Body_IsValid(proxy)) b2DestroyBody(proxy);
+		proxy = b2_nullBodyId;
+	}
+	for (bool& on : body.proxy_on) on = false;
+}
+
 // Archimedes on the liquid the last stamp covered, at its centroid (so a tipped crate rights
 // itself), plus drag in proportion to how much of the body is under.
 void PhysicsWorld::apply_buoyancy(Body& body) {
@@ -491,7 +616,8 @@ void PhysicsWorld::stamp() {
 	const Clock::time_point start = Clock::now();
 	const MaterialTable& mt = grid.materials();
 	for (const std::unique_ptr<Body>& owned : bodies) {
-		if (!owned || owned->creature || !b2Body_IsEnabled(owned->id)) continue;  // creatures aren't pixels
+		if (!owned || owned->creature || owned->pixels.empty() || !b2Body_IsEnabled(owned->id))
+			continue;  // creatures and unstamped boxes aren't pixels
 		Body& body = *owned;
 		body.submerged = 0;
 		body.liquid_density = body.sum_x = body.sum_y = 0;
@@ -600,7 +726,7 @@ std::vector<int> PhysicsWorld::take_left_world() {
 bool PhysicsWorld::raycast(float x0, float y0, float x1, float y1, int& handle, float& hx, float& hy,
                            float& nx, float& ny) const {
 	b2QueryFilter filter = b2DefaultQueryFilter();
-	filter.maskBits = CAT_BODY | CAT_CREATURE;
+	filter.maskBits = CAT_BODY | CAT_BODY_NO_TERRAIN | CAT_CREATURE;
 	const b2RayResult r = b2World_CastRayClosest(world, {x0, y0}, {x1 - x0, y1 - y0}, filter);
 	if (!r.hit) return false;
 	handle = handle_of(b2Shape_GetBody(r.shapeId));
