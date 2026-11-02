@@ -356,8 +356,8 @@ public:
 	// hits on a body carry the body as "collider" and the exact "point".
 	Dictionary raycast(const Vector2 &p_from, const Vector2 &p_to, int p_mask = RAY_SOLID | RAY_POWDER | RAY_BODIES) const;
 
-	// Batched grid queries: one entry per box, centres and positions in world cells (the space
-	// raycast uses), sizes in cells rounded to the nearest int. Mismatched counts, or a size
+	// Batched grid queries: one entry per box, positions and centres in global space (the space
+	// `raycast` uses), sizes in cells rounded to the nearest int. Mismatched counts, or a size
 	// outside 1..MAX_QUERY_BOX, report an error and return an empty result.
 	Dictionary sweep_boxes(const PackedVector2Array &p_from, const PackedVector2Array &p_to,
 	                       const PackedVector2Array &p_sizes, int p_mask) const;

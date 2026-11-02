@@ -76,8 +76,9 @@ func _on_bodies_stepped() -> void:
 	for i: int in count:
 		var character := _characters[i]
 		sizes[i] = Vector2(character.body_size)
-		prev[i] = to_world * character.get_previous_position()
-		cur[i] = to_world * character.get_body_position()
+		# The batched queries take and return the same space, global, so these pass through.
+		prev[i] = character.get_previous_position()
+		cur[i] = character.get_body_position()
 
 	# 1. From where each box started the tick to where Box2D moved it, x first then y, one
 	#    cell per sub-step: nothing tunnels, and a blocked box ends flush against the cells.
@@ -266,7 +267,7 @@ func _on_bodies_stepped() -> void:
 		# Exact: a sub-cell correction must still land, or the box keeps a hair of itself in the
 		# floor row and the unstick below lifts it a whole cell next tick.
 		if pos[i].x != cur[i].x or pos[i].y != cur[i].y:
-			character.teleport(to_global * pos[i])
+			character.teleport(pos[i])
 		var body_floor := i < contacts.size() and contacts[i] & FLOOR != 0
 		var floor_ := sides[i] & FLOOR != 0 or body_floor
 		var ceiling := sides[i] & CEILING != 0

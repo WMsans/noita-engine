@@ -941,6 +941,53 @@ func test_character_walks_and_lands() -> bool:
 	return true
 
 
+# The cells live in a world node that may sit anywhere: the batched queries take and return
+# positions in the same global space raycast uses, so a translated world lands and walks
+# exactly like one at the origin.
+func test_character_walks_in_translated_world() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	world.position = Vector2(100, 40)
+	var character := _make_character(Vector2(100, 240))
+	await _register()
+	world.step(60)
+	var landed_y := character.global_position.y
+	var on_floor := character.is_on_floor()
+	for i: int in 30:
+		character.velocity = Vector2(100, character.velocity.y)
+		world.step(1)
+	var walked := character.global_position.x - 100.0
+	var bodies: int = world.get_stats().bodies
+	world.free()
+	character.free()
+	if absf(landed_y - 288.0) > 1.0 or not on_floor or walked < 40.0 or bodies != 1:
+		printerr("  landed at y %.2f (288), on floor %s, walked %.1f cells (>= 40), %d bodies" \
+		    % [landed_y, on_floor, walked, bodies])
+		return false
+	return true
+
+
+# A rotated (and moved) world keeps the cell layer where it is: physics, the sweeps and the
+# write-back all speak the same global space, so the character still lands on the arena floor
+# in cell space.
+func test_character_lands_in_rotated_world() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	world.position = Vector2(100, 40)
+	world.rotation = 0.4
+	var character := _make_character(world.to_global(Vector2(0, 200)))
+	await _register()
+	world.step(60)
+	var cell := world.to_local(character.global_position)
+	var on_floor := character.is_on_floor()
+	world.free()
+	character.free()
+	if absf(cell.y - 248.0) > 1.0 or absf(cell.x) > 1.0 or not on_floor:
+		printerr("  landed at cell %s (expected (0, 248)), on floor %s" % [cell, on_floor])
+		return false
+	return true
+
+
 func test_character_jumps_and_hits_ceiling() -> bool:
 	var world: PixelWorld = await _make_world()
 	world.simulating = false

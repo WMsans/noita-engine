@@ -1273,13 +1273,15 @@ Dictionary PixelWorld::sweep_boxes(const PackedVector2Array &p_from, const Packe
 	std::vector<int> w, h;
 	if (!read_query_sizes("sweep_boxes", p_sizes, p_from.size(), w, h)) return out;
 	const Transform2D to_world = get_global_transform().affine_inverse();
+	const Transform2D to_global = get_global_transform();
 	const uint32_t mask = (uint32_t)p_mask & 15u;
 	PackedVector2Array positions;
 	PackedInt32Array stopped, sides;
 	for (int i = 0; i < p_from.size(); ++i) {
 		const Vector2 from = to_world.xform(p_from[i]), to = to_world.xform(p_to[i]);
 		const BoxSweep swept = sweep_box(*grid, from.x, from.y, to.x, to.y, w[(size_t)i], h[(size_t)i], mask);
-		positions.push_back(Vector2(swept.x, swept.y));
+		// Back to the caller's space: the queries take and return global, like `raycast`.
+		positions.push_back(to_global.xform(Vector2(swept.x, swept.y)));
 		stopped.push_back((swept.stopped_x ? STOPPED_X : 0) | (swept.stopped_y ? STOPPED_Y : 0));
 		sides.push_back(swept.sides);
 	}
