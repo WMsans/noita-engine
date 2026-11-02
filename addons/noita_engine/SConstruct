@@ -12,7 +12,8 @@ env = Environment()
 customs = ["custom.py"]
 
 # ADDON is this directory; THIRDPARTY holds godot-cpp and box2d. build.sh passes
-# thirdparty=<dir>; the default is the development repo's thirdparty/.
+# thirdparty=<dir>; otherwise $NOITA_THIRDPARTY, the development repo's
+# thirdparty/, or this addon's own thirdparty/ (a copied addon's default).
 ADDON = Dir(".")
 try:
     _repo = subprocess.check_output(
@@ -21,7 +22,11 @@ try:
     ).strip()
 except (OSError, subprocess.CalledProcessError):
     _repo = ""
-THIRDPARTY = ARGUMENTS.get("thirdparty") or os.path.join(_repo, "thirdparty")
+THIRDPARTY = (
+    ARGUMENTS.get("thirdparty")
+    or os.environ.get("NOITA_THIRDPARTY")
+    or os.path.join(_repo or ADDON.abspath, "thirdparty")
+)
 # Consume it so godot-cpp's SConstruct doesn't warn about an unknown variable.
 ARGUMENTS.pop("thirdparty", None)
 THIRDPARTY = str(THIRDPARTY)

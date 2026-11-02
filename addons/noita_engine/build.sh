@@ -20,9 +20,14 @@
 #                             error output is reported
 #   ./build.sh --clean        remove build artifacts before building
 #   ./build.sh -j N           override job count (default: nproc)
+#   ./build.sh --thirdparty DIR
+#                             use DIR for godot-cpp/ and box2d/; when no candidate
+#                             directory has both, they are cloned into
+#                             thirdparty/ next to this script at pinned commits
 #
 # Environment:
 #   GODOT=/path/to/godot      Godot binary for --verify (default: godot on PATH)
+#   NOITA_THIRDPARTY=DIR      same as --thirdparty
 #
 # Exit code 0 on success, non-zero on any failure.
 
@@ -46,6 +51,7 @@ RUN_TESTS=0
 TSAN=0
 RUN_VERIFY=0
 CLEAN=0
+THIRDPARTY_ARG=""
 
 i=0
 args=("$@")
@@ -57,10 +63,14 @@ while [ $i -lt ${#args[@]} ]; do
 		--tsan) RUN_TESTS=1; TSAN=1 ;;
 		--verify) RUN_VERIFY=1 ;;
 		--clean) CLEAN=1 ;;
+		--thirdparty)
+			i=$((i + 1)); THIRDPARTY_ARG="${args[$i]:-}"
+			if [ -z "$THIRDPARTY_ARG" ]; then echo "build.sh: --thirdparty needs a directory" >&2; exit 2; fi
+			;;
 		-j) i=$((i + 1)); JOBS="${args[$i]:-}"; if [ -z "$JOBS" ]; then echo "build.sh: -j needs a number" >&2; exit 2; fi ;;
 		-j*) JOBS="${arg#-j}" ;;
 		-h|--help)
-			sed -n '2,26p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+			sed -n '2,31p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 			exit 0
 			;;
 		*) echo "build.sh: unknown argument: $arg (see --help)" >&2; exit 2 ;;
@@ -104,23 +114,69 @@ if [ "${#missing[@]}" -gt 0 ]; then
 	exit 1
 fi
 
-# --- submodules ------------------------------------------------------------
-# godot-cpp and box2d are git submodules (`git submodule update --init` fetches
-# both). Every scons invocation reads godot-cpp/SConstruct, and both the
-# extension and the test binary compile box2d/src/*.c. doctest and
-# FastNoiseLite are plain tracked files, so nothing to fetch for them.
-submodules_missing=0
-for check in thirdparty/godot-cpp/SConstruct thirdparty/godot-cpp/.git \
-	thirdparty/box2d/include/box2d/box2d.h thirdparty/box2d/src/CMakeLists.txt; do
-	[ -e "$REPO/$check" ] || submodules_missing=1
-done
-if [ "$submodules_missing" -eq 1 ]; then
+# --- thirdparty ------------------------------------------------------------
+# Every scons invocation reads godot-cpp/SConstruct, and both the extension and
+# the test binary compile box2d/src/*.c; those two are the git submodules, so
+# they are what this resolves and fetches.
+# shortcut: a copied addon also needs thirdparty/FastNoiseLite/FastNoiseLite.h
+# (engine/core includes it), which exists only as a tracked file in this repo's
+# thirdparty/ — vendor it into the addon before relying on the clone path.
+thirdparty_ok() {
+	[ -f "$1/godot-cpp/SConstruct" ] && [ -f "$1/box2d/include/box2d/box2d.h" ]
+}
+
+# In the development repo the dependencies are git submodules; init them so
+# $REPO/thirdparty qualifies below. A host project's own submodules are left alone.
+if [ -n "$REPO" ] && grep -qs 'thirdparty/godot-cpp' "$REPO/.gitmodules" && ! thirdparty_ok "$REPO/thirdparty"; then
 	echo "==> Fetching git submodules (godot-cpp, box2d)..."
 	git -C "$REPO" submodule update --init --recursive
 fi
 
+# Resolution order: --thirdparty, $NOITA_THIRDPARTY, the development repo's
+# thirdparty/, then this addon's own thirdparty/.
+THIRDPARTY=""
+# Explicit choices first; a bad one is reported but does not stop the search.
+for candidate in "$THIRDPARTY_ARG" "${NOITA_THIRDPARTY:-}"; do
+	if [ -z "$candidate" ]; then continue; fi
+	if thirdparty_ok "$candidate"; then
+		THIRDPARTY="$candidate"
+		break
+	fi
+	echo "build.sh: warning: $candidate has no godot-cpp/SConstruct and box2d/include/box2d/box2d.h" >&2
+done
+if [ -z "$THIRDPARTY" ] && [ -n "$REPO" ] && thirdparty_ok "$REPO/thirdparty"; then
+	THIRDPARTY="$REPO/thirdparty"
+fi
+if [ -z "$THIRDPARTY" ] && thirdparty_ok "$ADDON/thirdparty"; then
+	THIRDPARTY="$ADDON/thirdparty"
+fi
+if [ -z "$THIRDPARTY" ]; then
+	THIRDPARTY="$ADDON/thirdparty"
+fi
+
+# Nothing usable: clone both at the pinned commits so a copied addon builds on
+# its own. A checkout already in place is reused and only re-checked-out.
+if ! thirdparty_ok "$THIRDPARTY"; then
+	GODOT_CPP_SHA=507ed9d840c01a3c5b2a39af8bb4000bfac30bf5
+	BOX2D_SHA=178495ba35695aefe9c321e569d2277f06db3b90
+	fetch_repo() { # <dir> <url> <sha>
+		if [ ! -d "$1/.git" ]; then
+			echo "==> Cloning $2..."
+			git clone "$2" "$1" || { echo "build.sh: git clone $2 failed (git and network access are required on the first build)" >&2; return 1; }
+		fi
+		git -C "$1" checkout "$3" || { echo "build.sh: git checkout $3 in $1 failed" >&2; return 1; }
+	}
+	mkdir -p "$THIRDPARTY"
+	fetch_repo "$THIRDPARTY/godot-cpp" https://github.com/godotengine/godot-cpp.git "$GODOT_CPP_SHA"
+	git -C "$THIRDPARTY/godot-cpp" submodule update --init --recursive
+	fetch_repo "$THIRDPARTY/box2d" https://github.com/erincatto/box2d.git "$BOX2D_SHA"
+fi
+# scons runs with -C "$ADDON", so hand it an absolute path.
+THIRDPARTY="$(cd "$THIRDPARTY" && pwd)"
+echo "==> thirdparty: $THIRDPARTY"
+
 # --- build -----------------------------------------------------------------
-SCONS_ARGS=(platform="$PLATFORM" arch="$ARCH" thirdparty="$REPO/thirdparty")
+SCONS_ARGS=(platform="$PLATFORM" arch="$ARCH" thirdparty="$THIRDPARTY")
 
 if [ "$CLEAN" -eq 1 ]; then
 	echo "==> Cleaning previous build artifacts..."
@@ -155,6 +211,17 @@ echo "    Registered native classes: PixelWorld, PixelLight, PixelMaterial, Pixe
 echo "    The editor always loads the template_debug library. Open the project in"
 echo "    Godot (or restart the editor) — 'Could not find type PixelWorld' parse"
 echo "    errors disappear once the library is loaded."
+
+# --- tests need the development repo ---------------------------------------
+# --test and --verify live in the development repo, not in the addon, so a
+# copied addon builds the library and stops there.
+if [ "$RUN_TESTS" -eq 1 ] || [ "$RUN_VERIFY" -eq 1 ]; then
+	if [ -z "$REPO" ]; then
+		echo "--test/--verify need the noita-engine development repo (tests/ is not part of the addon); skipping"
+		echo
+		exit 0
+	fi
+fi
 
 # --- core test suite -------------------------------------------------------
 if [ "$RUN_TESTS" -eq 1 ]; then
