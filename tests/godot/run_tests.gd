@@ -759,20 +759,31 @@ func test_bodies_stepped_handler_may_free() -> bool:
 		return false
 
 	# A handler frees the world itself; the tick must return cleanly. A signal handler cannot
-	# free the emitting object, so it frees the node that owns it instead.
+	# free the emitting object, so it frees the node that owns it instead. The world has a
+	# character too, so CharacterSystem is on the same signal and the emission runs into freed
+	# handlers, the case a world with characters always has.
 	var holder := Node2D.new()
 	root.add_child(holder)
 	var doomed: PixelWorld = await _make_world()
 	doomed.reparent(holder)
 	doomed.simulating = false
 	var rider := _make_box_body(Vector2i(8, 8), 64.0, Vector2(0, 100))
-	await _register()
+	var walker := _make_character(Vector2(20, 200))
+	# Connected before the joins, so the emission frees the world and then reaches
+	# CharacterSystem on the freed world.
 	doomed.bodies_stepped.connect(func() -> void: holder.free())
+	await _register()
+	var systems: int = 0
+	for child: Node in doomed.get_children():
+		if child is CharacterSystem:
+			systems += 1
 	doomed.step(3)  # the loop must stop, not run the next tick on the freed world
 	await _register()
 	rider.free()
-	if is_instance_valid(doomed):
-		printerr("  the world a handler freed is still alive")
+	walker.free()
+	if is_instance_valid(doomed) or systems != 1:
+		printerr("  the world a handler freed is still alive %s, %d CharacterSystems (expected 1)" \
+		    % [is_instance_valid(doomed), systems])
 		return false
 	return true
 
