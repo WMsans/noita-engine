@@ -863,7 +863,7 @@ func test_teleport_keeps_rotation_when_omitted() -> bool:
 	return ok
 
 
-# --- creatures (Plan 5) ----------------------------------------------------------------------
+# --- characters (Plan 5) ---------------------------------------------------------------------
 
 func _make_character(at: Vector2) -> PixelCharacter:
 	var character := PixelCharacter.new()
@@ -899,8 +899,8 @@ func test_script_subclasses_join_the_world() -> bool:
 	world.free()
 	character.free()
 	body.free()
-	if stats.creatures != 1 or stats.bodies != 1 or not ticked:
-		printerr("  scripted nodes: %d creatures, %d bodies (expected 1 and 1), scripts ticked %s" % [stats.creatures, stats.bodies, ticked])
+	if stats.bodies != 2 or not ticked:
+		printerr("  scripted nodes: %d bodies (expected 2), scripts ticked %s" % [stats.bodies, ticked])
 		return false
 	return true
 
@@ -917,11 +917,11 @@ func test_character_walks_and_lands() -> bool:
 		character.velocity = Vector2(100, character.velocity.y)
 		world.step(1)
 	var walked := character.position.x
-	var creatures: int = world.get_stats().creatures
+	var bodies: int = world.get_stats().bodies
 	world.free()
 	character.free()
-	if absf(landed_y - 248.0) > 1.0 or not on_floor or walked < 40.0 or creatures != 1:
-		printerr("  landed at y %.2f (248), on floor %s, walked to x %.1f (>= 40), %d creatures" % [landed_y, on_floor, walked, creatures])
+	if absf(landed_y - 248.0) > 1.0 or not on_floor or walked < 40.0 or bodies != 1:
+		printerr("  landed at y %.2f (248), on floor %s, walked to x %.1f (>= 40), %d bodies" % [landed_y, on_floor, walked, bodies])
 		return false
 	return true
 
@@ -998,6 +998,255 @@ func test_character_pushes_body() -> bool:
 	character.free()
 	if moved < 5.0:
 		printerr("  the crate moved %.1f cells, expected >= 5" % moved)
+		return false
+	return true
+
+
+# How many of these characters have solid cells inside their hitbox, as one batched query.
+func _characters_in_solid(world: PixelWorld, characters: Array) -> int:
+	var centres := PackedVector2Array()
+	var sizes := PackedVector2Array()
+	for character: PixelCharacter in characters:
+		centres.append(character.global_position)
+		sizes.append(Vector2(character.body_size))
+	var blocked: PackedByteArray = world.probe_boxes(centres, sizes, PixelWorld.RAY_SOLID)
+	var inside := 0
+	for bit: int in blocked:
+		inside += bit
+	return inside
+
+
+# Walking into a ledge of step_height (3) cells climbs it; a fourth cell refuses.
+func test_character_steps_up_3_cell_ledge() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	world.fill_rect(Rect2i(30, 253, 60, 3), &"rock")  # top row 253: three cells above the floor
+	var character := _make_character(Vector2(0, 248))
+	await _register()
+	world.step(10)
+	for i: int in 24:
+		character.velocity = Vector2(100, character.velocity.y)
+		world.step(1)
+	var at := character.position
+	world.free()
+	character.free()
+	if at.x < 32.0 or absf(at.y - 245.0) > 1.0:
+		printerr("  walked to %s, expected onto the ledge at y 245 beyond x 32" % [at])
+		return false
+	return true
+
+
+func test_character_refuses_4_cell_ledge() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	world.fill_rect(Rect2i(30, 252, 60, 4), &"rock")  # one cell too tall to step
+	var character := _make_character(Vector2(0, 248))
+	await _register()
+	world.step(10)
+	for i: int in 30:
+		character.velocity = Vector2(100, character.velocity.y)
+		world.step(1)
+	var at := character.position
+	world.free()
+	character.free()
+	if at.x > 26.5 or absf(at.y - 248.0) > 1.0:
+		printerr("  walked to %s, expected to stop against the wall at x 26, y 248" % [at])
+		return false
+	return true
+
+
+func test_character_climbs_sand_pile() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	world.fill_rect(Rect2i(30, 253, 40, 3), &"sand")
+	world.step(120)  # let it settle into a pile on the floor
+	var character := _make_character(Vector2(0, 248))
+	await _register()
+	world.step(10)
+	var start := character.position.y
+	for i: int in 30:
+		character.velocity = Vector2(100, character.velocity.y)
+		world.step(1)
+	var at := character.position
+	world.free()
+	character.free()
+	if at.x < 30.0 or at.y > start - 1.0:
+		printerr("  walked from y %.2f to %s, expected into the sand at x >= 30 and up a cell" % [start, at])
+		return false
+	return true
+
+
+# Powder inside the hitbox (sand dropped on the head) is knocked out as particles.
+func test_character_knocks_sand_out() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	var character := _make_character(Vector2(0, 248))
+	await _register()
+	world.step(10)
+	world.fill_rect(Rect2i(-4, 240, 8, 8), &"sand")  # the top half of the hitbox
+	world.step(2)
+	var centres := PackedVector2Array([character.global_position])
+	var sizes := PackedVector2Array([Vector2(character.body_size)])
+	var powder: PackedInt32Array = world.scan_boxes(centres, sizes).powder
+	var particles: int = world.get_stats().particles_material
+	world.free()
+	character.free()
+	if powder[0] != 0 or particles == 0:
+		printerr("  %d powder cells left in the hitbox, %d material particles (expected 0 and > 0)" % [powder[0], particles])
+		return false
+	return true
+
+
+func test_character_splashes() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	world.fill_rect(Rect2i(-40, 200, 80, 56), &"water")
+	var character := _make_character(Vector2(0, 40))  # 160 cells of fall: well past 60 cells/s
+	await _register()
+	var splashed := false
+	for i: int in 120:
+		world.step(1)
+		if world.get_stats().particles_material > 0:
+			splashed = true
+			break
+	var at := character.position
+	world.free()
+	character.free()
+	if not splashed:
+		printerr("  no splash particles after falling into the water (character at %s)" % [at])
+		return false
+	return true
+
+
+func test_character_stands_on_crate() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	var crate := _make_body(12, 12, &"wood", Vector2(0, 250))
+	await _register()
+	world.step(30)
+	var character := _make_character(Vector2(0, 200))
+	await _register()
+	world.step(90)
+	var on_floor := character.is_on_floor()
+	var at := character.position
+	world.free()
+	crate.free()
+	character.free()
+	if not on_floor or absf(at.y - 236.0) > 1.5:
+		printerr("  standing on the crate: on floor %s, at %s (expected y 236)" % [on_floor, at])
+		return false
+	return true
+
+
+func test_crate_rests_on_character() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	var character := _make_character(Vector2(0, 248))
+	await _register()
+	world.step(30)
+	var crate := _make_body(12, 12, &"wood", Vector2(0, 190))
+	await _register()
+	var lo := 1e9
+	var hi := -1e9
+	for i: int in 120:
+		world.step(1)
+		lo = minf(lo, character.position.y)
+		hi = maxf(hi, character.position.y)
+	var at := character.position
+	var crate_at := crate.position
+	world.free()
+	crate.free()
+	character.free()
+	if hi - lo >= 0.5 or at.y > 248.5 or crate_at.y > 235.0:
+		printerr("  character y %.2f held in [%.2f, %.2f], crate at %s (expected head at 234)" % [at.y, lo, hi, crate_at])
+		return false
+	return true
+
+
+# Rock poured over a character lifts it out of the cells, however deep it is buried.
+func test_buried_character_is_freed() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	var character := _make_character(Vector2(0, 248))
+	await _register()
+	world.step(10)
+	world.fill_rect(Rect2i(-4, 240, 8, 16), &"rock")  # exactly over the hitbox
+	world.step(1)
+	var shallow_ok := _characters_in_solid(world, [character]) == 0 and character.position.y < 240.0
+	world.fill_rect(Rect2i(-4, 200, 8, 40), &"rock")  # forty cells of rock above it
+	world.step(1)
+	var deep_ok := _characters_in_solid(world, [character]) == 0 and character.position.y <= 200.0
+	var at := character.position
+	world.free()
+	character.free()
+	if not shallow_ok or not deep_ok:
+		printerr("  buried: shallow %s, forty cells deep %s, ended at %s (expected y <= 200)" % [shallow_ok, deep_ok, at])
+		return false
+	return true
+
+
+# The floor snap keeps a character on the floor down a staircase of 2-cell steps.
+func test_character_walks_down_staircase_on_floor() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	for step: int in 10:  # carve down 2 cells every 8 cells from x = 30
+		if step > 0:
+			world.fill_rect(Rect2i(30 + 8 * step, 256, 8, 2 * step), &"air")
+	var character := _make_character(Vector2(0, 248))
+	await _register()
+	world.step(10)
+	var off_floor := 0
+	for i: int in 60:
+		character.velocity = Vector2(60, character.velocity.y)
+		world.step(1)
+		if not character.is_on_floor():
+			off_floor += 1
+	var at := character.position
+	world.free()
+	character.free()
+	if off_floor != 0 or at.x <= 40.0:
+		printerr("  off the floor on %d of 60 ticks, ended at %s (expected none, x > 40)" % [off_floor, at])
+		return false
+	return true
+
+
+func test_two_characters_dont_overlap() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	var a := _make_character(Vector2(-2, 100))
+	var b := _make_character(Vector2(2, 100))
+	await _register()
+	world.step(120)
+	var apart := absf(a.position.x - b.position.x)
+	world.free()
+	a.free()
+	b.free()
+	if apart < 7.5:
+		printerr("  the two characters are %.2f cells apart, expected >= 7.5" % apart)
+		return false
+	return true
+
+
+func test_crowd_in_a_pit() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	world.fill_rect(Rect2i(-60, 200, 2, 56), &"rock")
+	world.fill_rect(Rect2i(58, 200, 2, 56), &"rock")
+	var crowd: Array[PixelCharacter] = []
+	for row: int in 4:
+		for col: int in 10:
+			crowd.append(_make_character(Vector2(-52 + 11 * col, 140 + 20 * row)))
+	await _register()
+	world.step(120)
+	var inside := _characters_in_solid(world, crowd)
+	var lowest := -1e9
+	for character: PixelCharacter in crowd:
+		lowest = maxf(lowest, character.position.y)
+	world.free()
+	for character: PixelCharacter in crowd:
+		character.free()
+	if inside != 0 or lowest < 230.0:
+		printerr("  %d of 20 characters are inside solid, lowest y %.1f (expected 0, >= 230)" % [inside, lowest])
 		return false
 	return true
 

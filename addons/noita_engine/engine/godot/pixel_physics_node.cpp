@@ -10,6 +10,7 @@ namespace godot {
 void PixelPhysicsNode::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_world", "value"), &PixelPhysicsNode::set_world);
 	ClassDB::bind_method(D_METHOD("get_world"), &PixelPhysicsNode::get_world_path);
+	ClassDB::bind_method(D_METHOD("get_world_node"), &PixelPhysicsNode::get_world_node);
 	ADD_PROPERTY(PropertyInfo(Variant::NODE_PATH, "world", PROPERTY_HINT_NODE_PATH_VALID_TYPES, "PixelWorld"), "set_world", "get_world");
 
 	ADD_SIGNAL(MethodInfo("joined"));

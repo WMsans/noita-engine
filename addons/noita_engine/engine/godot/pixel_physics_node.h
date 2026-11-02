@@ -10,9 +10,9 @@ namespace godot {
 
 class PixelWorld;
 
-// What PixelRigidBody and PixelCharacter share: joining a PixelWorld on the first physics frame
-// (after every _ready, the world's included), leaving it when the node leaves the tree, the
-// `hit` and `left_world` signals, and forgetting the world when it is freed first.
+// What every body node shares: joining a PixelWorld on the first physics frame (after every
+// _ready, the world's included), leaving it when the node leaves the tree, the `hit` and
+// `left_world` signals, and forgetting the world when it is freed first.
 class PixelPhysicsNode : public Node2D {
 	GDCLASS(PixelPhysicsNode, Node2D)
 
@@ -39,6 +39,8 @@ public:
 
 	void set_world(const NodePath &p_value) { world_path = p_value; }
 	NodePath get_world_path() const { return world_path; }
+	// The joined PixelWorld, or null. Its `world` property above is only the path to it.
+	PixelWorld *get_world_node() const { return get_world(); }
 };
 
 } // namespace godot

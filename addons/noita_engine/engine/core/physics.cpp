@@ -4,7 +4,6 @@
 #include <chrono>
 #include <cmath>
 
-#include "creature.h"
 #include "generator.h"
 #include "grid_query.h"
 #include "material.h"
@@ -22,15 +21,15 @@ double ms_since(Clock::time_point start) {
 void* handle_data(int handle) { return reinterpret_cast<void*>((intptr_t)handle + 1); }
 int handle_of(b2BodyId id) { return (int)(reinterpret_cast<intptr_t>(b2Body_GetUserData(id)) - 1); }
 
-b2Filter body_filter(const BodyProps& props, bool creature, int handle) {
+b2Filter body_filter(const BodyProps& props, int handle) {
 	b2Filter filter = {};
-	filter.categoryBits = creature ? CAT_CREATURE : CAT_BODY;
-	filter.maskBits = CAT_BODY | CAT_CREATURE;
+	filter.categoryBits = CAT_BODY;
+	filter.maskBits = CAT_BODY;
 	// Collision needs both directions: terrain masks CAT_BODY only, so a body that drops
 	// CAT_TERRAIN from its own mask never meets it.
-	if (!creature && props.terrain_collision) filter.maskBits |= CAT_TERRAIN;
+	if (props.terrain_collision) filter.maskBits |= CAT_TERRAIN;
 	// Its own proxies share the positive group and meet nothing else (their mask is 0).
-	filter.groupIndex = creature || props.cell_proxies ? handle + 1 : 0;
+	filter.groupIndex = props.cell_proxies ? handle + 1 : 0;
 	return filter;
 }
 
@@ -39,7 +38,7 @@ b2ShapeDef body_shape_def(const BodyDef& def, int handle, float density) {
 	sd.density = density;
 	sd.material.friction = def.friction;
 	sd.material.restitution = def.restitution;
-	sd.filter = body_filter(def.props, false, handle);
+	sd.filter = body_filter(def.props, handle);
 	sd.enableHitEvents = true;
 	return sd;
 }
@@ -170,59 +169,10 @@ int PhysicsWorld::add_body(const BodyDef& def) {
 void PhysicsWorld::remove_body(int handle) {
 	if (!has_body(handle)) return;
 	wake_footprint(*bodies[(size_t)handle]);
-	const bool creature = bodies[(size_t)handle]->creature;
 	destroy_proxies(*bodies[(size_t)handle]);
 	b2DestroyBody(bodies[(size_t)handle]->id);
 	bodies[(size_t)handle].reset();
-	--(creature ? stats_.creatures : stats_.bodies);
-}
-
-int PhysicsWorld::add_creature(const CreatureDef& def) {
-	if (def.w <= 0 || def.h <= 0) return -1;
-	const int handle = (int)bodies.size();
-	// The creature is a grid-driven body: the same props and the same proxies as a box body,
-	// just with the horizontal handles as its shape.
-	BodyProps props;
-	props.terrain_collision = false;
-	props.cell_proxies = true;
-	props.proxy_step_height = def.step_height;
-	props.lock_rotation = true;
-	props.can_sleep = false;
-	props.gravity_scale = def.gravity_scale;
-	b2BodyDef bd = b2DefaultBodyDef();
-	bd.type = b2_dynamicBody;
-	bd.position = {def.x, def.y};
-	bd.userData = handle_data(handle);
-	bd.motionLocks.angularZ = props.lock_rotation;  // creatures stay upright
-	bd.enableSleep = props.can_sleep;               // always driven by game code
-	bd.gravityScale = props.gravity_scale;
-	const b2BodyId id = b2CreateBody(world, &bd);
-	b2ShapeDef sd = b2DefaultShapeDef();
-	sd.density = def.mass / (float)(def.w * def.h);
-	sd.material.friction = def.friction;
-	sd.filter = body_filter(props, true, handle);
-	sd.enableHitEvents = true;
-	const b2Polygon box = b2MakeBox(def.w * 0.5f, def.h * 0.5f);
-	b2CreatePolygonShape(id, &sd, &box);
-
-	auto body = std::make_unique<Body>();
-	body->id = id;
-	body->w = def.w;
-	body->h = def.h;
-	body->creature = true;
-	body->step_height = def.step_height;
-	body->props = props;
-	bodies.push_back(std::move(body));
-	create_proxies(*bodies.back(), handle);
-	++stats_.creatures;
-	return handle;
-}
-
-bool PhysicsWorld::is_creature(int handle) const { return has_body(handle) && bodies[(size_t)handle]->creature; }
-
-const CreatureState& PhysicsWorld::creature_state(int handle) const {
-	static const CreatureState none;
-	return is_creature(handle) ? bodies[(size_t)handle]->state : none;
+	--stats_.bodies;
 }
 
 void PhysicsWorld::set_props(int handle, const BodyProps& props) {
@@ -247,7 +197,7 @@ void PhysicsWorld::set_props(int handle, const BodyProps& props) {
 	} else if (old.mass > 0) {
 		b2Body_UpdateMassFromShapes(body.id);  // mass 0 means "from pixels" again
 	}
-	const b2Filter filter = body_filter(props, body.creature, handle);
+	const b2Filter filter = body_filter(props, handle);
 	std::vector<b2ShapeId> shapes((size_t)b2Body_GetShapeCount(body.id));
 	const int n = b2Body_GetShapes(body.id, shapes.data(), (int)shapes.size());
 	for (int i = 0; i < n; ++i) b2Shape_SetFilter(shapes[i], filter);
@@ -352,7 +302,7 @@ void PhysicsWorld::update_terrain() {
 
 	Mask mask;
 	for (const std::unique_ptr<Body>& body : bodies) {
-		if (!body || body->creature || !wants_enabled(*body)) continue;
+		if (!body || !body->props.terrain_collision || !wants_enabled(*body)) continue;
 		const ChunkRect around = chunks_around(b2Body_ComputeBounds(body->id), BODY_SHAPE_MARGIN);
 		for (int y = around.y0; y <= around.y1; ++y)
 			for (int x = around.x0; x <= around.x1; ++x) {
@@ -389,7 +339,7 @@ void PhysicsWorld::build_terrain(ChunkCoord coord, Mask&& mask) {
 	cd.materialCount = 1;
 	cd.isLoop = true;
 	cd.filter.categoryBits = CAT_TERRAIN;
-	cd.filter.maskBits = CAT_BODY;  // creatures meet terrain through the grid pass only
+	cd.filter.maskBits = CAT_BODY;  // a body with terrain_collision off meets terrain elsewhere
 	for (const Loop& loop : trace_loops(mask, CHUNK, CHUNK)) {
 		const Loop simple = simplify_loop(loop, 1.0f);
 		cd.points = simple.data();
@@ -483,45 +433,9 @@ void PhysicsWorld::step() {
 
 	int awake = 0;
 	for (const std::unique_ptr<Body>& body : bodies)
-		if (body && !body->creature && b2Body_IsEnabled(body->id) && b2Body_IsAwake(body->id)) ++awake;
+		if (body && b2Body_IsEnabled(body->id) && b2Body_IsAwake(body->id)) ++awake;
 	stats_.awake = awake;
-
-	const Clock::time_point creatures_start = Clock::now();
-	for (const std::unique_ptr<Body>& body : bodies)
-		if (body && body->creature && b2Body_IsEnabled(body->id)) creature_pass(*body);
-	stats_.creature_ms = ms_since(creatures_start);
-	stats_.physics_ms = ms_since(start) - stats_.creature_ms;
-}
-
-// Box2D moved the creature against bodies and other creatures; now the cells get their say:
-// sweep from where it was to where Box2D put it, and keep what the sweep allows.
-void PhysicsWorld::creature_pass(Body& body) {
-	const b2Vec2 p = b2Body_GetPosition(body.id);
-	b2Vec2 v = b2Body_GetLinearVelocity(body.id);
-	const GridPass r = creature_grid_pass(grid, particles, body.prev_x, body.prev_y, p.x, p.y, body.w, body.h,
-	                                      body.step_height, body.state.floor, b2Length(v));
-	if (r.x != p.x || r.y != p.y) b2Body_SetTransform(body.id, {r.x, r.y}, b2Rot_identity);
-	if (r.stopped_x) v.x = 0;
-	if ((r.floor && v.y > 0) || (r.ceiling && v.y < 0)) v.y = 0;
-	b2Body_SetLinearVelocity(body.id, v);
-
-	// Standing on a body or another creature counts as the floor too: a touching contact whose
-	// normal points down from the creature.
-	bool on_body = false;
-	b2ContactData contacts[8];
-	const int n = b2Body_GetContactData(body.id, contacts, 8);
-	for (int i = 0; i < n && !on_body; ++i) {
-		if (contacts[i].manifold.pointCount == 0) continue;
-		const bool is_a = B2_ID_EQUALS(b2Shape_GetBody(contacts[i].shapeIdA), body.id);
-		const float down = is_a ? contacts[i].manifold.normal.y : -contacts[i].manifold.normal.y;
-		on_body = down > 0.7f;
-	}
-	body.state.floor = r.floor || on_body;
-	body.state.ceiling = r.ceiling;
-	body.state.wall = r.wall;
-	body.state.submerged_fraction = (float)r.submerged / (float)(body.w * body.h);
-	body.state.liquid = r.liquid;
-	place_proxies(body);
+	stats_.physics_ms = ms_since(start);
 }
 
 // The nearest blocking cells around the box: the highest floor within FOOT_REACH under any
@@ -617,8 +531,8 @@ void PhysicsWorld::stamp() {
 	const Clock::time_point start = Clock::now();
 	const MaterialTable& mt = grid.materials();
 	for (const std::unique_ptr<Body>& owned : bodies) {
-		if (!owned || owned->creature || owned->pixels.empty() || !b2Body_IsEnabled(owned->id))
-			continue;  // creatures and unstamped boxes aren't pixels
+		if (!owned || owned->pixels.empty() || !b2Body_IsEnabled(owned->id))
+			continue;  // an unstamped box has no pixels to stamp
 		Body& body = *owned;
 		body.submerged = 0;
 		body.liquid_density = body.sum_x = body.sum_y = 0;
@@ -727,7 +641,7 @@ std::vector<int> PhysicsWorld::take_left_world() {
 bool PhysicsWorld::raycast(float x0, float y0, float x1, float y1, int& handle, float& hx, float& hy,
                            float& nx, float& ny) const {
 	b2QueryFilter filter = b2DefaultQueryFilter();
-	filter.maskBits = CAT_BODY | CAT_CREATURE;
+	filter.maskBits = CAT_BODY;
 	const b2RayResult r = b2World_CastRayClosest(world, {x0, y0}, {x1 - x0, y1 - y0}, filter);
 	if (!r.hit) return false;
 	handle = handle_of(b2Shape_GetBody(r.shapeId));

@@ -19,7 +19,6 @@
 #include "core/rng.h"
 #include "light_renderer.h"
 #include "light_shaders.h"
-#include "pixel_character.h"
 #include "pixel_light.h"
 #include "pixel_rigid_body.h"
 
@@ -390,19 +389,6 @@ int PixelWorld::register_body(PixelRigidBody *p_body) {
 	}
 	if (body_nodes.size() <= (size_t)handle) body_nodes.resize((size_t)handle + 1);
 	body_nodes[(size_t)handle] = p_body->get_instance_id();
-	return handle;
-}
-
-int PixelWorld::register_character(PixelCharacter *p_character) {
-	if (!physics) return -1;
-	const CreatureDef def = p_character->build_def(get_global_transform().affine_inverse());
-	if (def.w <= 0 || def.h <= 0) {
-		UtilityFunctions::push_error("PixelCharacter " + String(p_character->get_path()) + ": hitbox_size must be positive");
-		return -1;
-	}
-	const int handle = physics->add_creature(def);
-	if (body_nodes.size() <= (size_t)handle) body_nodes.resize((size_t)handle + 1);
-	body_nodes[(size_t)handle] = p_character->get_instance_id();
 	return handle;
 }
 
@@ -1431,8 +1417,6 @@ Dictionary PixelWorld::get_stats() const {
 	stats["physics_ms"] = physics_stats.physics_ms;
 	stats["shape_ms"] = physics_stats.shape_ms;
 	stats["stamp_ms"] = physics_stats.stamp_ms;
-	stats["creatures"] = physics_stats.creatures;
-	stats["creature_ms"] = physics_stats.creature_ms;
 	stats["light_cpu_ms"] = light_cpu_ms;
 	stats["light_gpu_ms"] = light_gpu_ms;
 	stats["light_spots"] = light_spots;

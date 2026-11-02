@@ -64,6 +64,7 @@ void PixelRigidBody::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_mass"), &PixelRigidBody::get_mass);
 	ClassDB::bind_method(D_METHOD("is_sleeping"), &PixelRigidBody::is_sleeping);
 	ClassDB::bind_method(D_METHOD("get_previous_position"), &PixelRigidBody::get_previous_position);
+	ClassDB::bind_method(D_METHOD("get_body_position"), &PixelRigidBody::get_body_position);
 	ClassDB::bind_method(D_METHOD("teleport", "position", "rotation"), &PixelRigidBody::teleport, DEFVAL(Variant()));
 
 	ClassDB::bind_method(D_METHOD("set_body_size", "value"), &PixelRigidBody::set_body_size);
@@ -289,6 +290,13 @@ Vector2 PixelRigidBody::get_previous_position() const {
 	if (!world || B2_IS_NULL(body()) || !world->get_physics()) return get_global_position();
 	const b2Vec2 previous = world->get_physics()->previous_position(handle);
 	return world->get_global_transform().xform(Vector2(previous.x, previous.y));
+}
+
+Vector2 PixelRigidBody::get_body_position() const {
+	PixelWorld *world = get_world();
+	if (!world || B2_IS_NULL(body()) || !world->get_physics()) return get_global_position();
+	const b2Vec2 at = b2Body_GetPosition(body());
+	return world->get_global_transform().xform(Vector2(at.x, at.y));
 }
 
 } // namespace godot

@@ -35,30 +35,14 @@ struct BodyDef {
 	BodyProps props;
 };
 
-// An upright creature: a w x h box that collides with bodies and creatures in Box2D and with
-// the cells through the grid pass (see creature.h).
-struct CreatureDef {
-	int w = 8, h = 16, step_height = 3;
-	float mass = 128, friction = 0.6f, gravity_scale = 1;
-	float x = 0, y = 0;  // the box centre
-};
-
-// What the grid pass and the contacts found last tick.
-struct CreatureState {
-	bool floor = false, ceiling = false;
-	int wall = 0;  // -1 left, +1 right
-	float submerged_fraction = 0;
-	MatId liquid = MAT_AIR;
-};
-
 struct BodyHit {
 	int a, b;  // body handles; b = -1 for terrain
 	float x, y, nx, ny, speed;  // point, normal from a to b, approach speed (cells/s)
 };
 
 struct PhysicsStats {
-	int bodies = 0, awake = 0, terrain_bodies = 0, shape_builds = 0, creatures = 0;
-	double physics_ms = 0, shape_ms = 0, stamp_ms = 0, creature_ms = 0;
+	int bodies = 0, awake = 0, terrain_bodies = 0, shape_builds = 0;
+	double physics_ms = 0, shape_ms = 0, stamp_ms = 0;
 };
 
 // Joint settings; angles in radians, speeds in rad/s, torques in Box2D units (cells).
@@ -77,7 +61,6 @@ struct WheelParams {
 
 constexpr uint64_t CAT_TERRAIN = 1;
 constexpr uint64_t CAT_BODY = 2;
-constexpr uint64_t CAT_CREATURE = 4;
 constexpr uint64_t CAT_PROXY = 8;  // a body's grid proxies; meet only their own body (group)
 constexpr float TERRAIN_FRICTION = 0.8f;
 // A chunk's shapes rebuild at most this often (ticks): terrain collision may lag the pixels by
@@ -100,10 +83,6 @@ public:
 	// handle >= 0, or -1 for an invalid body (a box without box_w/box_h/props.mass, or pixels
 	// with no opaque cell)
 	int add_body(const BodyDef& def);
-	// Same handle space as bodies; creatures are never stamped and need no terrain shapes.
-	int add_creature(const CreatureDef& def);
-	bool is_creature(int handle) const;
-	const CreatureState& creature_state(int handle) const;
 	// Live: applies to the running b2Body and rebuilds the filter and proxies as needed.
 	void set_props(int handle, const BodyProps& props);
 	const BodyProps& props(int handle) const;
@@ -138,7 +117,7 @@ public:
 
 	const std::vector<BodyHit>& hits() const { return hits_; }
 	std::vector<int> take_left_world();  // handles whose chunk unloaded since the last call
-	// Closest enabled body or creature along the segment.
+	// Closest enabled body along the segment.
 	bool raycast(float x0, float y0, float x1, float y1, int& handle, float& hx, float& hy, float& nx,
 	             float& ny) const;
 	const PhysicsStats& stats() const { return stats_; }
@@ -151,14 +130,10 @@ private:
 		int opaque = 0;
 		BodyProps props;
 		bool left = false;  // reported by take_left_world and not enabled since
-		// Creatures only.
-		bool creature = false;
-		int step_height = 0;
 		float prev_x = 0, prev_y = 0;  // before this tick's Box2D step
-		CreatureState state;
 		// The blocking cells next to it, told to Box2D as frictionless kinematic segments (floor,
-		// ceiling, left, right), so a crate on its head or a creature pushing it into a wall is
-		// stopped by it instead of pressing it into the cells the grid pass then pulls it out of.
+		// ceiling, left, right), so a crate on its head or a body pushing it into a wall is
+		// stopped by it instead of pressing it into the cells a script then pulls it out of.
 		b2BodyId proxy[4] = {b2_nullBodyId, b2_nullBodyId, b2_nullBodyId, b2_nullBodyId};
 		bool proxy_on[4] = {false, false, false, false};
 		struct Held {
@@ -183,7 +158,6 @@ private:
 	void wake_bodies_in(ChunkCoord coord);
 
 	void apply_buoyancy(Body& body);
-	void creature_pass(Body& body);
 	void create_proxies(Body& body, int handle);
 	void destroy_proxies(Body& body);
 	void place_proxies(Body& body);

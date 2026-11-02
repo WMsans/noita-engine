@@ -1,8 +1,8 @@
 # noita_engine (Godot 4.7 GDExtension)
 
 Pixel-world simulation: a native library (`PixelWorld`, `PixelMaterial`,
-`PixelReaction`, `PixelRigidBody`, `PixelCharacter`, ...) plus GDScript demos and
-example data.
+`PixelReaction`, `PixelRigidBody`, ...) plus the GDScript `PixelCharacter` and
+`CharacterSystem`, demos and example data.
 
 ## Use it in your project
 

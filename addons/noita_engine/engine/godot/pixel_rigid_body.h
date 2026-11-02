@@ -114,6 +114,9 @@ public:
 	bool is_sleeping() const;
 	// The pose at the start of this tick's Box2D step, in global space (as the node transform is).
 	Vector2 get_previous_position() const;
+	// The live Box2D pose, in global space. Inside a `bodies_stepped` handler the node
+	// transform still holds the pre-step pose, so this is how a script sees where Box2D put it.
+	Vector2 get_body_position() const;
 	// A null rotation keeps the current one.
 	void teleport(const Vector2 &p_position, const Variant &p_rotation = Variant());
 };
