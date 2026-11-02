@@ -252,6 +252,10 @@ void PhysicsWorld::teleport(int handle, float x, float y, float angle) {
 	wake_footprint(body);
 	b2Body_SetTransform(body.id, {x, y}, b2MakeRot(angle));
 	b2Body_SetAwake(body.id, true);
+	// The tick's sweep starts where the body is now, not where it was: a later handler sweeping
+	// from the stale pose would be stopped by every cell between the old and the new place.
+	body.prev_x = x;
+	body.prev_y = y;
 }
 
 // A sleeping body stamps without waking the cells around it, so sand resting on it sleeps

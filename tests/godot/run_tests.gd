@@ -710,6 +710,32 @@ func test_bodies_stepped_order() -> bool:
 	return ok
 
 
+# A teleport in a bodies_stepped handler is what the rest of the tick sees: the sweep starts
+# at the new pose, so the cells between the old and the new place cannot stop it. The mover
+# connects before the character joins, so it runs before CharacterSystem's handler.
+func test_handler_teleport_starts_the_sweep_at_the_new_pose() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	world.fill_rect(Rect2i(-30, 100, 2, 100), &"rock")  # between the start and the target
+	var character := _make_character(Vector2(-100, 200))
+	var moved := [false]
+	var mover := func() -> void:
+		if moved[0]:
+			return
+		moved[0] = true
+		character.teleport(Vector2(60, 200))
+	world.bodies_stepped.connect(mover)
+	await _register()
+	world.step(1)
+	var at := character.position
+	world.free()
+	character.free()
+	if not moved[0] or absf(at.x - 60.0) > 0.5:
+		printerr("  teleported to x 60, the next sweep left it at x %.2f (the old wall at -30?)" % at.x)
+		return false
+	return true
+
+
 func test_bodies_stepped_handler_may_free() -> bool:
 	# A handler frees a crate mid-tick; the tick must carry on without it.
 	var world: PixelWorld = await _make_world()
