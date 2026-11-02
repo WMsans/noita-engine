@@ -548,32 +548,47 @@ func test_left_world() -> bool:
 	return true
 
 
-func test_wheel_joint_motor() -> bool:
+# The CarController builds its chassis and two motorised wheels in _ready; drive(1.0) spins
+# both motors and moves the car at least 40 cells in three seconds.
+func test_car_drives() -> bool:
 	var world: PixelWorld = await _make_world()
 	world.simulating = false
-	var chassis := _make_body(40, 8, &"rock", Vector2(0, 220))
-	var wheels: Array[PixelRigidBody] = [_make_body(10, 10, &"rock", Vector2(-14, 232), true), _make_body(10, 10, &"rock", Vector2(14, 232), true)]
-	var joints: Array[PixelWheelJoint] = []
-	for wheel: PixelRigidBody in wheels:
-		var joint := PixelWheelJoint.new()
-		joint.position = wheel.position
-		root.add_child(joint)
-		joint.body_a = joint.get_path_to(chassis)
-		joint.body_b = joint.get_path_to(wheel)
-		joint.enable_motor = true
-		joint.motor_speed = 5.0
-		joint.max_motor_torque = 1e6
-		joints.append(joint)
+	var car := CarController.new()
+	car.position = Vector2(0, 220)
+	root.add_child(car)
+	car.drive(1.0)
 	await _register()
-	await _register()
-	var start := chassis.position.x
+	var start := car.chassis.position.x
 	world.step(180)
-	var moved := chassis.position.x - start
+	var moved := car.chassis.position.x - start
 	world.free()
-	for node: Node in [chassis, wheels[0], wheels[1], joints[0], joints[1]]:
-		node.free()
+	car.free()
 	if moved < 40.0:
 		printerr("  the car moved %.1f cells, expected >= 40" % moved)
+		return false
+	return true
+
+
+# Braking at speed stops the car within two seconds: the motors hold the wheels still.
+func test_car_brakes() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	var car := CarController.new()
+	car.position = Vector2(0, 220)
+	root.add_child(car)
+	car.drive(1.0)
+	await _register()
+	world.step(120)
+	car.set_braking(true)
+	var ticks := 0
+	while ticks < 120 and absf(car.chassis.linear_velocity.x) >= 1.0:
+		world.step(1)
+		ticks += 1
+	var speed := absf(car.chassis.linear_velocity.x)
+	world.free()
+	car.free()
+	if speed >= 1.0:
+		printerr("  the car was still moving at %.2f cells/s %d ticks after braking" % [speed, ticks])
 		return false
 	return true
 
