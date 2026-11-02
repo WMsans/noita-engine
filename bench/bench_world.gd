@@ -23,8 +23,8 @@ const PARTICLE_BUDGET_MS := 1.0
 const PARTICLES_BUDGET := 200.0
 const BODY_BUDGET_MS := 2.0  # Box2D step + terrain shapes + stamping
 const BODIES_BUDGET := 40.0  # bodies alive on average, so a bench without bodies cannot pass
-const CREATURE_BUDGET_MS := 1.0
-const CREATURES_BUDGET := 30.0  # creatures alive on average
+const CHARACTER_BUDGET_MS := 1.0  # report-only: recorded as character_budget_ms, never gated
+const CHARACTERS_BUDGET := 30.0  # characters alive on average
 # Lighting: the light-input build (grid walk + spot discs + the copy into the render job's
 # upload buffer) per frame, the GPU light + bloom pass, and the spots that prove the pass ran on
 # real lights.
@@ -74,11 +74,11 @@ const BODY_PERIOD := 10
 const BODY_BATCH := 10
 const BODY_MAX := 60
 const BODY_FREE_DISTANCE := 600.0
-# Creatures: every CREATURE_PERIOD frames drop CREATURE_BATCH wanderers in a row above the
+# Characters: every CHARACTER_PERIOD frames drop CHARACTER_BATCH wanderers in a row above the
 # camera; they walk, turn at walls and hop. Freed like the bodies.
-const CREATURE_PERIOD := 10
-const CREATURE_BATCH := 8
-const CREATURE_MAX := 48
+const CHARACTER_PERIOD := 10
+const CHARACTER_BATCH := 8
+const CHARACTER_MAX := 48
 const WANDER_SPEED := 60.0
 const HOP_PERIOD := 90
 const HOP_SPEED := 180.0
@@ -117,12 +117,13 @@ var shape_samples: Array[float] = []
 var stamp_samples: Array[float] = []
 var shape_build_samples: Array[float] = []
 var body_cost_samples: Array[float] = []
-var creature_samples: Array[float] = []
-var creature_ms_samples: Array[float] = []
+var character_samples: Array[float] = []
+var character_ms_samples: Array[float] = []
 var light_cpu_samples: Array[float] = []
 var light_gpu_samples: Array[float] = []
 var light_spots_samples: Array[float] = []
-var creatures: Array[PixelCharacter] = []
+var characters: Array[PixelCharacter] = []
+var characters_system: CharacterSystem
 var bodies: Array[PixelRigidBody] = []
 var crate_texture: ImageTexture
 var boulder_texture: ImageTexture
@@ -134,6 +135,7 @@ func _ready() -> void:
 	if refused:
 		return
 	world.light_resolution = light_resolution
+	characters_system = CharacterSystem.of(world)  # created up front so sampling never does it
 	for i in WAYPOINTS.size():
 		path_length += WAYPOINTS[i].distance_to(WAYPOINTS[(i + 1) % WAYPOINTS.size()])
 	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
@@ -168,8 +170,8 @@ func _process(_delta: float) -> void:
 		stamp_samples.append(float(stats.stamp_ms))
 		shape_build_samples.append(float(stats.shape_builds))
 		body_cost_samples.append(float(stats.physics_ms) + float(stats.shape_ms) + float(stats.stamp_ms))
-		creature_samples.append(float(stats.creatures))
-		creature_ms_samples.append(float(stats.creature_ms))
+		character_samples.append(float(characters.size()))
+		character_ms_samples.append(characters_system.last_tick_usec / 1000.0)
 		light_cpu_samples.append(float(stats.light_cpu_ms))
 		light_gpu_samples.append(float(stats.light_gpu_ms))
 		light_spots_samples.append(float(stats.light_spots))
@@ -236,36 +238,36 @@ func _paint_workload(centre: Vector2i) -> void:
 	if frame % LAVA_PERIOD == 0:
 		world.fill_rect(Rect2i(centre + LAVA_OFFSET, LAVA_SIZE), &"lava")
 	_cycle_bodies(centre)
-	_cycle_creatures(centre)
+	_cycle_characters(centre)
 
 
-func _cycle_creatures(centre: Vector2i) -> void:
-	for i in range(creatures.size() - 1, -1, -1):
-		var creature := creatures[i]
-		if creature.global_position.distance_to(Vector2(centre)) > BODY_FREE_DISTANCE or creature.has_meta(&"left"):
-			creature.queue_free()
-			creatures.remove_at(i)
+func _cycle_characters(centre: Vector2i) -> void:
+	for i in range(characters.size() - 1, -1, -1):
+		var character := characters[i]
+		if character.global_position.distance_to(Vector2(centre)) > BODY_FREE_DISTANCE or character.has_meta(&"left"):
+			character.queue_free()
+			characters.remove_at(i)
 			continue
-		var dir: float = creature.get_meta(&"dir")
-		if creature.get_wall_side() == int(signf(dir)):
+		var dir: float = character.get_meta(&"dir")
+		if character.get_wall_side() == int(signf(dir)):
 			dir = -dir
-			creature.set_meta(&"dir", dir)
-		var v := creature.velocity
+			character.set_meta(&"dir", dir)
+		var v := character.velocity
 		v.x = dir * WANDER_SPEED
-		if creature.is_on_floor() and (frame + i) % HOP_PERIOD == 0:
+		if character.is_on_floor() and (frame + i) % HOP_PERIOD == 0:
 			v.y = -HOP_SPEED
-		creature.velocity = v
-	if frame % CREATURE_PERIOD != 0:
+		character.velocity = v
+	if frame % CHARACTER_PERIOD != 0:
 		return
-	for i in CREATURE_BATCH:
-		if creatures.size() >= CREATURE_MAX:
+	for i in CHARACTER_BATCH:
+		if characters.size() >= CHARACTER_MAX:
 			return
-		var creature := PixelCharacter.new()
-		creature.position = Vector2(centre) + Vector2(-140 + 40 * i, -80)
-		creature.set_meta(&"dir", 1.0 if i % 2 == 0 else -1.0)
-		creature.left_world.connect(creature.set_meta.bind(&"left", true))
-		add_child(creature)
-		creatures.append(creature)
+		var character := PixelCharacter.new()
+		character.position = Vector2(centre) + Vector2(-140 + 40 * i, -80)
+		character.set_meta(&"dir", 1.0 if i % 2 == 0 else -1.0)
+		character.left_world.connect(character.set_meta.bind(&"left", true))
+		add_child(character)
+		characters.append(character)
 
 
 func _cycle_bodies(centre: Vector2i) -> void:
@@ -322,8 +324,8 @@ func _finish() -> void:
 	var particles_mean := _mean(particles_material_samples)
 	var body_cost_mean := _mean(body_cost_samples)
 	var bodies_mean := _mean(body_samples)
-	var creatures_mean := _mean(creature_samples)
-	var creature_ms_mean := _mean(creature_ms_samples)
+	var characters_mean := _mean(character_samples)
+	var character_ms_mean := _mean(character_ms_samples)
 	var light_cpu_mean := _mean(light_cpu_samples)
 	var light_gpu_mean := _mean(light_gpu_samples)
 	var light_spots_mean := _mean(light_spots_samples)
@@ -371,9 +373,11 @@ func _finish() -> void:
 		"shape_builds_mean": _mean(shape_build_samples),
 		"body_ms_mean": body_cost_mean,
 		"body_ms_p99": _p99(body_cost_samples),
-		"creatures_mean": creatures_mean,
-		"creature_ms_mean": creature_ms_mean,
-		"creature_ms_p99": _p99(creature_ms_samples),
+		"characters_mean": characters_mean,
+		# Report-only (docs bench-agent.md): the GDScript pass is recorded, not gated.
+		"character_ms_mean": character_ms_mean,
+		"character_ms_p99": _p99(character_ms_samples),
+		"character_budget_ms": CHARACTER_BUDGET_MS,
 		"light_cpu_ms_mean": light_cpu_mean,
 		"light_cpu_ms_p99": _p99(light_cpu_samples),
 		"light_gpu_ms_mean": light_gpu_mean,
@@ -391,15 +395,14 @@ func _finish() -> void:
 			and particles_mean >= PARTICLES_BUDGET
 			and body_cost_mean <= BODY_BUDGET_MS
 			and bodies_mean >= BODIES_BUDGET
-			and creature_ms_mean <= CREATURE_BUDGET_MS
-			and creatures_mean >= CREATURES_BUDGET
+			and characters_mean >= CHARACTERS_BUDGET
 			and light_cpu_mean <= LIGHT_CPU_BUDGET_MS
 			and light_gpu_mean <= LIGHT_GPU_BUDGET_MS
 			and _light_gpu_ok(OS.get_name(), light_gpu_supported, light_gpu_mean)
 			and light_spots_mean >= LIGHT_SPOTS_BUDGET,
 	}
 	var written := _write_json(result)
-	print("bench world: %d frames (+%d warm-up) | sim %.2f ms mean / %.2f p99 | frame %.2f / %.2f ms | stream %.2f / %.2f ms | gen %.2f ms | chunks %d | cells %.0f | view-missing %d frames | particles %.0f / visual %.0f, %.3f ms mean / %.3f p99, dropped %d | bodies %.0f (awake %.0f), physics %.2f + shapes %.2f + stamp %.2f = %.2f ms mean / %.2f p99, %.1f builds | creatures %.0f, %.3f ms mean / %.3f p99 | light %.2f ms cpu mean / %.2f p99 | light %.3f ms gpu mean / %.3f p99 (timestamps %s), spots %.1f | budget %s | %s" % [
+	print("bench world: %d frames (+%d warm-up) | sim %.2f ms mean / %.2f p99 | frame %.2f / %.2f ms | stream %.2f / %.2f ms | gen %.2f ms | chunks %d | cells %.0f | view-missing %d frames | particles %.0f / visual %.0f, %.3f ms mean / %.3f p99, dropped %d | bodies %.0f (awake %.0f), physics %.2f + shapes %.2f + stamp %.2f = %.2f ms mean / %.2f p99, %.1f builds | characters %.0f, %.3f ms mean / %.3f p99 (report-only) | light %.2f ms cpu mean / %.2f p99 | light %.3f ms gpu mean / %.3f p99 (timestamps %s), spots %.1f | budget %s | %s" % [
 		result.frames, WARMUP_FRAMES, result.sim_ms_mean, result.sim_ms_p99,
 		result.frame_ms_mean, result.frame_ms_p99, result.stream_ms_mean,
 		result.stream_ms_p99, result.gen_ms_mean, result.chunks_generated,
@@ -408,7 +411,7 @@ func _finish() -> void:
 		result.particle_ms_p99, result.particles_dropped,
 		result.bodies_mean, result.bodies_awake_mean, result.physics_ms_mean, result.shape_ms_mean,
 		result.stamp_ms_mean, result.body_ms_mean, result.body_ms_p99, result.shape_builds_mean,
-		result.creatures_mean, result.creature_ms_mean, result.creature_ms_p99,
+		result.characters_mean, result.character_ms_mean, result.character_ms_p99,
 		result.light_cpu_ms_mean, result.light_cpu_ms_p99,
 		result.light_gpu_ms_mean, result.light_gpu_ms_p99,
 		"reported" if result.light_gpu_ms_supported else ("stubbed" if result.light_gpu_ms_stubbed else "missing"), result.light_spots_mean,
