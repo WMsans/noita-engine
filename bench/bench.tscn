@@ -1,7 +1,7 @@
 [gd_scene load_steps=3 format=3]
 
 [ext_resource type="Script" path="res://bench/bench.gd" id="1_bench"]
-[ext_resource type="PixelMaterialSet" path="res://materials/default_set.tres" id="2_set"]
+[ext_resource type="PixelMaterialSet" path="res://addons/noita_engine/demo/resources/materials/default_set.tres" id="2_set"]
 
 [node name="Bench" type="Node2D"]
 script = ExtResource("1_bench")

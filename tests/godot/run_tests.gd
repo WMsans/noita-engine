@@ -29,7 +29,7 @@ func test_extension_loaded() -> bool:
 
 
 func test_default_set_validates() -> bool:
-	var mat_set: PixelMaterialSet = load("res://materials/default_set.tres")
+	var mat_set: PixelMaterialSet = load("res://addons/noita_engine/demo/resources/materials/default_set.tres")
 	if mat_set == null:
 		printerr("  default_set.tres did not load")
 		return false
@@ -45,7 +45,7 @@ func test_default_set_validates() -> bool:
 # Material ids are 1..n in `materials` order (core MaterialTable::compile), so an index
 # pins the id: rock is 1, water 4, fire 8.
 func test_starter_set_ids_and_fields() -> bool:
-	var mat_set: PixelMaterialSet = load("res://materials/default_set.tres")
+	var mat_set: PixelMaterialSet = load("res://addons/noita_engine/demo/resources/materials/default_set.tres")
 	var expected: Array[StringName] = [&"rock", &"wood", &"sand", &"water", &"oil", &"lava", &"acid", &"fire", &"steam", &"smoke", &"dirt", &"grass", &"sandstone"]
 	for i: int in expected.size():
 		if mat_set.materials[i].name != expected[i]:
@@ -72,7 +72,7 @@ func test_starter_set_ids_and_fields() -> bool:
 # spawn_cell gives a textured cell the texel of its own position: (5, 3) reads texel (5, 3),
 # and (-1, -1) wraps to texel (15, 15).
 func test_material_texture_draws() -> bool:
-	var mat_set: PixelMaterialSet = load("res://materials/default_set.tres").duplicate(true)
+	var mat_set: PixelMaterialSet = load("res://addons/noita_engine/demo/resources/materials/default_set.tres").duplicate(true)
 	var rock: PixelMaterial = mat_set.materials[0]
 	var image := Image.create_empty(16, 16, false, Image.FORMAT_RGBA8)
 	for y: int in 16:
@@ -102,7 +102,7 @@ func test_material_texture_draws() -> bool:
 
 # An 8x8 texture is rejected, and the material renders with its plain colour + shade.
 func test_material_texture_wrong_size_falls_back() -> bool:
-	var mat_set: PixelMaterialSet = load("res://materials/default_set.tres").duplicate(true)
+	var mat_set: PixelMaterialSet = load("res://addons/noita_engine/demo/resources/materials/default_set.tres").duplicate(true)
 	var rock: PixelMaterial = mat_set.materials[0]
 	var image := Image.create_empty(8, 8, false, Image.FORMAT_RGBA8)
 	image.fill(Color(0.9, 0.1, 0.1))
@@ -122,7 +122,7 @@ func test_material_texture_wrong_size_falls_back() -> bool:
 
 
 func test_generator_crust_properties() -> bool:
-	var generator: PixelWorldGenerator = load("res://worldgen/default_generator.tres")
+	var generator: PixelWorldGenerator = load("res://addons/noita_engine/demo/resources/worldgen/default_generator.tres")
 	if generator == null:
 		printerr("  worldgen/default_generator.tres did not load")
 		return false
@@ -150,7 +150,7 @@ func _shade_close(a: Color, base: Color, amount: float) -> bool:
 
 func _make_world() -> PixelWorld:
 	var world: PixelWorld = PixelWorld.new()
-	world.material_set = load("res://materials/default_set.tres")
+	world.material_set = load("res://addons/noita_engine/demo/resources/materials/default_set.tres")
 	world.worker_threads = 1  # single-threaded: deterministic, and no threads in the test run
 	root.add_child(world)
 	# This runner starts inside SceneTree._initialize(), before the root enters the tree, so a
@@ -722,8 +722,8 @@ func test_character_pushes_body() -> bool:
 # `target` must already be in the tree; the world's _ready blocks once to fill the active zone.
 func _make_generated_world(target: Node2D) -> PixelWorld:
 	var world: PixelWorld = PixelWorld.new()
-	world.material_set = load("res://materials/default_set.tres")
-	world.generator = load("res://worldgen/default_generator.tres")
+	world.material_set = load("res://addons/noita_engine/demo/resources/materials/default_set.tres")
+	world.generator = load("res://addons/noita_engine/demo/resources/worldgen/default_generator.tres")
 	world.worker_threads = 1
 	world.generator_threads = 2
 	# Off from the start: the first frame can run physics ticks, and a settling tick rewrites
@@ -969,11 +969,11 @@ func test_acid_on_rock_leaves_air() -> bool:
 
 
 func test_default_generator_validates() -> bool:
-	var generator: PixelWorldGenerator = load("res://worldgen/default_generator.tres")
+	var generator: PixelWorldGenerator = load("res://addons/noita_engine/demo/resources/worldgen/default_generator.tres")
 	if generator == null:
 		printerr("  worldgen/default_generator.tres did not load")
 		return false
-	var error: String = generator.validate(load("res://materials/default_set.tres"))
+	var error: String = generator.validate(load("res://addons/noita_engine/demo/resources/materials/default_set.tres"))
 	if error != "":
 		printerr("  validate() said: '" + error + "'")
 	return error == ""
@@ -990,14 +990,14 @@ func test_biome_crust_defaults_none() -> bool:
 
 
 func test_desert_ships_sandstone_ground() -> bool:
-	var desert: PixelBiome = load("res://worldgen/desert.tres")
+	var desert: PixelBiome = load("res://addons/noita_engine/demo/resources/worldgen/desert.tres")
 	if desert.crust_material != &"sandstone" or desert.crust_depth != 6:
 		printerr("  desert crust is '%s' x %d, expected 'sandstone' x 6" % [desert.crust_material, desert.crust_depth])
 		return false
 	if desert.base_material != &"sandstone":
 		printerr("  desert base is '%s', expected 'sandstone'" % desert.base_material)
 		return false
-	var mat_set: PixelMaterialSet = load("res://materials/default_set.tres")
+	var mat_set: PixelMaterialSet = load("res://addons/noita_engine/demo/resources/materials/default_set.tres")
 	for mat: PixelMaterial in mat_set.materials:
 		if mat.name == &"sandstone":
 			return mat.material_class == 1
@@ -1007,7 +1007,7 @@ func test_desert_ships_sandstone_ground() -> bool:
 
 func test_shipped_biomes_use_slabs() -> bool:
 	for biome_name: String in ["forest", "desert", "underground", "caverns", "deep"]:
-		var biome: PixelBiome = load("res://worldgen/%s.tres" % biome_name)
+		var biome: PixelBiome = load("res://addons/noita_engine/demo/resources/worldgen/%s.tres" % biome_name)
 		if biome.cave_style != PixelBiome.CAVE_STYLE_SLABS or biome.slab_air <= 0.0:
 			printerr("  worldgen/%s.tres is not on the slabs cave style" % biome_name)
 			return false
@@ -1026,7 +1026,7 @@ func _make_room_generator(room: PixelRoom, palette: PixelRoomPalette) -> PixelWo
 	var generator: PixelWorldGenerator = PixelWorldGenerator.new()
 	var biomes: Array[PixelBiome] = []
 	for biome_name: String in ["forest", "desert", "underground", "caverns", "deep"]:
-		biomes.append(load("res://worldgen/%s.tres" % biome_name))
+		biomes.append(load("res://addons/noita_engine/demo/resources/worldgen/%s.tres" % biome_name))
 	generator.biomes = biomes
 	var rooms: Array[PixelRoom] = [room]
 	generator.rooms = rooms
@@ -1054,7 +1054,7 @@ func test_room_colour_missing_reported() -> bool:
 	var room: PixelRoom = PixelRoom.new()
 	room.image = ImageTexture.create_from_image(_colour_room_image(Image.FORMAT_RGBA8))
 	var palette: PixelRoomPalette = _room_palette([Color8(0, 0, 0, 255)])  # omits the blue pixel
-	var error: String = _make_room_generator(room, palette).validate(load("res://materials/default_set.tres"))
+	var error: String = _make_room_generator(room, palette).validate(load("res://addons/noita_engine/demo/resources/materials/default_set.tres"))
 	if not error.contains("(2, 1)") or not error.contains("#123456ff"):
 		printerr("  validate() said: '" + error + "'")
 		return false
@@ -1063,7 +1063,7 @@ func test_room_colour_missing_reported() -> bool:
 
 func test_room_without_image_reported() -> bool:
 	var room: PixelRoom = PixelRoom.new()
-	var error: String = _make_room_generator(room, PixelRoomPalette.new()).validate(load("res://materials/default_set.tres"))
+	var error: String = _make_room_generator(room, PixelRoomPalette.new()).validate(load("res://addons/noita_engine/demo/resources/materials/default_set.tres"))
 	if not error.contains("room 0 has no image"):
 		printerr("  validate() said: '" + error + "'")
 		return false
@@ -1074,7 +1074,7 @@ func test_rgb8_room_image_accepted() -> bool:
 	var room: PixelRoom = PixelRoom.new()
 	room.image = ImageTexture.create_from_image(_colour_room_image(Image.FORMAT_RGB8))
 	var palette: PixelRoomPalette = _room_palette([Color8(0, 0, 0, 255), Color8(18, 52, 86, 255)])
-	var error: String = _make_room_generator(room, palette).validate(load("res://materials/default_set.tres"))
+	var error: String = _make_room_generator(room, palette).validate(load("res://addons/noita_engine/demo/resources/materials/default_set.tres"))
 	if error != "":
 		printerr("  validate() said: '" + error + "'")
 	return error == ""
@@ -1303,7 +1303,7 @@ func test_bench_light_gpu_gate_exemption() -> bool:
 # Every demo except the acceptance scene keeps lighting off: they were tuned as unlit scenes, and
 # turning lighting on is a per-scene choice. world_demo is the scene tuned by eye for lighting.
 func test_existing_scenes_opt_out() -> bool:
-	var scenes: Array[String] = ["res://demo/paint_demo.tscn", "res://demo/bodies_demo.tscn", "res://demo/creatures_demo.tscn", "res://bench/bench.tscn"]
+	var scenes: Array[String] = ["res://addons/noita_engine/demo/paint_demo.tscn", "res://addons/noita_engine/demo/bodies_demo.tscn", "res://addons/noita_engine/demo/creatures_demo.tscn", "res://bench/bench.tscn"]
 	for path: String in scenes:
 		var scene: Node = load(path).instantiate()
 		var world: PixelWorld = scene.get_node_or_null("PixelWorld")
@@ -1312,12 +1312,12 @@ func test_existing_scenes_opt_out() -> bool:
 			scene.free()
 			return false
 		scene.free()
-	var tuned: Node = load("res://demo/world_demo.tscn").instantiate()
+	var tuned: Node = load("res://addons/noita_engine/demo/world_demo.tscn").instantiate()
 	var tuned_world: PixelWorld = tuned.get_node_or_null("PixelWorld")
 	var lit: bool = tuned_world != null and tuned_world.lighting_enabled
 	tuned.free()
 	if not lit:
-		printerr("  res://demo/world_demo.tscn: PixelWorld lighting_enabled is off, expected on")
+		printerr("  res://addons/noita_engine/demo/world_demo.tscn: PixelWorld lighting_enabled is off, expected on")
 		return false
 	return true
 
@@ -1353,8 +1353,8 @@ func test_back_wall_generator_defaults() -> bool:
 
 func _make_back_wall_world(target: Node2D, enabled: bool) -> PixelWorld:
 	var world: PixelWorld = PixelWorld.new()
-	world.material_set = load("res://materials/default_set.tres")
-	world.generator = load("res://worldgen/default_generator.tres")
+	world.material_set = load("res://addons/noita_engine/demo/resources/materials/default_set.tres")
+	world.generator = load("res://addons/noita_engine/demo/resources/worldgen/default_generator.tres")
 	world.worker_threads = 1
 	world.generator_threads = 2
 	world.simulating = false
