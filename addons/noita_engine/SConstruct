@@ -31,6 +31,8 @@ THIRDPARTY = (
 ARGUMENTS.pop("thirdparty", None)
 THIRDPARTY = str(THIRDPARTY)
 
+env["ARCOM"] = "${TEMPFILE('$AR $ARFLAGS $TARGET $SOURCES')}"
+
 SConscript(
     os.path.join(THIRDPARTY, "godot-cpp", "SConstruct"),
     {"env": env, "customs": customs, "api_version": "4.7"},
