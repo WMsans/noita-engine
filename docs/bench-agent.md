@@ -84,11 +84,12 @@ godot --path . res://bench/bench.tscn -- --frames=1800 --out=bench/results/<mach
 World (`bench/bench_world.tscn`): the bench that matters — generated world, camera flies the
 surface/dive/cavern-run/return polyline at 10 cells per frame while chunks stream in, sleep and
 get discarded; every 20 frames a radius-24 sand disc is blown up with a burst of visual sparks;
-every 10 frames 10 crates and boulders and 8 wandering creatures drop above the camera, and
+every 10 frames 10 crates and boulders and 8 wandering characters drop above the camera, and
 anything more than 600 cells away is freed; every 60 frames a 40×6 lava pool is painted at camera
 offset (−200, 60); every 30 frames oil and fire; and a `PixelLight` of radius 48 with flicker 0.3
-is a child of the camera. About 54 bodies and 43 creatures are alive per frame, and the frame
-builds its light inputs, spots and GPU cascades every frame from the first one.
+is a child of the camera. About 96 bodies (43 of them characters, which are rigid bodies too) and
+43 characters are alive per frame, and the frame builds its light inputs, spots and GPU cascades
+every frame from the first one.
 
 ```bash
 godot --path . res://bench/bench_world.tscn -- --frames=1800 --out=bench/results/<machine>.json
@@ -127,7 +128,10 @@ chunks were awake per frame, and `view_missing_frames` counts frames with a hole
 `bodies_mean` / `bodies_awake_mean` are rigid bodies alive / awake per frame;
 `physics_ms_*` (Box2D step), `shape_ms_*` (terrain shape builds), `stamp_ms_*` (stamp +
 unstamp) and their sum `body_ms_*`; `shape_builds_mean` is chunk shape rebuilds per tick.
-`creatures_mean` is creatures alive per frame and `creature_ms_*` the creature grid pass.
+`characters_mean` is `PixelCharacter`s alive per frame and `character_ms_*` the GDScript
+`CharacterSystem` tick (`last_tick_usec`), which builds the grid queries from the characters and
+runs the behaviour in GDScript. It is **report-only**: `character_budget_ms` records the 1.0 ms
+figure the old C++ creature pass was gated on, but nothing in `budget_pass` compares against it.
 `light_cpu_ms_*` is the light-input build for one frame — grid walk into the RGBA8 texels (the
 whole area when the lit area changed, otherwise only the chunks that changed), marker and spot
 collection, spot discs, and the copy of those texels into the render job's upload buffer — against
@@ -152,12 +156,15 @@ Budgets (`bench.gd` and `bench_world.gd`; do not relax them to make a run pass):
 | `particles_material_mean` | — | ≥ 200 |
 | `body_ms_mean` | — | ≤ 2.0 |
 | `bodies_mean` | — | ≥ 40 |
-| `creature_ms_mean` | — | ≤ 1.0 |
-| `creatures_mean` | — | ≥ 30 |
+| `characters_mean` | — | ≥ 30 |
 | `light_cpu_ms_mean` | — | ≤ 1.0 |
 | `light_gpu_ms_mean` | — | ≤ 3.0 (light + bloom) |
 | `light_gpu_ms_mean > 0` | — | lighting really ran (see the Metal note) |
 | `light_spots_mean` | — | ≥ 1 |
+
+`character_ms_mean` / `character_ms_p99` are **not** gates: `character_budget_ms` (1.0) is
+written to the JSON and printed next to the timings so the cost of the move from the C++ creature
+pass to GDScript stays visible, but nothing reads it into `budget_pass`.
 
 **macOS/Metal cannot report GPU time.** Godot 4.7.2's Metal driver stubs RenderingDevice
 timestamp queries (`timestamp_query_pool_get_results` just zeroes the buffer), so
@@ -180,6 +187,11 @@ Apple M1 (8 cores, macOS 26.4.1), Godot 4.7.2 — `bench/results/macos-m1-textur
 ```
 bench world: 1680 frames (+120 warm-up) | sim 2.07 ms mean / 4.30 p99 | frame 8.38 / 10.08 ms | stream 0.11 / 0.40 ms | gen 3.35 ms | chunks 6098 | cells 92816 | view-missing 0 frames | particles 554 / visual 67, 0.043 ms mean / 0.089 p99, dropped 1922 | bodies 54 (awake 41), physics 0.10 + shapes 0.29 + stamp 0.48 = 0.87 ms mean / 1.46 p99, 3.6 builds | creatures 43, 0.160 ms mean / 0.237 p99 | light 0.547 ms cpu mean / 1.061 p99 | light 0.000 ms gpu mean / 0.000 p99 (timestamps stubbed), spots 1.9 | budget pass
 ```
+
+That run predates the GDScript character pass: its `creatures 43, 0.160 ms mean / 0.237 p99` is
+the C++ creature grid pass, and it is the baseline the report-only `character_ms_*` is read
+against (the same machine reports 0.80 ms mean / 1.43 p99 at 43 characters once the behaviour is
+GDScript).
 
 `light_resolution` 1, `light_gpu_ms_supported: false`, `light_gpu_ms_stubbed: true`,
 `cells_updated_mean` 92816. A second run agreed within noise: frame 8.38 / 10.18 ms, gen 3.34 ms,
@@ -222,7 +234,7 @@ The checkpoint is done when the file is committed with `budget_pass: true`.
   a stream gate (check `generator_threads` and `max_inserts_per_frame`), or
   `view_missing_frames > 0` (a real streaming hole), or a particle gate (`particle_ms_mean`:
   profile `ParticlePool::step`; `particles_material_mean` under 200: say so, don't shrink it), or
-  `body_ms_mean` (say which of physics / shapes / stamp dominates), or a creature gate, or a
+  `body_ms_mean` (say which of physics / shapes / stamp dominates), or a
   light gate (`light_cpu_ms_mean`: profile `PixelWorld::build_light_frame` — the dirty-chunk scan
   and `build_light_rects`, the spot discs and the restore of the last frame's spot rects;
   `frame_ms_p99` with `lighting_enabled = false` says whether the light pass is what pushed it

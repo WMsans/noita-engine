@@ -17,9 +17,12 @@ TEST_CASE("box2d links and a box falls") {
 	b2DestroyWorld(world);
 }
 
+#include <algorithm>
 #include <cstring>
 
+#include "grid_query.h"
 #include "physics_test_util.h"
+#include "raycast.h"
 #include "sim_test_util.h"
 
 namespace {
@@ -467,6 +470,260 @@ TEST_CASE("a jointed car is enabled or disabled as a whole") {
 	phystest::run(physics, 1);
 	CHECK(b2Body_IsEnabled(physics.body_id(chassis)));
 	CHECK(b2Body_IsEnabled(physics.body_id(front)));
+}
+
+namespace {
+
+// An unstamped box body: no pixels, a box size and a mass.
+BodyDef box_body(int w, int h, float x, float y, float mass) {
+	BodyDef d;
+	d.box_w = w;
+	d.box_h = h;
+	d.x = x;
+	d.y = y;
+	d.props.mass = mass;
+	return d;
+}
+
+// The grid pass a cell-driven box body gets from its game code: sweep from where it was at
+// the start of the step to where Box2D put it.
+void hold_on_grid(PhysicsWorld& physics, int handle, WorldGrid& grid, int w, int h) {
+	const b2Vec2 prev = physics.previous_position(handle);
+	const b2Vec2 now = phystest::pos(physics, handle);
+	const BoxSweep r = sweep_box(grid, prev.x, prev.y, now.x, now.y, w, h, RAY_SOLID | RAY_POWDER);
+	b2Body_SetTransform(physics.body_id(handle), {r.x, r.y}, b2Body_GetRotation(physics.body_id(handle)));
+}
+
+}  // namespace
+
+TEST_CASE("a box body without pixels is unstamped and falls") {
+	World w;
+	phystest::fill(w.grid, 0, 100, SIZE, SIZE, w.id("rock"));
+	PhysicsWorld physics(w.grid, GRAVITY);
+	const int box = physics.add_body(box_body(8, 16, 128, 40, 128));
+	REQUIRE(box >= 0);
+	phystest::run(physics, 120);
+	CHECK(std::fabs(phystest::pos(physics, box).y - 92.0f) <= 1.0f);
+	physics.stamp();
+	CHECK(count_body_cells(w.grid) == 0);
+	Cell c{};
+	REQUIRE(w.grid.get(128, 95, c));
+	CHECK(c.mat == MAT_AIR);
+	physics.unstamp();
+	CHECK(count_body_cells(w.grid) == 0);
+}
+
+TEST_CASE("a box body without mass is refused") {
+	World w;
+	PhysicsWorld physics(w.grid, GRAVITY);
+	CHECK(physics.add_body(box_body(8, 16, 128, 40, 0)) == -1);
+	CHECK(physics.stats().bodies == 0);
+}
+
+TEST_CASE("set_props refilters every shape of a many-box body") {
+	World w;
+	PhysicsWorld physics(w.grid, GRAVITY);
+	BodyDef d;
+	d.w = 17;
+	d.h = 17;
+	d.pixels.assign((size_t)d.w * d.h, NO_MAT);
+	for (int i = 0; i < 9; ++i) d.pixels[(size_t)(i * 2) * d.w + i * 2] = w.id("wood");  // 9 isolated 1x1 boxes
+	d.shape = BodyShape::Boxes;
+	d.x = 128;
+	d.y = 40;
+	const int body = physics.add_body(d);
+	REQUIRE(body >= 0);
+	const int count = b2Body_GetShapeCount(physics.body_id(body));
+	REQUIRE(count > 8);
+	BodyProps props = d.props;
+	props.terrain_collision = false;
+	physics.set_props(body, props);
+	std::vector<b2ShapeId> shapes((size_t)count);
+	REQUIRE(b2Body_GetShapes(physics.body_id(body), shapes.data(), count) == count);
+	for (const b2ShapeId shape : shapes) CHECK((b2Shape_GetFilter(shape).maskBits & CAT_TERRAIN) == 0);
+}
+
+TEST_CASE("terrain_collision off falls through terrain shapes") {
+	World w(128, 704);
+	phystest::fill(w.grid, 0, 100, 128, 704, w.id("rock"));
+	PhysicsWorld physics(w.grid, GRAVITY);
+	BodyDef d = box_body(8, 16, 64, 40, 128);
+	d.props.terrain_collision = false;
+	const int box = physics.add_body(d);
+	REQUIRE(box >= 0);
+	phystest::run(physics, 60);
+	CHECK(phystest::pos(physics, box).y > 110.0f);
+}
+
+TEST_CASE("cell proxies stop a crate resting on a grid-driven box") {
+	World w;
+	phystest::fill(w.grid, 0, 100, SIZE, SIZE, w.id("rock"));
+	PhysicsWorld physics(w.grid, GRAVITY);
+	BodyDef d = box_body(8, 16, 128, 92, 128);
+	d.props.terrain_collision = false;
+	d.props.cell_proxies = true;
+	d.props.proxy_step_height = 3;
+	d.props.lock_rotation = true;
+	const int box = physics.add_body(d);
+	const int crate = physics.add_body(phystest::box(w.t, "wood", 12, 12, 128, 40));
+	REQUIRE(box >= 0);
+	REQUIRE(crate >= 0);
+	for (int i = 0; i < 120; ++i) {
+		physics.update_terrain();
+		physics.step();
+		hold_on_grid(physics, box, w.grid, 8, 16);
+		physics.place_cell_proxies();
+	}
+	float lo = 1e9f, hi = -1e9f;
+	for (int i = 0; i < 60; ++i) {
+		physics.update_terrain();
+		physics.step();
+		hold_on_grid(physics, box, w.grid, 8, 16);
+		physics.place_cell_proxies();
+		const float y = phystest::pos(physics, box).y;
+		lo = std::min(lo, y);
+		hi = std::max(hi, y);
+	}
+	CHECK(std::fabs(phystest::pos(physics, box).y - 92.0f) <= 0.5f);
+	CHECK(hi - lo < 0.5f);
+	CHECK(phystest::pos(physics, crate).y <= 78.5f);  // on the box's head (top at 84), not beside it
+}
+
+TEST_CASE("proxies leave the bottom proxy_step_height rows open") {
+	// A body stopping against a wall proxy: the only contact with a horizontal normal, since
+	// contact_sides() ignores the body's own proxies.
+	auto wall_contact = [](PhysicsWorld& physics, int handle) {
+		b2ContactData contacts[16];
+		const int n = b2Body_GetContactData(physics.body_id(handle), contacts, 16);
+		for (int i = 0; i < n; ++i)
+			if (contacts[i].manifold.pointCount > 0 && std::fabs(contacts[i].manifold.normal.x) > 0.7f) return true;
+		return false;
+	};
+	for (int step : {0, 3}) {
+		World w;
+		phystest::fill(w.grid, 0, 100, SIZE, SIZE, w.id("rock"));
+		phystest::fill(w.grid, 131, 97, 160, 100, w.id("rock"));  // a 3-cell ledge
+		PhysicsWorld physics(w.grid, GRAVITY);
+		BodyDef d = box_body(8, 16, 127, 92, 128);  // flush against the ledge column
+		d.props.terrain_collision = false;
+		d.props.cell_proxies = true;
+		d.props.proxy_step_height = step;
+		d.props.lock_rotation = true;
+		d.props.gravity_scale = 0;  // only the wall proxy is under test
+		const int box = physics.add_body(d);
+		REQUIRE(box >= 0);
+		for (int i = 0; i < 10; ++i) {
+			physics.update_terrain();
+			physics.step();
+			physics.place_cell_proxies();
+		}
+		// The wall proxy covers the ledge rows only when there is no step height.
+		CHECK(wall_contact(physics, box) == (step == 0));
+		if (step == 0) {
+			// The wall proxy covers the ledge rows, so the box cannot enter the column at x = 131.
+			CHECK(phystest::pos(physics, box).x <= 131.0f);
+			continue;
+		}
+		// With the ledge rows open, Box2D moves the box into the ledge column.
+		for (int i = 0; i < 20; ++i) {
+			b2Body_SetLinearVelocity(physics.body_id(box), {30.0f, 0.0f});
+			physics.update_terrain();
+			physics.step();
+			physics.place_cell_proxies();
+		}
+		CHECK(physics.previous_position(box).x < phystest::pos(physics, box).x);
+		CHECK(phystest::pos(physics, box).x > 131.0f);
+	}
+}
+
+TEST_CASE("contact_sides reports a crate under the box as floor and ignores own proxies") {
+	{
+		World w;
+		phystest::fill(w.grid, 0, 100, SIZE, SIZE, w.id("rock"));
+		PhysicsWorld physics(w.grid, GRAVITY);
+		BodyDef d = box_body(8, 16, 128, 92, 128);
+		d.props.terrain_collision = false;
+		d.props.cell_proxies = true;
+		d.props.lock_rotation = true;
+		const int box = physics.add_body(d);
+		REQUIRE(box >= 0);
+		physics.place_cell_proxies();
+		for (int i = 0; i < 30; ++i) {
+			physics.update_terrain();
+			physics.step();
+			hold_on_grid(physics, box, w.grid, 8, 16);
+			physics.place_cell_proxies();
+		}
+		b2ContactData contacts[16];
+		REQUIRE(b2Body_GetContactData(physics.body_id(box), contacts, 16) > 0);  // its own floor proxy
+		CHECK(physics.contact_sides(box) == 0);
+	}
+	{
+		World w;
+		phystest::fill(w.grid, 0, 100, SIZE, SIZE, w.id("rock"));
+		PhysicsWorld physics(w.grid, GRAVITY);
+		const int crate = physics.add_body(phystest::box(w.t, "wood", 12, 12, 128, 94));
+		phystest::run(physics, 30);
+		BodyDef d = box_body(8, 16, 128, 70, 128);
+		d.props.lock_rotation = true;
+		const int box = physics.add_body(d);
+		phystest::run(physics, 60);
+		CHECK((physics.contact_sides(box) & SIDE_FLOOR) != 0);
+		CHECK((physics.contact_sides(crate) & SIDE_CEILING) != 0);
+	}
+}
+
+TEST_CASE("set_props live: lock_rotation keeps angle 0 under torque; gravity_scale 0 floats") {
+	World w;
+	phystest::fill(w.grid, 0, 100, SIZE, SIZE, w.id("rock"));
+	PhysicsWorld physics(w.grid, GRAVITY);
+	const int crate = physics.add_body(phystest::box(w.t, "wood", 12, 12, 128, 94));
+	const int floater = physics.add_body(phystest::box(w.t, "wood", 12, 12, 60, 40));
+	phystest::run(physics, 5);
+
+	BodyProps floating;
+	floating.gravity_scale = 0;
+	physics.set_props(floater, floating);
+	b2Body_SetLinearVelocity(physics.body_id(floater), {0.0f, 0.0f});
+	const float float_y = phystest::pos(physics, floater).y;
+
+	BodyProps locked;
+	locked.mass = 64;
+	locked.lock_rotation = true;
+	physics.set_props(crate, locked);
+	for (int i = 0; i < 60; ++i) {
+		b2Body_ApplyTorque(physics.body_id(crate), 1e5f, true);
+		phystest::run(physics, 1);
+	}
+	CHECK(std::fabs(phystest::angle(physics, crate)) < 1e-3f);
+	CHECK(std::fabs(b2Body_GetMass(physics.body_id(crate)) - 64.0f) < 0.5f);
+	CHECK(std::fabs(phystest::pos(physics, floater).y - float_y) < 0.5f);
+	CHECK(physics.props(crate).mass == doctest::Approx(64.0f));
+	BodyProps from_pixels;
+	from_pixels.lock_rotation = true;
+	physics.set_props(crate, from_pixels);  // mass 0 goes back to the pixel density (12*12 wood)
+	CHECK(std::fabs(b2Body_GetMass(physics.body_id(crate)) - 72.0f) < 0.5f);
+}
+
+TEST_CASE("previous_position is the pose before the step") {
+	World w;
+	phystest::fill(w.grid, 0, 100, SIZE, SIZE, w.id("rock"));
+	PhysicsWorld physics(w.grid, GRAVITY);
+	const int crate = physics.add_body(phystest::box(w.t, "wood", 12, 12, 40, 20));
+	REQUIRE(crate >= 0);
+	b2Body_SetLinearVelocity(physics.body_id(crate), {50.0f, 0.0f});
+	physics.update_terrain();
+	physics.step();
+	CHECK(physics.previous_position(crate).x == doctest::Approx(40.0f));
+	CHECK(physics.previous_position(crate).y == doctest::Approx(20.0f));
+	CHECK(phystest::pos(physics, crate).x > 40.0f);
+	CHECK(phystest::pos(physics, crate).y > 20.0f);
+
+	const b2Vec2 before = phystest::pos(physics, crate);
+	physics.update_terrain();
+	physics.step();
+	CHECK(physics.previous_position(crate).x == doctest::Approx(before.x));
+	CHECK(physics.previous_position(crate).y == doctest::Approx(before.y));
 }
 
 TEST_CASE("removing or teleporting a sleeping body wakes the sand on it") {

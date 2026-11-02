@@ -1,8 +1,8 @@
 [gd_scene load_steps=4 format=3]
 
 [ext_resource type="Script" path="res://bench/bench_world.gd" id="1_bench_world"]
-[ext_resource type="PixelMaterialSet" path="res://materials/default_set.tres" id="2_set"]
-[ext_resource type="PixelWorldGenerator" path="res://worldgen/default_generator.tres" id="3_gen"]
+[ext_resource type="PixelMaterialSet" path="res://addons/noita_engine/demo/resources/materials/default_set.tres" id="2_set"]
+[ext_resource type="PixelWorldGenerator" path="res://addons/noita_engine/demo/resources/worldgen/default_generator.tres" id="3_gen"]
 
 [node name="BenchWorld" type="Node2D"]
 script = ExtResource("1_bench_world")

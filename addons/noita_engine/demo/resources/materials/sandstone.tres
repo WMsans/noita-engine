@@ -1,0 +1,14 @@
+[gd_resource type="PixelMaterial" format=3]
+
+[ext_resource type="Texture2D" uid="uid://dk2vau7kweda3" path="res://addons/noita_engine/textures/blocks/sandstone.png" id="1_tex"]
+[ext_resource type="Texture2D" uid="uid://cv0a4fgu8n5m2" path="res://addons/noita_engine/textures/blocks/sandstone_bricks.png" id="2_crust"]
+
+[resource]
+name = &"sandstone"
+material_class = 1
+density = 2.4
+color = Color(0.72, 0.6, 0.4, 1)
+collision_solid = true
+light_opacity = 1.0
+texture = ExtResource("1_tex")
+crust_texture = ExtResource("2_crust")

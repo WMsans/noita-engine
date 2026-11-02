@@ -29,7 +29,7 @@ func test_extension_loaded() -> bool:
 
 
 func test_default_set_validates() -> bool:
-	var mat_set: PixelMaterialSet = load("res://materials/default_set.tres")
+	var mat_set: PixelMaterialSet = load("res://addons/noita_engine/demo/resources/materials/default_set.tres")
 	if mat_set == null:
 		printerr("  default_set.tres did not load")
 		return false
@@ -45,7 +45,7 @@ func test_default_set_validates() -> bool:
 # Material ids are 1..n in `materials` order (core MaterialTable::compile), so an index
 # pins the id: rock is 1, water 4, fire 8.
 func test_starter_set_ids_and_fields() -> bool:
-	var mat_set: PixelMaterialSet = load("res://materials/default_set.tres")
+	var mat_set: PixelMaterialSet = load("res://addons/noita_engine/demo/resources/materials/default_set.tres")
 	var expected: Array[StringName] = [&"rock", &"wood", &"sand", &"water", &"oil", &"lava", &"acid", &"fire", &"steam", &"smoke", &"dirt", &"grass", &"sandstone"]
 	for i: int in expected.size():
 		if mat_set.materials[i].name != expected[i]:
@@ -72,7 +72,7 @@ func test_starter_set_ids_and_fields() -> bool:
 # spawn_cell gives a textured cell the texel of its own position: (5, 3) reads texel (5, 3),
 # and (-1, -1) wraps to texel (15, 15).
 func test_material_texture_draws() -> bool:
-	var mat_set: PixelMaterialSet = load("res://materials/default_set.tres").duplicate(true)
+	var mat_set: PixelMaterialSet = load("res://addons/noita_engine/demo/resources/materials/default_set.tres").duplicate(true)
 	var rock: PixelMaterial = mat_set.materials[0]
 	var image := Image.create_empty(16, 16, false, Image.FORMAT_RGBA8)
 	for y: int in 16:
@@ -102,7 +102,7 @@ func test_material_texture_draws() -> bool:
 
 # An 8x8 texture is rejected, and the material renders with its plain colour + shade.
 func test_material_texture_wrong_size_falls_back() -> bool:
-	var mat_set: PixelMaterialSet = load("res://materials/default_set.tres").duplicate(true)
+	var mat_set: PixelMaterialSet = load("res://addons/noita_engine/demo/resources/materials/default_set.tres").duplicate(true)
 	var rock: PixelMaterial = mat_set.materials[0]
 	var image := Image.create_empty(8, 8, false, Image.FORMAT_RGBA8)
 	image.fill(Color(0.9, 0.1, 0.1))
@@ -122,7 +122,7 @@ func test_material_texture_wrong_size_falls_back() -> bool:
 
 
 func test_generator_crust_properties() -> bool:
-	var generator: PixelWorldGenerator = load("res://worldgen/default_generator.tres")
+	var generator: PixelWorldGenerator = load("res://addons/noita_engine/demo/resources/worldgen/default_generator.tres")
 	if generator == null:
 		printerr("  worldgen/default_generator.tres did not load")
 		return false
@@ -150,7 +150,7 @@ func _shade_close(a: Color, base: Color, amount: float) -> bool:
 
 func _make_world() -> PixelWorld:
 	var world: PixelWorld = PixelWorld.new()
-	world.material_set = load("res://materials/default_set.tres")
+	world.material_set = load("res://addons/noita_engine/demo/resources/materials/default_set.tres")
 	world.worker_threads = 1  # single-threaded: deterministic, and no threads in the test run
 	root.add_child(world)
 	# This runner starts inside SceneTree._initialize(), before the root enters the tree, so a
@@ -548,37 +548,384 @@ func test_left_world() -> bool:
 	return true
 
 
-func test_wheel_joint_motor() -> bool:
+# The CarController builds its chassis and two motorised wheels in _ready; drive(1.0) spins
+# both motors and moves the car at least 40 cells in three seconds.
+func test_car_drives() -> bool:
 	var world: PixelWorld = await _make_world()
 	world.simulating = false
-	var chassis := _make_body(40, 8, &"rock", Vector2(0, 220))
-	var wheels: Array[PixelRigidBody] = [_make_body(10, 10, &"rock", Vector2(-14, 232), true), _make_body(10, 10, &"rock", Vector2(14, 232), true)]
-	var joints: Array[PixelWheelJoint] = []
-	for wheel: PixelRigidBody in wheels:
-		var joint := PixelWheelJoint.new()
-		joint.position = wheel.position
-		root.add_child(joint)
-		joint.body_a = joint.get_path_to(chassis)
-		joint.body_b = joint.get_path_to(wheel)
-		joint.enable_motor = true
-		joint.motor_speed = 5.0
-		joint.max_motor_torque = 1e6
-		joints.append(joint)
+	var car := CarController.new()
+	car.position = Vector2(0, 220)
+	root.add_child(car)
+	car.drive(1.0)
 	await _register()
-	await _register()
-	var start := chassis.position.x
+	var start := car.chassis.position.x
 	world.step(180)
-	var moved := chassis.position.x - start
+	var moved := car.chassis.position.x - start
 	world.free()
-	for node: Node in [chassis, wheels[0], wheels[1], joints[0], joints[1]]:
-		node.free()
+	car.free()
 	if moved < 40.0:
 		printerr("  the car moved %.1f cells, expected >= 40" % moved)
 		return false
 	return true
 
 
-# --- creatures (Plan 5) ----------------------------------------------------------------------
+# Braking at speed stops the car within two seconds: the motors hold the wheels still.
+func test_car_brakes() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	var car := CarController.new()
+	car.position = Vector2(0, 220)
+	root.add_child(car)
+	car.drive(1.0)
+	await _register()
+	world.step(120)
+	car.set_braking(true)
+	var ticks := 0
+	while ticks < 120 and absf(car.chassis.linear_velocity.x) >= 1.0:
+		world.step(1)
+		ticks += 1
+	var speed := absf(car.chassis.linear_velocity.x)
+	world.free()
+	car.free()
+	if speed >= 1.0:
+		printerr("  the car was still moving at %.2f cells/s %d ticks after braking" % [speed, ticks])
+		return false
+	return true
+
+
+# --- rigid-body bindings and batched queries (Plan 6) ----------------------------------------
+
+# A box body: no texture, so `body_size` is the shape and `mass` its mass.
+func _make_box_body(size: Vector2i, mass: float, at: Vector2) -> PixelRigidBody:
+	var body := PixelRigidBody.new()
+	body.body_size = size
+	body.mass = mass
+	body.position = at
+	root.add_child(body)
+	return body
+
+
+func test_box_body_properties() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	var body := PixelRigidBody.new()
+	body.body_size = Vector2i(8, 16)
+	body.mass = 128.0
+	body.lock_rotation = true
+	body.position = Vector2(0, 100)
+	root.add_child(body)
+	await _register()
+	world.step(240)
+	var y := body.position.y
+	var rotation := body.rotation
+	var mass := body.get_mass()
+	var resting: PackedInt32Array = world.body_contacts([body])
+	# Liveness after joining: terrain_collision off drops the body through the floor.
+	body.terrain_collision = false
+	world.step(30)
+	var through := body.position.y
+	# The other properties are live too: each setter goes through PhysicsWorld::set_props.
+	body.gravity_scale = 0.5
+	body.linear_damping = 1.0
+	body.angular_damping = 1.0
+	body.can_sleep = false
+	body.cell_proxies = true
+	body.proxy_step_height = 2
+	world.step(2)
+	var live: bool = body.gravity_scale == 0.5 and body.linear_damping == 1.0 \
+	    and body.angular_damping == 1.0 and not body.can_sleep and body.cell_proxies \
+	    and body.proxy_step_height == 2 and not body.terrain_collision
+	# A body that never joined has no contacts.
+	var spare := PixelRigidBody.new()
+	var contacts: PackedInt32Array = world.body_contacts([body, spare])
+	spare.free()
+	world.free()
+	body.free()
+	var ok: bool = absf(y - 248.0) <= 2.0 and absf(rotation) <= 0.001 and absf(mass - 128.0) <= 1.0 \
+	    and resting.size() == 1 and (resting[0] & PixelWorld.SIDE_FLOOR) != 0 \
+	    and through > 260.0 and live and contacts.size() == 2 and contacts[1] == 0
+	if not ok:
+		printerr("  box at y %.2f rotation %.3f mass %.2f, contacts %s, fell through to y %.2f, live %s, %s" \
+		    % [y, rotation, mass, resting, through, live, contacts])
+	return ok
+
+
+func test_joined_signal_fires_once() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	var body := _make_box_body(Vector2i(8, 8), 64.0, Vector2(0, 100))
+	var joined := [0]
+	body.joined.connect(func() -> void: joined[0] += 1)
+	await _register()
+	world.step(10)
+	var count: int = joined[0]
+	world.free()
+	body.free()
+	if count != 1:
+		printerr("  joined fired %d times, expected 1" % count)
+		return false
+	return true
+
+
+func test_bodies_stepped_order() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	var body := _make_box_body(Vector2i(8, 8), 64.0, Vector2(0, 20))
+	await _register()
+	var prevs: Array[Vector2] = []
+	var at_emit: Array[Vector2] = []
+	var ticks := [0]
+	var handler := func() -> void:
+		ticks[0] += 1
+		prevs.append(body.get_previous_position())
+		at_emit.append(body.position)
+	world.bodies_stepped.connect(handler)
+	world.step(3)
+	var fell := body.position
+	world.bodies_stepped.disconnect(handler)
+	# Emitted once per tick, after the Box2D step and before sync_bodies: the node still shows
+	# the start of this tick's sweep, and the tick's own movement shows in `position` after it.
+	var ok: bool = ticks[0] == 3 and prevs[0].is_equal_approx(at_emit[0]) \
+	    and fell.y > prevs[0].y + 0.5
+	# The sweep start of the last tick, world-converted; it must not just mirror the node pose.
+	ok = ok and body.get_previous_position().is_equal_approx(at_emit[2]) \
+	    and not body.get_previous_position().is_equal_approx(body.get_global_position())
+	# A teleport done in the handler is what the node shows after that same tick.
+	var teleported := [false]
+	var teleporter := func() -> void:
+		if teleported[0]:
+			return
+		teleported[0] = true
+		body.teleport(Vector2(30, 40))
+	world.bodies_stepped.connect(teleporter)
+	world.step(1)
+	var target := body.position
+	world.bodies_stepped.disconnect(teleporter)
+	ok = ok and target.is_equal_approx(Vector2(30, 40))
+	world.free()
+	body.free()
+	if not ok:
+		printerr("  %d ticks, prev %s vs emit %s, fell to y %.2f, teleport shows %s" \
+		    % [ticks[0], prevs[0], at_emit[0], fell.y, target])
+	return ok
+
+
+# A teleport in a bodies_stepped handler is what the rest of the tick sees: the sweep starts
+# at the new pose, so the cells between the old and the new place cannot stop it. The mover
+# connects before the character joins, so it runs before CharacterSystem's handler.
+func test_handler_teleport_starts_the_sweep_at_the_new_pose() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	world.fill_rect(Rect2i(-30, 100, 2, 100), &"rock")  # between the start and the target
+	var character := _make_character(Vector2(-100, 200))
+	var moved := [false]
+	var mover := func() -> void:
+		if moved[0]:
+			return
+		moved[0] = true
+		character.teleport(Vector2(60, 200))
+	world.bodies_stepped.connect(mover)
+	await _register()
+	world.step(1)
+	var at := character.position
+	world.free()
+	character.free()
+	if not moved[0] or absf(at.x - 60.0) > 0.5:
+		printerr("  teleported to x 60, the next sweep left it at x %.2f (the old wall at -30?)" % at.x)
+		return false
+	return true
+
+
+func test_bodies_stepped_handler_may_free() -> bool:
+	# A handler frees a crate mid-tick; the tick must carry on without it.
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	var crate := _make_box_body(Vector2i(8, 8), 64.0, Vector2(-20, 100))
+	var survivor := _make_box_body(Vector2i(8, 8), 64.0, Vector2(20, 100))
+	await _register()
+	var freer := func() -> void:
+		if is_instance_valid(crate):
+			crate.free()
+	world.bodies_stepped.connect(freer)
+	world.step(1)  # this tick frees the crate and carries on without it
+	world.bodies_stepped.disconnect(freer)
+	world.step(2)
+	var gone := not is_instance_valid(crate)
+	var left: int = world.get_stats().bodies
+	world.free()
+	survivor.free()
+	if not gone or left != 1:
+		printerr("  crate freed: %s, %d bodies left, expected 1" % [gone, left])
+		return false
+
+	# A handler frees the world itself; the tick must return cleanly. A signal handler cannot
+	# free the emitting object, so it frees the node that owns it instead. The world has a
+	# character too, so CharacterSystem is on the same signal and the emission runs into freed
+	# handlers, the case a world with characters always has.
+	var holder := Node2D.new()
+	root.add_child(holder)
+	var doomed: PixelWorld = await _make_world()
+	doomed.reparent(holder)
+	doomed.simulating = false
+	var rider := _make_box_body(Vector2i(8, 8), 64.0, Vector2(0, 100))
+	var walker := _make_character(Vector2(20, 200))
+	# Connected before the joins, so the emission frees the world and then reaches
+	# CharacterSystem on the freed world.
+	doomed.bodies_stepped.connect(func() -> void: holder.free())
+	await _register()
+	var systems: int = 0
+	for child: Node in doomed.get_children():
+		if child is CharacterSystem:
+			systems += 1
+	doomed.step(3)  # the loop must stop, not run the next tick on the freed world
+	await _register()
+	rider.free()
+	walker.free()
+	if is_instance_valid(doomed) or systems != 1:
+		printerr("  the world a handler freed is still alive %s, %d CharacterSystems (expected 1)" \
+		    % [is_instance_valid(doomed), systems])
+		return false
+	return true
+
+
+func test_sweep_probe_scan_displace_batched() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	world.fill_rect(Rect2i(-40, 120, 80, 4), &"rock")     # ground, top row 120
+	world.fill_rect(Rect2i(20, 100, 2, 20), &"rock")      # wall the sweeps hit
+	world.fill_rect(Rect2i(-24, 156, 8, 8), &"sand")      # powder block
+	world.fill_rect(Rect2i(16, 156, 8, 8), &"rock")       # solid block
+	world.fill_rect(Rect2i(-24, 184, 4, 2), &"water")     # 8 liquid cells
+	world.fill_rect(Rect2i(0, 184, 1, 1), &"rock")
+	world.fill_rect(Rect2i(1, 184, 1, 1), &"sand")
+	world.fill_rect(Rect2i(-24, 200, 4, 4), &"sand")      # 16 cells to knock out
+	world.fill_rect(Rect2i(8, 200, 4, 4), &"water")       # 16 cells to splash
+	var solid: int = PixelWorld.RAY_SOLID | PixelWorld.RAY_POWDER
+	var sizes := PackedVector2Array([Vector2(8, 16), Vector2(8, 16), Vector2(8, 16)])
+
+	var swept: Dictionary = world.sweep_boxes(
+	    PackedVector2Array([Vector2(-20, 112), Vector2(0, 112), Vector2(-20, 40)]),
+	    PackedVector2Array([Vector2(-10, 112), Vector2(60, 112), Vector2(-20, 200)]), sizes, solid)
+	var position: PackedVector2Array = swept["position"]
+	var stopped: PackedInt32Array = swept["stopped"]
+	var sides: PackedInt32Array = swept["sides"]
+	var ok: bool = swept.size() == 3 and position.size() == 3 and stopped.size() == 3 \
+	    and sides.size() == 3 \
+	    and position[0].is_equal_approx(Vector2(-10, 112)) and stopped[0] == 0 \
+	    and sides[0] == PixelWorld.SIDE_FLOOR \
+	    and position[1].is_equal_approx(Vector2(16, 112)) and stopped[1] == PixelWorld.STOPPED_X \
+	    and sides[1] == (PixelWorld.SIDE_FLOOR | PixelWorld.SIDE_RIGHT) \
+	    and position[2].is_equal_approx(Vector2(-20, 112)) and stopped[2] == PixelWorld.STOPPED_Y \
+	    and sides[2] == PixelWorld.SIDE_FLOOR
+	if not ok:
+		printerr("  sweeps %s %s %s" % [position, stopped, sides])
+		world.free()
+		return false
+
+	var probed: PackedByteArray = world.probe_boxes(
+	    PackedVector2Array([Vector2(-20, 160), Vector2(20, 160), Vector2(0, 140)]),
+	    PackedVector2Array([Vector2(4, 4), Vector2(4, 4), Vector2(4, 4)]), solid)
+	var probed_solid: PackedByteArray = world.probe_boxes(
+	    PackedVector2Array([Vector2(-20, 160), Vector2(20, 160), Vector2(0, 140)]),
+	    PackedVector2Array([Vector2(4, 4), Vector2(4, 4), Vector2(4, 4)]), PixelWorld.RAY_SOLID)
+	ok = probed == PackedByteArray([1, 1, 0]) and probed_solid == PackedByteArray([0, 1, 0])
+	if not ok:
+		printerr("  probes %s (solid|powder) %s (solid)" % [probed, probed_solid])
+		world.free()
+		return false
+
+	var scanned: Dictionary = world.scan_boxes(
+	    PackedVector2Array([Vector2(-22, 185), Vector2(0.5, 184.5), Vector2(40, 60)]),
+	    PackedVector2Array([Vector2(4, 4), Vector2(2, 2), Vector2(4, 4)]))
+	var counts: PackedInt32Array = scanned["solid"]
+	var powders: PackedInt32Array = scanned["powder"]
+	var liquids: PackedInt32Array = scanned["liquid"]
+	var materials: PackedStringArray = scanned["liquid_material"]
+	ok = scanned.size() == 4 and counts == PackedInt32Array([0, 1, 0]) \
+	    and powders == PackedInt32Array([0, 1, 0]) and liquids == PackedInt32Array([8, 0, 0]) \
+	    and materials == PackedStringArray(["water", "", ""])
+	if not ok:
+		printerr("  scans %s %s %s %s" % [counts, powders, liquids, materials])
+		world.free()
+		return false
+
+	var displaced: PackedInt32Array = world.displace_cells(
+	    PackedVector2Array([Vector2(-22, 201.5), Vector2(9.5, 201.5), Vector2(40, 60)]),
+	    PackedVector2Array([Vector2(4, 4), Vector2(4, 4), Vector2(4, 4)]), PixelWorld.RAY_POWDER,
+	    PackedVector2Array([Vector2(2, -2), Vector2(2, -2), Vector2(2, -2)]),
+	    PackedInt32Array([16, 16, 16]), true, 0.5)
+	ok = displaced == PackedInt32Array([16, 0, 0]) \
+	    and world.get_material_at(Vector2i(-24, 200)) == &"air" \
+	    and world.get_material_at(Vector2i(-21, 203)) == &"air"
+	var splashed: PackedInt32Array = world.displace_cells(
+	    PackedVector2Array([Vector2(9.5, 201.5)]), PackedVector2Array([Vector2(4, 4)]),
+	    PixelWorld.RAY_LIQUID, PackedVector2Array([Vector2(1.5, -3)]), PackedInt32Array([3]), false, -0.5)
+	ok = ok and splashed == PackedInt32Array([3]) \
+	    and world.get_material_at(Vector2i(8, 200)) == &"air" \
+	    and world.get_material_at(Vector2i(10, 200)) == &"air" \
+	    and world.get_material_at(Vector2i(11, 200)) == &"water"
+	world.free()
+	if not ok:
+		printerr("  displaced %s, splash %s" % [displaced, splashed])
+	return ok
+
+
+func test_batched_query_rejects_bad_input() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	# The errors these push are the expected behaviour, not test failures.
+	var swept: Dictionary = world.sweep_boxes(PackedVector2Array([Vector2(0, 0)]),
+	    PackedVector2Array([Vector2(0, 0), Vector2(0, 0)]), PackedVector2Array([Vector2(4, 4)]),
+	    PixelWorld.RAY_SOLID)
+	var too_big: PackedByteArray = world.probe_boxes(PackedVector2Array([Vector2(0, 0)]),
+	    PackedVector2Array([Vector2(65, 4)]), PixelWorld.RAY_SOLID)
+	var too_small: PackedByteArray = world.probe_boxes(PackedVector2Array([Vector2(0, 0)]),
+	    PackedVector2Array([Vector2(0, 4)]), PixelWorld.RAY_SOLID)
+	var scanned: Dictionary = world.scan_boxes(PackedVector2Array([Vector2(0, 0), Vector2(0, 0)]),
+	    PackedVector2Array([Vector2(4, 4)]))
+	var displaced: PackedInt32Array = world.displace_cells(PackedVector2Array([Vector2(0, 0)]),
+	    PackedVector2Array([Vector2(4, 4)]), PixelWorld.RAY_SOLID, PackedVector2Array(),
+	    PackedInt32Array([1]), false, 0.5)
+	# So large that narrowing it would be undefined: rejected before the round.
+	var enormous: PackedByteArray = world.probe_boxes(PackedVector2Array([Vector2(0, 0)]),
+	    PackedVector2Array([Vector2(1e30, 4)]), PixelWorld.RAY_SOLID)
+	# The rounding boundary: 64.4 is 64 cells and accepted, 64.5 is 65 and not.
+	var rounded: PackedByteArray = world.probe_boxes(PackedVector2Array([Vector2(0, 0)]),
+	    PackedVector2Array([Vector2(64.4, 4)]), PixelWorld.RAY_SOLID)
+	var unrounded: PackedByteArray = world.probe_boxes(PackedVector2Array([Vector2(0, 0)]),
+	    PackedVector2Array([Vector2(64.5, 4)]), PixelWorld.RAY_SOLID)
+	world.free()
+	var ok: bool = swept.is_empty() and too_big.is_empty() and too_small.is_empty() \
+	    and scanned.is_empty() and displaced.is_empty() and enormous.is_empty() \
+	    and rounded.size() == 1 and unrounded.is_empty()
+	if not ok:
+		printerr("  bad input returned %s %s %s %s %s %s %s %s" \
+		    % [swept, too_big, too_small, scanned, displaced, enormous, rounded, unrounded])
+	return ok
+
+
+func test_teleport_keeps_rotation_when_omitted() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	var body := _make_box_body(Vector2i(8, 8), 64.0, Vector2(0, 100))
+	await _register()
+	body.teleport(Vector2(-10, 120), 0.5)
+	var shown := body.rotation
+	body.teleport(Vector2(10, 130))
+	var kept := body.rotation
+	world.step(1)
+	var stepped := body.rotation
+	var at := body.position
+	world.free()
+	body.free()
+	var ok: bool = absf(shown - 0.5) <= 0.001 and absf(kept - 0.5) <= 0.001 \
+	    and absf(stepped - 0.5) <= 0.001 and absf(at.x - 10.0) <= 0.01 and absf(at.y - 130.0) <= 1.0
+	if not ok:
+		printerr("  rotation %.3f -> %.3f -> %.3f at %s" % [shown, kept, stepped, at])
+	return ok
+
+
+# --- characters (Plan 5) ---------------------------------------------------------------------
 
 func _make_character(at: Vector2) -> PixelCharacter:
 	var character := PixelCharacter.new()
@@ -614,8 +961,8 @@ func test_script_subclasses_join_the_world() -> bool:
 	world.free()
 	character.free()
 	body.free()
-	if stats.creatures != 1 or stats.bodies != 1 or not ticked:
-		printerr("  scripted nodes: %d creatures, %d bodies (expected 1 and 1), scripts ticked %s" % [stats.creatures, stats.bodies, ticked])
+	if stats.bodies != 2 or not ticked:
+		printerr("  scripted nodes: %d bodies (expected 2), scripts ticked %s" % [stats.bodies, ticked])
 		return false
 	return true
 
@@ -632,11 +979,58 @@ func test_character_walks_and_lands() -> bool:
 		character.velocity = Vector2(100, character.velocity.y)
 		world.step(1)
 	var walked := character.position.x
-	var creatures: int = world.get_stats().creatures
+	var bodies: int = world.get_stats().bodies
 	world.free()
 	character.free()
-	if absf(landed_y - 248.0) > 1.0 or not on_floor or walked < 40.0 or creatures != 1:
-		printerr("  landed at y %.2f (248), on floor %s, walked to x %.1f (>= 40), %d creatures" % [landed_y, on_floor, walked, creatures])
+	if absf(landed_y - 248.0) > 1.0 or not on_floor or walked < 40.0 or bodies != 1:
+		printerr("  landed at y %.2f (248), on floor %s, walked to x %.1f (>= 40), %d bodies" % [landed_y, on_floor, walked, bodies])
+		return false
+	return true
+
+
+# The cells live in a world node that may sit anywhere: the batched queries take and return
+# positions in the same global space raycast uses, so a translated world lands and walks
+# exactly like one at the origin.
+func test_character_walks_in_translated_world() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	world.position = Vector2(100, 40)
+	var character := _make_character(Vector2(100, 240))
+	await _register()
+	world.step(60)
+	var landed_y := character.global_position.y
+	var on_floor := character.is_on_floor()
+	for i: int in 30:
+		character.velocity = Vector2(100, character.velocity.y)
+		world.step(1)
+	var walked := character.global_position.x - 100.0
+	var bodies: int = world.get_stats().bodies
+	world.free()
+	character.free()
+	if absf(landed_y - 288.0) > 1.0 or not on_floor or walked < 40.0 or bodies != 1:
+		printerr("  landed at y %.2f (288), on floor %s, walked %.1f cells (>= 40), %d bodies" \
+		    % [landed_y, on_floor, walked, bodies])
+		return false
+	return true
+
+
+# A rotated (and moved) world keeps the cell layer where it is: physics, the sweeps and the
+# write-back all speak the same global space, so the character still lands on the arena floor
+# in cell space.
+func test_character_lands_in_rotated_world() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	world.position = Vector2(100, 40)
+	world.rotation = 0.4
+	var character := _make_character(world.to_global(Vector2(0, 200)))
+	await _register()
+	world.step(60)
+	var cell := world.to_local(character.global_position)
+	var on_floor := character.is_on_floor()
+	world.free()
+	character.free()
+	if absf(cell.y - 248.0) > 1.0 or absf(cell.x) > 1.0 or not on_floor:
+		printerr("  landed at cell %s (expected (0, 248)), on floor %s" % [cell, on_floor])
 		return false
 	return true
 
@@ -717,13 +1111,265 @@ func test_character_pushes_body() -> bool:
 	return true
 
 
+# How many of these characters have solid cells inside their hitbox, as one batched query.
+func _characters_in_solid(world: PixelWorld, characters: Array) -> int:
+	var centres := PackedVector2Array()
+	var sizes := PackedVector2Array()
+	for character: PixelCharacter in characters:
+		centres.append(character.global_position)
+		sizes.append(Vector2(character.body_size))
+	var blocked: PackedByteArray = world.probe_boxes(centres, sizes, PixelWorld.RAY_SOLID)
+	var inside := 0
+	for bit: int in blocked:
+		inside += bit
+	return inside
+
+
+# Walking into a ledge of step_height (3) cells climbs it; a fourth cell refuses.
+func test_character_steps_up_3_cell_ledge() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	world.fill_rect(Rect2i(30, 253, 60, 3), &"rock")  # top row 253: three cells above the floor
+	var character := _make_character(Vector2(0, 248))
+	await _register()
+	world.step(10)
+	for i: int in 24:
+		character.velocity = Vector2(100, character.velocity.y)
+		world.step(1)
+	var at := character.position
+	world.free()
+	character.free()
+	if at.x < 32.0 or absf(at.y - 245.0) > 1.0:
+		printerr("  walked to %s, expected onto the ledge at y 245 beyond x 32" % [at])
+		return false
+	return true
+
+
+func test_character_refuses_4_cell_ledge() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	world.fill_rect(Rect2i(30, 252, 60, 4), &"rock")  # one cell too tall to step
+	var character := _make_character(Vector2(0, 248))
+	await _register()
+	world.step(10)
+	for i: int in 30:
+		character.velocity = Vector2(100, character.velocity.y)
+		world.step(1)
+	var at := character.position
+	world.free()
+	character.free()
+	if at.x > 26.5 or absf(at.y - 248.0) > 1.0:
+		printerr("  walked to %s, expected to stop against the wall at x 26, y 248" % [at])
+		return false
+	return true
+
+
+func test_character_climbs_sand_pile() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	world.fill_rect(Rect2i(30, 253, 40, 3), &"sand")  # a wall three cells above the floor
+	world.step(120)  # let it settle into a pile on the floor
+	var character := _make_character(Vector2(0, 248))
+	await _register()
+	world.step(10)
+	var start := character.position.y
+	for i: int in 30:
+		character.velocity = Vector2(100, character.velocity.y)
+		world.step(1)
+	var at := character.position
+	world.free()
+	character.free()
+	# The old creature suite climbed three cells onto the powder ahead of it, not just onto the
+	# pile's edge: one step up is not the behaviour this character has to keep.
+	var climbed := start - at.y
+	if at.x < 30.0 or climbed < 3.0:
+		printerr("  walked from y %.2f to %s: climbed %.2f cells, expected 3 past x 30" % [start, at, climbed])
+		return false
+	return true
+
+
+# Powder inside the hitbox (sand dropped on the head) is knocked out as particles.
+func test_character_knocks_sand_out() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	var character := _make_character(Vector2(0, 248))
+	await _register()
+	world.step(10)
+	world.fill_rect(Rect2i(-4, 240, 8, 8), &"sand")  # the top half of the hitbox
+	world.step(2)
+	var centres := PackedVector2Array([character.global_position])
+	var sizes := PackedVector2Array([Vector2(character.body_size)])
+	var powder: PackedInt32Array = world.scan_boxes(centres, sizes).powder
+	var particles: int = world.get_stats().particles_material
+	world.free()
+	character.free()
+	if powder[0] != 0 or particles == 0:
+		printerr("  %d powder cells left in the hitbox, %d material particles (expected 0 and > 0)" % [powder[0], particles])
+		return false
+	return true
+
+
+func test_character_splashes() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	world.fill_rect(Rect2i(-40, 200, 80, 56), &"water")
+	var character := _make_character(Vector2(0, 40))  # 160 cells of fall: well past 60 cells/s
+	await _register()
+	var splashed := false
+	for i: int in 120:
+		world.step(1)
+		if world.get_stats().particles_material > 0:
+			splashed = true
+			break
+	var at := character.position
+	world.free()
+	character.free()
+	if not splashed:
+		printerr("  no splash particles after falling into the water (character at %s)" % [at])
+		return false
+	return true
+
+
+func test_character_stands_on_crate() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	var crate := _make_body(12, 12, &"wood", Vector2(0, 250))
+	await _register()
+	world.step(30)
+	var character := _make_character(Vector2(0, 200))
+	await _register()
+	world.step(90)
+	var on_floor := character.is_on_floor()
+	var at := character.position
+	world.free()
+	crate.free()
+	character.free()
+	if not on_floor or absf(at.y - 236.0) > 1.5:
+		printerr("  standing on the crate: on floor %s, at %s (expected y 236)" % [on_floor, at])
+		return false
+	return true
+
+
+func test_crate_rests_on_character() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	var character := _make_character(Vector2(0, 248))
+	await _register()
+	world.step(30)
+	var crate := _make_body(12, 12, &"wood", Vector2(0, 190))
+	await _register()
+	var lo := 1e9
+	var hi := -1e9
+	for i: int in 120:
+		world.step(1)
+		lo = minf(lo, character.position.y)
+		hi = maxf(hi, character.position.y)
+	var at := character.position
+	var crate_at := crate.position
+	world.free()
+	crate.free()
+	character.free()
+	if hi - lo >= 0.5 or at.y > 248.5 or crate_at.y > 235.0:
+		printerr("  character y %.2f held in [%.2f, %.2f], crate at %s (expected head at 234)" % [at.y, lo, hi, crate_at])
+		return false
+	return true
+
+
+# Rock poured over a character lifts it out of the cells, however deep it is buried.
+func test_buried_character_is_freed() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	var character := _make_character(Vector2(0, 248))
+	await _register()
+	world.step(10)
+	world.fill_rect(Rect2i(-4, 240, 8, 16), &"rock")  # exactly over the hitbox
+	world.step(1)
+	var shallow_ok := _characters_in_solid(world, [character]) == 0 and character.position.y < 240.0
+	world.fill_rect(Rect2i(-4, 200, 8, 40), &"rock")  # forty cells of rock above it
+	world.step(1)
+	var deep_ok := _characters_in_solid(world, [character]) == 0 and character.position.y <= 200.0
+	var at := character.position
+	world.free()
+	character.free()
+	if not shallow_ok or not deep_ok:
+		printerr("  buried: shallow %s, forty cells deep %s, ended at %s (expected y <= 200)" % [shallow_ok, deep_ok, at])
+		return false
+	return true
+
+
+# The floor snap keeps a character on the floor down a staircase of 2-cell steps.
+func test_character_walks_down_staircase_on_floor() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	for step: int in 10:  # carve down 2 cells every 8 cells from x = 30
+		if step > 0:
+			world.fill_rect(Rect2i(30 + 8 * step, 256, 8, 2 * step), &"air")
+	var character := _make_character(Vector2(0, 248))
+	await _register()
+	world.step(10)
+	var off_floor := 0
+	for i: int in 60:
+		character.velocity = Vector2(60, character.velocity.y)
+		world.step(1)
+		if not character.is_on_floor():
+			off_floor += 1
+	var at := character.position
+	world.free()
+	character.free()
+	if off_floor != 0 or at.x <= 40.0:
+		printerr("  off the floor on %d of 60 ticks, ended at %s (expected none, x > 40)" % [off_floor, at])
+		return false
+	return true
+
+
+func test_two_characters_dont_overlap() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	var a := _make_character(Vector2(-2, 100))
+	var b := _make_character(Vector2(2, 100))
+	await _register()
+	world.step(120)
+	var apart := absf(a.position.x - b.position.x)
+	world.free()
+	a.free()
+	b.free()
+	if apart < 7.5:
+		printerr("  the two characters are %.2f cells apart, expected >= 7.5" % apart)
+		return false
+	return true
+
+
+func test_crowd_in_a_pit() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	world.fill_rect(Rect2i(-60, 200, 2, 56), &"rock")
+	world.fill_rect(Rect2i(58, 200, 2, 56), &"rock")
+	var crowd: Array[PixelCharacter] = []
+	for row: int in 4:
+		for col: int in 10:
+			crowd.append(_make_character(Vector2(-52 + 11 * col, 140 + 20 * row)))
+	await _register()
+	world.step(120)
+	var inside := _characters_in_solid(world, crowd)
+	var lowest := -1e9
+	for character: PixelCharacter in crowd:
+		lowest = maxf(lowest, character.position.y)
+	world.free()
+	for character: PixelCharacter in crowd:
+		character.free()
+	if inside != 0 or lowest < 230.0:
+		printerr("  %d of 20 characters are inside solid, lowest y %.1f (expected 0, >= 230)" % [inside, lowest])
+		return false
+	return true
+
+
 # --- generated world (Plan 2) --------------------------------------------------------------
 
 # `target` must already be in the tree; the world's _ready blocks once to fill the active zone.
 func _make_generated_world(target: Node2D) -> PixelWorld:
 	var world: PixelWorld = PixelWorld.new()
-	world.material_set = load("res://materials/default_set.tres")
-	world.generator = load("res://worldgen/default_generator.tres")
+	world.material_set = load("res://addons/noita_engine/demo/resources/materials/default_set.tres")
+	world.generator = load("res://addons/noita_engine/demo/resources/worldgen/default_generator.tres")
 	world.worker_threads = 1
 	world.generator_threads = 2
 	# Off from the start: the first frame can run physics ticks, and a settling tick rewrites
@@ -969,11 +1615,11 @@ func test_acid_on_rock_leaves_air() -> bool:
 
 
 func test_default_generator_validates() -> bool:
-	var generator: PixelWorldGenerator = load("res://worldgen/default_generator.tres")
+	var generator: PixelWorldGenerator = load("res://addons/noita_engine/demo/resources/worldgen/default_generator.tres")
 	if generator == null:
 		printerr("  worldgen/default_generator.tres did not load")
 		return false
-	var error: String = generator.validate(load("res://materials/default_set.tres"))
+	var error: String = generator.validate(load("res://addons/noita_engine/demo/resources/materials/default_set.tres"))
 	if error != "":
 		printerr("  validate() said: '" + error + "'")
 	return error == ""
@@ -990,14 +1636,14 @@ func test_biome_crust_defaults_none() -> bool:
 
 
 func test_desert_ships_sandstone_ground() -> bool:
-	var desert: PixelBiome = load("res://worldgen/desert.tres")
+	var desert: PixelBiome = load("res://addons/noita_engine/demo/resources/worldgen/desert.tres")
 	if desert.crust_material != &"sandstone" or desert.crust_depth != 6:
 		printerr("  desert crust is '%s' x %d, expected 'sandstone' x 6" % [desert.crust_material, desert.crust_depth])
 		return false
 	if desert.base_material != &"sandstone":
 		printerr("  desert base is '%s', expected 'sandstone'" % desert.base_material)
 		return false
-	var mat_set: PixelMaterialSet = load("res://materials/default_set.tres")
+	var mat_set: PixelMaterialSet = load("res://addons/noita_engine/demo/resources/materials/default_set.tres")
 	for mat: PixelMaterial in mat_set.materials:
 		if mat.name == &"sandstone":
 			return mat.material_class == 1
@@ -1007,7 +1653,7 @@ func test_desert_ships_sandstone_ground() -> bool:
 
 func test_shipped_biomes_use_slabs() -> bool:
 	for biome_name: String in ["forest", "desert", "underground", "caverns", "deep"]:
-		var biome: PixelBiome = load("res://worldgen/%s.tres" % biome_name)
+		var biome: PixelBiome = load("res://addons/noita_engine/demo/resources/worldgen/%s.tres" % biome_name)
 		if biome.cave_style != PixelBiome.CAVE_STYLE_SLABS or biome.slab_air <= 0.0:
 			printerr("  worldgen/%s.tres is not on the slabs cave style" % biome_name)
 			return false
@@ -1026,7 +1672,7 @@ func _make_room_generator(room: PixelRoom, palette: PixelRoomPalette) -> PixelWo
 	var generator: PixelWorldGenerator = PixelWorldGenerator.new()
 	var biomes: Array[PixelBiome] = []
 	for biome_name: String in ["forest", "desert", "underground", "caverns", "deep"]:
-		biomes.append(load("res://worldgen/%s.tres" % biome_name))
+		biomes.append(load("res://addons/noita_engine/demo/resources/worldgen/%s.tres" % biome_name))
 	generator.biomes = biomes
 	var rooms: Array[PixelRoom] = [room]
 	generator.rooms = rooms
@@ -1054,7 +1700,7 @@ func test_room_colour_missing_reported() -> bool:
 	var room: PixelRoom = PixelRoom.new()
 	room.image = ImageTexture.create_from_image(_colour_room_image(Image.FORMAT_RGBA8))
 	var palette: PixelRoomPalette = _room_palette([Color8(0, 0, 0, 255)])  # omits the blue pixel
-	var error: String = _make_room_generator(room, palette).validate(load("res://materials/default_set.tres"))
+	var error: String = _make_room_generator(room, palette).validate(load("res://addons/noita_engine/demo/resources/materials/default_set.tres"))
 	if not error.contains("(2, 1)") or not error.contains("#123456ff"):
 		printerr("  validate() said: '" + error + "'")
 		return false
@@ -1063,7 +1709,7 @@ func test_room_colour_missing_reported() -> bool:
 
 func test_room_without_image_reported() -> bool:
 	var room: PixelRoom = PixelRoom.new()
-	var error: String = _make_room_generator(room, PixelRoomPalette.new()).validate(load("res://materials/default_set.tres"))
+	var error: String = _make_room_generator(room, PixelRoomPalette.new()).validate(load("res://addons/noita_engine/demo/resources/materials/default_set.tres"))
 	if not error.contains("room 0 has no image"):
 		printerr("  validate() said: '" + error + "'")
 		return false
@@ -1074,7 +1720,7 @@ func test_rgb8_room_image_accepted() -> bool:
 	var room: PixelRoom = PixelRoom.new()
 	room.image = ImageTexture.create_from_image(_colour_room_image(Image.FORMAT_RGB8))
 	var palette: PixelRoomPalette = _room_palette([Color8(0, 0, 0, 255), Color8(18, 52, 86, 255)])
-	var error: String = _make_room_generator(room, palette).validate(load("res://materials/default_set.tres"))
+	var error: String = _make_room_generator(room, palette).validate(load("res://addons/noita_engine/demo/resources/materials/default_set.tres"))
 	if error != "":
 		printerr("  validate() said: '" + error + "'")
 	return error == ""
@@ -1300,10 +1946,10 @@ func test_bench_light_gpu_gate_exemption() -> bool:
 	return true
 
 
-# Every demo except the acceptance scene keeps lighting off: they were tuned as unlit scenes, and
-# turning lighting on is a per-scene choice. world_demo is the scene tuned by eye for lighting.
+# Every demo scene keeps lighting off: they were tuned as unlit scenes, and turning lighting on is
+# a per-scene choice.
 func test_existing_scenes_opt_out() -> bool:
-	var scenes: Array[String] = ["res://demo/paint_demo.tscn", "res://demo/bodies_demo.tscn", "res://demo/creatures_demo.tscn", "res://bench/bench.tscn"]
+	var scenes: Array[String] = ["res://addons/noita_engine/demo/paint_demo.tscn", "res://addons/noita_engine/demo/bodies_demo.tscn", "res://addons/noita_engine/demo/creatures_demo.tscn", "res://addons/noita_engine/demo/world_demo.tscn", "res://bench/bench.tscn"]
 	for path: String in scenes:
 		var scene: Node = load(path).instantiate()
 		var world: PixelWorld = scene.get_node_or_null("PixelWorld")
@@ -1312,13 +1958,6 @@ func test_existing_scenes_opt_out() -> bool:
 			scene.free()
 			return false
 		scene.free()
-	var tuned: Node = load("res://demo/world_demo.tscn").instantiate()
-	var tuned_world: PixelWorld = tuned.get_node_or_null("PixelWorld")
-	var lit: bool = tuned_world != null and tuned_world.lighting_enabled
-	tuned.free()
-	if not lit:
-		printerr("  res://demo/world_demo.tscn: PixelWorld lighting_enabled is off, expected on")
-		return false
 	return true
 
 
@@ -1353,8 +1992,8 @@ func test_back_wall_generator_defaults() -> bool:
 
 func _make_back_wall_world(target: Node2D, enabled: bool) -> PixelWorld:
 	var world: PixelWorld = PixelWorld.new()
-	world.material_set = load("res://materials/default_set.tres")
-	world.generator = load("res://worldgen/default_generator.tres")
+	world.material_set = load("res://addons/noita_engine/demo/resources/materials/default_set.tres")
+	world.generator = load("res://addons/noita_engine/demo/resources/worldgen/default_generator.tres")
 	world.worker_threads = 1
 	world.generator_threads = 2
 	world.simulating = false

@@ -147,11 +147,11 @@ values are kept; the `path=` fallback is what makes the copy work in a host proj
 
 ### `PixelRigidBody` additions
 
-Properties, all live-settable after joining:
+Properties, live-settable after joining except `body_size`:
 
 | property | meaning |
 | --- | --- |
-| `body_size: Vector2i` | used when `texture` is null: an axis-aligned box of that size, no pixels, never stamped. This is how a character body is made. |
+| `body_size: Vector2i` | used when `texture` is null: an axis-aligned box of that size, no pixels, never stamped. This is how a character body is made. Read at join only: setting it on a joined body warns, because a live resize would mean restamping the cells. |
 | `mass: float` | 0 = from pixels (today's behaviour); > 0 overrides. Required > 0 for a `body_size` body. |
 | `gravity_scale: float` | Box2D gravity scale. |
 | `linear_damping`, `angular_damping: float` | Box2D damping. |
