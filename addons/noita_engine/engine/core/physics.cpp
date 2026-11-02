@@ -24,9 +24,10 @@ int handle_of(b2BodyId id) { return (int)(reinterpret_cast<intptr_t>(b2Body_GetU
 
 b2Filter body_filter(const BodyProps& props, bool creature, int handle) {
 	b2Filter filter = {};
-	// The terrain shapes mask CAT_BODY only, so dropping it is how a body opts out of them.
-	filter.categoryBits = creature ? CAT_CREATURE : (props.terrain_collision ? CAT_BODY : CAT_BODY_NO_TERRAIN);
-	filter.maskBits = CAT_BODY | CAT_BODY_NO_TERRAIN | CAT_CREATURE;
+	filter.categoryBits = creature ? CAT_CREATURE : CAT_BODY;
+	filter.maskBits = CAT_BODY | CAT_CREATURE;
+	// Collision needs both directions: terrain masks CAT_BODY only, so a body that drops
+	// CAT_TERRAIN from its own mask never meets it.
 	if (!creature && props.terrain_collision) filter.maskBits |= CAT_TERRAIN;
 	// Its own proxies share the positive group and meet nothing else (their mask is 0).
 	filter.groupIndex = creature || props.cell_proxies ? handle + 1 : 0;
@@ -247,8 +248,8 @@ void PhysicsWorld::set_props(int handle, const BodyProps& props) {
 		b2Body_UpdateMassFromShapes(body.id);  // mass 0 means "from pixels" again
 	}
 	const b2Filter filter = body_filter(props, body.creature, handle);
-	b2ShapeId shapes[8];
-	const int n = b2Body_GetShapes(body.id, shapes, 8);
+	std::vector<b2ShapeId> shapes((size_t)b2Body_GetShapeCount(body.id));
+	const int n = b2Body_GetShapes(body.id, shapes.data(), (int)shapes.size());
 	for (int i = 0; i < n; ++i) b2Shape_SetFilter(shapes[i], filter);
 	if (props.cell_proxies != old.cell_proxies || props.proxy_step_height != old.proxy_step_height) {
 		destroy_proxies(body);
@@ -726,7 +727,7 @@ std::vector<int> PhysicsWorld::take_left_world() {
 bool PhysicsWorld::raycast(float x0, float y0, float x1, float y1, int& handle, float& hx, float& hy,
                            float& nx, float& ny) const {
 	b2QueryFilter filter = b2DefaultQueryFilter();
-	filter.maskBits = CAT_BODY | CAT_BODY_NO_TERRAIN | CAT_CREATURE;
+	filter.maskBits = CAT_BODY | CAT_CREATURE;
 	const b2RayResult r = b2World_CastRayClosest(world, {x0, y0}, {x1 - x0, y1 - y0}, filter);
 	if (!r.hit) return false;
 	handle = handle_of(b2Shape_GetBody(r.shapeId));

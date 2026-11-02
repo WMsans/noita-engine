@@ -520,6 +520,29 @@ TEST_CASE("a box body without mass is refused") {
 	CHECK(physics.stats().bodies == 0);
 }
 
+TEST_CASE("set_props refilters every shape of a many-box body") {
+	World w;
+	PhysicsWorld physics(w.grid, GRAVITY);
+	BodyDef d;
+	d.w = 17;
+	d.h = 17;
+	d.pixels.assign((size_t)d.w * d.h, NO_MAT);
+	for (int i = 0; i < 9; ++i) d.pixels[(size_t)(i * 2) * d.w + i * 2] = w.id("wood");  // 9 isolated 1x1 boxes
+	d.shape = BodyShape::Boxes;
+	d.x = 128;
+	d.y = 40;
+	const int body = physics.add_body(d);
+	REQUIRE(body >= 0);
+	const int count = b2Body_GetShapeCount(physics.body_id(body));
+	REQUIRE(count > 8);
+	BodyProps props = d.props;
+	props.terrain_collision = false;
+	physics.set_props(body, props);
+	std::vector<b2ShapeId> shapes((size_t)count);
+	REQUIRE(b2Body_GetShapes(physics.body_id(body), shapes.data(), count) == count);
+	for (const b2ShapeId shape : shapes) CHECK((b2Shape_GetFilter(shape).maskBits & CAT_TERRAIN) == 0);
+}
+
 TEST_CASE("terrain_collision off falls through terrain shapes") {
 	World w(128, 704);
 	phystest::fill(w.grid, 0, 100, 128, 704, w.id("rock"));
@@ -596,7 +619,11 @@ TEST_CASE("proxies leave the bottom proxy_step_height rows open") {
 		}
 		// The wall proxy covers the ledge rows only when there is no step height.
 		CHECK(wall_contact(physics, box) == (step == 0));
-		if (step == 0) continue;
+		if (step == 0) {
+			// The wall proxy covers the ledge rows, so the box cannot enter the column at x = 131.
+			CHECK(phystest::pos(physics, box).x <= 131.0f);
+			continue;
+		}
 		// With the ledge rows open, Box2D moves the box into the ledge column.
 		for (int i = 0; i < 20; ++i) {
 			b2Body_SetLinearVelocity(physics.body_id(box), {30.0f, 0.0f});

@@ -79,9 +79,6 @@ constexpr uint64_t CAT_TERRAIN = 1;
 constexpr uint64_t CAT_BODY = 2;
 constexpr uint64_t CAT_CREATURE = 4;
 constexpr uint64_t CAT_PROXY = 8;  // a body's grid proxies; meet only their own body (group)
-// A body the terrain shapes ignore (terrain's mask is CAT_BODY only), so it can be driven by the
-// grid instead. It still meets other bodies and creatures.
-constexpr uint64_t CAT_BODY_NO_TERRAIN = 16;
 constexpr float TERRAIN_FRICTION = 0.8f;
 // A chunk's shapes rebuild at most this often (ticks): terrain collision may lag the pixels by
 // up to 50 ms, and a chunk under a sand faucet costs a quarter of the builds.
@@ -100,7 +97,9 @@ public:
 	PhysicsWorld(const PhysicsWorld&) = delete;
 	PhysicsWorld& operator=(const PhysicsWorld&) = delete;
 
-	int add_body(const BodyDef& def);  // handle >= 0, or -1 if it has no opaque pixels
+	// handle >= 0, or -1 for an invalid body (a box without box_w/box_h/props.mass, or pixels
+	// with no opaque cell)
+	int add_body(const BodyDef& def);
 	// Same handle space as bodies; creatures are never stamped and need no terrain shapes.
 	int add_creature(const CreatureDef& def);
 	bool is_creature(int handle) const;
