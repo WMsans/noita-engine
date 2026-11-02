@@ -15,6 +15,7 @@
 #include <godot_cpp/variant/typed_array.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
+#include "core/grid_query.h"
 #include "core/rng.h"
 #include "light_renderer.h"
 #include "light_shaders.h"
@@ -56,6 +57,34 @@ constexpr float EXPLODE_SMOKE_CHANCE = 0.12f;
 constexpr uint32_t EXPLODE_FLASH_COLOR = 0xFFB03CFF;
 constexpr int EXPLODE_FLASH_PER_RADIUS = 6;
 
+// The batched grid queries' shared input check: one size per box, rounded to whole cells, each
+// one inside 1..MAX_QUERY_BOX. Reports why and returns false on anything else.
+bool read_query_sizes(const char *p_name, const PackedVector2Array &p_sizes, int p_boxes, std::vector<int> &r_w,
+                      std::vector<int> &r_h) {
+	if (p_sizes.size() != p_boxes) {
+		UtilityFunctions::push_error(vformat("PixelWorld.%s: %d boxes but %d sizes", p_name, p_boxes, p_sizes.size()));
+		return false;
+	}
+	r_w.resize((size_t)p_boxes);
+	r_h.resize((size_t)p_boxes);
+	for (int i = 0; i < p_boxes; ++i) {
+		const Vector2 size = p_sizes[i];
+		if (!size.is_finite()) {
+			UtilityFunctions::push_error(vformat("PixelWorld.%s: size %d is not finite", p_name, i));
+			return false;
+		}
+		const int w = (int)std::lround(size.x), h = (int)std::lround(size.y);
+		if (w <= 0 || h <= 0 || w > MAX_QUERY_BOX || h > MAX_QUERY_BOX) {
+			UtilityFunctions::push_error(
+			    vformat("PixelWorld.%s: size %s is outside 1..%d cells", p_name, size, MAX_QUERY_BOX));
+			return false;
+		}
+		r_w[(size_t)i] = w;
+		r_h[(size_t)i] = h;
+	}
+	return true;
+}
+
 } // namespace
 
 void PixelWorld::_bind_methods() {
@@ -72,11 +101,24 @@ void PixelWorld::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("spawn_visual_particles", "color", "position", "velocity", "count", "spread", "lifetime", "gravity_scale", "collides"), &PixelWorld::spawn_visual_particles, DEFVAL(1.0f), DEFVAL(true));
 	ClassDB::bind_method(D_METHOD("explode", "position", "radius", "power"), &PixelWorld::explode);
 	ClassDB::bind_method(D_METHOD("raycast", "from", "to", "mask"), &PixelWorld::raycast, DEFVAL(RAY_SOLID | RAY_POWDER | RAY_BODIES));
+	ClassDB::bind_method(D_METHOD("sweep_boxes", "from", "to", "sizes", "mask"), &PixelWorld::sweep_boxes);
+	ClassDB::bind_method(D_METHOD("probe_boxes", "centres", "sizes", "mask"), &PixelWorld::probe_boxes);
+	ClassDB::bind_method(D_METHOD("scan_boxes", "centres", "sizes"), &PixelWorld::scan_boxes);
+	ClassDB::bind_method(D_METHOD("displace_cells", "centres", "sizes", "mask", "velocities", "max_cells", "outward", "spawn_dy"), &PixelWorld::displace_cells);
+	ClassDB::bind_method(D_METHOD("body_contacts", "bodies"), &PixelWorld::body_contacts);
+	ADD_SIGNAL(MethodInfo("bodies_stepped"));
 	BIND_CONSTANT(RAY_SOLID);
 	BIND_CONSTANT(RAY_POWDER);
 	BIND_CONSTANT(RAY_LIQUID);
 	BIND_CONSTANT(RAY_GAS);
 	BIND_CONSTANT(RAY_BODIES);
+	// `::`, because inside namespace godot SIDE_LEFT/SIDE_RIGHT are godot-cpp's own Side enum.
+	ClassDB::bind_integer_constant(get_class_static(), StringName(), "SIDE_FLOOR", ::SIDE_FLOOR);
+	ClassDB::bind_integer_constant(get_class_static(), StringName(), "SIDE_CEILING", ::SIDE_CEILING);
+	ClassDB::bind_integer_constant(get_class_static(), StringName(), "SIDE_LEFT", ::SIDE_LEFT);
+	ClassDB::bind_integer_constant(get_class_static(), StringName(), "SIDE_RIGHT", ::SIDE_RIGHT);
+	BIND_CONSTANT(STOPPED_X);
+	BIND_CONSTANT(STOPPED_Y);
 
 	ClassDB::bind_method(D_METHOD("set_material_set", "value"), &PixelWorld::set_material_set);
 	ClassDB::bind_method(D_METHOD("get_material_set"), &PixelWorld::get_material_set);
@@ -291,6 +333,11 @@ void PixelWorld::_physics_process(double) {
 void PixelWorld::tick_world() {
 	physics->update_terrain();
 	physics->step();
+	// handlers move bodies and edit cells; they may also free this world or any node
+	const ObjectID self_id(get_instance_id());
+	emit_signal("bodies_stepped");
+	if (!ObjectDB::get_instance(self_id)) return;
+	physics->place_cell_proxies();
 	physics->stamp();
 	sim->tick();
 	particles->step();
@@ -1220,6 +1267,105 @@ Dictionary PixelWorld::raycast(const Vector2 &p_from, const Vector2 &p_to, int p
 	out["material"] = hit.unloaded ? StringName() : StringName(table.name_of(hit.mat).c_str());
 	out["normal"] = Vector2i(hit.nx, hit.ny);
 	out["collider"] = Variant();
+	return out;
+}
+
+Dictionary PixelWorld::sweep_boxes(const PackedVector2Array &p_from, const PackedVector2Array &p_to,
+                                   const PackedVector2Array &p_sizes, int p_mask) const {
+	Dictionary out;
+	if (!grid) return out;
+	if (p_from.size() != p_to.size()) {
+		UtilityFunctions::push_error(vformat("PixelWorld.sweep_boxes: %d starts but %d ends", p_from.size(), p_to.size()));
+		return out;
+	}
+	std::vector<int> w, h;
+	if (!read_query_sizes("sweep_boxes", p_sizes, p_from.size(), w, h)) return out;
+	const Transform2D to_world = get_global_transform().affine_inverse();
+	const uint32_t mask = (uint32_t)p_mask & 15u;
+	PackedVector2Array positions;
+	PackedInt32Array stopped, sides;
+	for (int i = 0; i < p_from.size(); ++i) {
+		const Vector2 from = to_world.xform(p_from[i]), to = to_world.xform(p_to[i]);
+		const BoxSweep swept = sweep_box(*grid, from.x, from.y, to.x, to.y, w[(size_t)i], h[(size_t)i], mask);
+		positions.push_back(Vector2(swept.x, swept.y));
+		stopped.push_back((swept.stopped_x ? STOPPED_X : 0) | (swept.stopped_y ? STOPPED_Y : 0));
+		sides.push_back(swept.sides);
+	}
+	out["position"] = positions;
+	out["stopped"] = stopped;
+	out["sides"] = sides;
+	return out;
+}
+
+PackedByteArray PixelWorld::probe_boxes(const PackedVector2Array &p_centres, const PackedVector2Array &p_sizes,
+                                        int p_mask) const {
+	PackedByteArray out;
+	if (!grid) return out;
+	std::vector<int> w, h;
+	if (!read_query_sizes("probe_boxes", p_sizes, p_centres.size(), w, h)) return out;
+	const Transform2D to_world = get_global_transform().affine_inverse();
+	const uint32_t mask = (uint32_t)p_mask & 15u;
+	for (int i = 0; i < p_centres.size(); ++i) {
+		const Vector2 centre = to_world.xform(p_centres[i]);
+		out.push_back(box_blocked(*grid, centre.x, centre.y, w[(size_t)i], h[(size_t)i], mask) ? 1 : 0);
+	}
+	return out;
+}
+
+Dictionary PixelWorld::scan_boxes(const PackedVector2Array &p_centres, const PackedVector2Array &p_sizes) const {
+	Dictionary out;
+	if (!grid) return out;
+	std::vector<int> w, h;
+	if (!read_query_sizes("scan_boxes", p_sizes, p_centres.size(), w, h)) return out;
+	const Transform2D to_world = get_global_transform().affine_inverse();
+	PackedInt32Array solid, powder, liquid;
+	PackedStringArray liquid_material;
+	for (int i = 0; i < p_centres.size(); ++i) {
+		const Vector2 centre = to_world.xform(p_centres[i]);
+		const BoxScan scan = scan_box(*grid, centre.x, centre.y, w[(size_t)i], h[(size_t)i]);
+		solid.push_back(scan.solid);
+		powder.push_back(scan.powder);
+		liquid.push_back(scan.liquid);
+		liquid_material.push_back(scan.liquid_mat == MAT_AIR ? String() : String(table.name_of(scan.liquid_mat).c_str()));
+	}
+	out["solid"] = solid;
+	out["powder"] = powder;
+	out["liquid"] = liquid;
+	out["liquid_material"] = liquid_material;
+	return out;
+}
+
+PackedInt32Array PixelWorld::displace_cells(const PackedVector2Array &p_centres, const PackedVector2Array &p_sizes,
+                                           int p_mask, const PackedVector2Array &p_velocities,
+                                           const PackedInt32Array &p_max_cells, bool p_outward, float p_spawn_dy) {
+	PackedInt32Array out;
+	if (!grid || !particles) return out;
+	std::vector<int> w, h;
+	if (!read_query_sizes("displace_cells", p_sizes, p_centres.size(), w, h)) return out;
+	if (p_velocities.size() != p_centres.size() || p_max_cells.size() != p_centres.size()) {
+		UtilityFunctions::push_error(vformat("PixelWorld.displace_cells: %d boxes, %d velocities, %d max_cells",
+		                                    p_centres.size(), p_velocities.size(), p_max_cells.size()));
+		return out;
+	}
+	const Transform2D to_world = get_global_transform().affine_inverse();
+	const uint32_t mask = (uint32_t)p_mask & 15u;
+	for (int i = 0; i < p_centres.size(); ++i) {
+		const Vector2 centre = to_world.xform(p_centres[i]);
+		const Vector2 velocity = p_velocities[i];
+		out.push_back(displace_box(*grid, *particles, centre.x, centre.y, w[(size_t)i], h[(size_t)i], mask,
+		                           velocity.x, velocity.y, p_max_cells[i], p_outward, p_spawn_dy));
+	}
+	return out;
+}
+
+PackedInt32Array PixelWorld::body_contacts(const Array &p_bodies) const {
+	PackedInt32Array out;
+	if (!physics) return out;
+	for (int i = 0; i < p_bodies.size(); ++i) {
+		const PixelRigidBody *body = Object::cast_to<PixelRigidBody>((Object *)p_bodies[i]);
+		const int handle = body ? body->get_handle() : -1;
+		out.push_back(handle >= 0 && physics->has_body(handle) ? physics->contact_sides(handle) : 0);
+	}
 	return out;
 }
 

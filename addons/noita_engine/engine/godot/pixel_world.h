@@ -14,6 +14,9 @@
 #include <godot_cpp/variant/node_path.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
 #include <godot_cpp/variant/packed_float32_array.hpp>
+#include <godot_cpp/variant/packed_int32_array.hpp>
+#include <godot_cpp/variant/packed_string_array.hpp>
+#include <godot_cpp/variant/packed_vector2_array.hpp>
 #include <godot_cpp/variant/rect2i.hpp>
 #include <godot_cpp/variant/string_name.hpp>
 #include <godot_cpp/variant/vector2i.hpp>
@@ -316,6 +319,8 @@ public:
 	float get_bloom_strength() const { return bloom_strength; }
 
 	static constexpr int RAY_BODIES = 16;  // with the core's RAY_SOLID..RAY_GAS
+	static constexpr int STOPPED_X = 1;   // sweep_boxes `stopped` bits
+	static constexpr int STOPPED_Y = 2;
 
 	// For PixelRigidBody and the joints (not bound): null until _ready has run.
 	PhysicsWorld *get_physics() const { return physics.get(); }
@@ -352,6 +357,20 @@ public:
 	// Hits on terrain carry "position", "material", "normal" (cells) and a null "collider";
 	// hits on a body carry the body as "collider" and the exact "point".
 	Dictionary raycast(const Vector2 &p_from, const Vector2 &p_to, int p_mask = RAY_SOLID | RAY_POWDER | RAY_BODIES) const;
+
+	// Batched grid queries: one entry per box, centres and positions in world cells (the space
+	// raycast uses), sizes in cells rounded to the nearest int. Mismatched counts, or a size
+	// outside 1..MAX_QUERY_BOX, report an error and return an empty result.
+	Dictionary sweep_boxes(const PackedVector2Array &p_from, const PackedVector2Array &p_to,
+	                       const PackedVector2Array &p_sizes, int p_mask) const;
+	PackedByteArray probe_boxes(const PackedVector2Array &p_centres, const PackedVector2Array &p_sizes,
+	                            int p_mask) const;
+	Dictionary scan_boxes(const PackedVector2Array &p_centres, const PackedVector2Array &p_sizes) const;
+	PackedInt32Array displace_cells(const PackedVector2Array &p_centres, const PackedVector2Array &p_sizes,
+	                                int p_mask, const PackedVector2Array &p_velocities,
+	                                const PackedInt32Array &p_max_cells, bool p_outward, float p_spawn_dy);
+	// Side bits of each body's touching Box2D contacts; 0 where the entry is not a joined body.
+	PackedInt32Array body_contacts(const Array &p_bodies) const;
 };
 
 } // namespace godot

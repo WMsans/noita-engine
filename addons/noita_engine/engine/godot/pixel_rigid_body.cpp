@@ -63,7 +63,29 @@ void PixelRigidBody::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("apply_torque", "torque"), &PixelRigidBody::apply_torque);
 	ClassDB::bind_method(D_METHOD("get_mass"), &PixelRigidBody::get_mass);
 	ClassDB::bind_method(D_METHOD("is_sleeping"), &PixelRigidBody::is_sleeping);
-	ClassDB::bind_method(D_METHOD("teleport", "position", "rotation"), &PixelRigidBody::teleport);
+	ClassDB::bind_method(D_METHOD("get_previous_position"), &PixelRigidBody::get_previous_position);
+	ClassDB::bind_method(D_METHOD("teleport", "position", "rotation"), &PixelRigidBody::teleport, DEFVAL(Variant()));
+
+	ClassDB::bind_method(D_METHOD("set_body_size", "value"), &PixelRigidBody::set_body_size);
+	ClassDB::bind_method(D_METHOD("get_body_size"), &PixelRigidBody::get_body_size);
+	ClassDB::bind_method(D_METHOD("set_mass", "value"), &PixelRigidBody::set_mass);
+	ClassDB::bind_method(D_METHOD("get_body_mass"), &PixelRigidBody::get_body_mass);
+	ClassDB::bind_method(D_METHOD("set_gravity_scale", "value"), &PixelRigidBody::set_gravity_scale);
+	ClassDB::bind_method(D_METHOD("get_gravity_scale"), &PixelRigidBody::get_gravity_scale);
+	ClassDB::bind_method(D_METHOD("set_linear_damping", "value"), &PixelRigidBody::set_linear_damping);
+	ClassDB::bind_method(D_METHOD("get_linear_damping"), &PixelRigidBody::get_linear_damping);
+	ClassDB::bind_method(D_METHOD("set_angular_damping", "value"), &PixelRigidBody::set_angular_damping);
+	ClassDB::bind_method(D_METHOD("get_angular_damping"), &PixelRigidBody::get_angular_damping);
+	ClassDB::bind_method(D_METHOD("set_lock_rotation", "value"), &PixelRigidBody::set_lock_rotation);
+	ClassDB::bind_method(D_METHOD("get_lock_rotation"), &PixelRigidBody::get_lock_rotation);
+	ClassDB::bind_method(D_METHOD("set_terrain_collision", "value"), &PixelRigidBody::set_terrain_collision);
+	ClassDB::bind_method(D_METHOD("get_terrain_collision"), &PixelRigidBody::get_terrain_collision);
+	ClassDB::bind_method(D_METHOD("set_cell_proxies", "value"), &PixelRigidBody::set_cell_proxies);
+	ClassDB::bind_method(D_METHOD("get_cell_proxies"), &PixelRigidBody::get_cell_proxies);
+	ClassDB::bind_method(D_METHOD("set_proxy_step_height", "value"), &PixelRigidBody::set_proxy_step_height);
+	ClassDB::bind_method(D_METHOD("get_proxy_step_height"), &PixelRigidBody::get_proxy_step_height);
+	ClassDB::bind_method(D_METHOD("set_can_sleep", "value"), &PixelRigidBody::set_can_sleep);
+	ClassDB::bind_method(D_METHOD("get_can_sleep"), &PixelRigidBody::get_can_sleep);
 
 	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "texture", PROPERTY_HINT_RESOURCE_TYPE, "Texture2D"), "set_texture", "get_texture");
 	ADD_PROPERTY(PropertyInfo(Variant::STRING_NAME, "pixel_material"), "set_pixel_material", "get_pixel_material");
@@ -73,6 +95,16 @@ void PixelRigidBody::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "restitution"), "set_restitution", "get_restitution");
 	ADD_PROPERTY(PropertyInfo(Variant::VECTOR2, "linear_velocity", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_NONE), "set_linear_velocity", "get_linear_velocity");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "angular_velocity", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_NONE), "set_angular_velocity", "get_angular_velocity");
+	ADD_PROPERTY(PropertyInfo(Variant::VECTOR2I, "body_size"), "set_body_size", "get_body_size");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "mass"), "set_mass", "get_body_mass");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "gravity_scale"), "set_gravity_scale", "get_gravity_scale");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "linear_damping"), "set_linear_damping", "get_linear_damping");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "angular_damping"), "set_angular_damping", "get_angular_damping");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "lock_rotation"), "set_lock_rotation", "get_lock_rotation");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "terrain_collision"), "set_terrain_collision", "get_terrain_collision");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "cell_proxies"), "set_cell_proxies", "get_cell_proxies");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "proxy_step_height"), "set_proxy_step_height", "get_proxy_step_height");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "can_sleep"), "set_can_sleep", "get_can_sleep");
 
 	BIND_ENUM_CONSTANT(SHAPE_HULL);
 	BIND_ENUM_CONSTANT(SHAPE_CIRCLE);
@@ -91,12 +123,52 @@ void PixelRigidBody::set_texture(const Ref<Texture2D> &p_value) {
 	queue_redraw();
 }
 
+// A definition that was refused may become valid once the shape or the mass is set.
+void PixelRigidBody::set_body_size(const Vector2i &p_value) {
+	body_size = p_value;
+	refused = false;
+}
+
+void PixelRigidBody::set_mass(float p_value) {
+	props.mass = p_value;
+	refused = false;
+	apply_props();
+}
+
+void PixelRigidBody::apply_props() {
+	if (!B2_IS_NULL(body())) get_world()->get_physics()->set_props(handle, props);
+}
+
 bool PixelRigidBody::build_def(const MaterialTable &p_table, const Transform2D &p_to_world, BodyDef &r_def,
                                String &r_error) const {
+	r_def.props = props;
+	r_def.friction = friction;
+	r_def.restitution = restitution;
+	r_def.shape = shape == SHAPE_CIRCLE ? BodyShape::Circle : shape == SHAPE_BOXES ? BodyShape::Boxes : BodyShape::Hull;
 	if (texture.is_null()) {
-		r_error = "has no texture";
-		return false;
+		// No pixels: an unstamped box of `body_size`, which is how a character body is made.
+		if (body_size.x <= 0 || body_size.y <= 0) {
+			r_error = "has no texture";
+			return false;
+		}
+		if (props.mass <= 0) {
+			r_error = "body_size needs a mass";
+			return false;
+		}
+		r_def.box_w = body_size.x;
+		r_def.box_h = body_size.y;
+	} else {
+		if (!build_pixel_def(p_table, r_def, r_error)) return false;
 	}
+
+	const Transform2D xform = p_to_world * get_global_transform();
+	r_def.x = xform.get_origin().x;
+	r_def.y = xform.get_origin().y;
+	r_def.angle = xform.get_rotation();
+	return true;
+}
+
+bool PixelRigidBody::build_pixel_def(const MaterialTable &p_table, BodyDef &r_def, String &r_error) const {
 	const Ref<Image> image = decoded_image(texture);
 	if (image.is_null()) {
 		r_error = "texture has no image data";
@@ -133,14 +205,6 @@ bool PixelRigidBody::build_def(const MaterialTable &p_table, const Transform2D &
 			}
 			r_def.pixels[(size_t)y * r_def.w + x] = mat;
 		}
-
-	const Transform2D xform = p_to_world * get_global_transform();
-	r_def.x = xform.get_origin().x;
-	r_def.y = xform.get_origin().y;
-	r_def.angle = xform.get_rotation();
-	r_def.shape = shape == SHAPE_CIRCLE ? BodyShape::Circle : shape == SHAPE_BOXES ? BodyShape::Boxes : BodyShape::Hull;
-	r_def.friction = friction;
-	r_def.restitution = restitution;
 	return true;
 }
 
@@ -210,13 +274,20 @@ bool PixelRigidBody::is_sleeping() const {
 	return !B2_IS_NULL(id) && !b2Body_IsAwake(id);
 }
 
-void PixelRigidBody::teleport(const Vector2 &p_position, float p_rotation) {
+void PixelRigidBody::teleport(const Vector2 &p_position, const Variant &p_rotation) {
 	set_global_position(p_position);
-	set_global_rotation(p_rotation);
+	if (p_rotation.get_type() != Variant::NIL) set_global_rotation((double)p_rotation);
 	const b2BodyId id = body();
 	if (B2_IS_NULL(id)) return;
 	const Transform2D xform = get_world()->get_global_transform().affine_inverse() * get_global_transform();
 	get_world()->get_physics()->teleport(handle, xform.get_origin().x, xform.get_origin().y, xform.get_rotation());
+}
+
+Vector2 PixelRigidBody::get_previous_position() const {
+	PixelWorld *world = get_world();
+	if (!world || B2_IS_NULL(body()) || !world->get_physics()) return get_global_position();
+	const b2Vec2 previous = world->get_physics()->previous_position(handle);
+	return world->get_global_transform().xform(Vector2(previous.x, previous.y));
 }
 
 } // namespace godot

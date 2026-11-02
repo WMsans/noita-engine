@@ -578,6 +578,288 @@ func test_wheel_joint_motor() -> bool:
 	return true
 
 
+# --- rigid-body bindings and batched queries (Plan 6) ----------------------------------------
+
+# A box body: no texture, so `body_size` is the shape and `mass` its mass.
+func _make_box_body(size: Vector2i, mass: float, at: Vector2) -> PixelRigidBody:
+	var body := PixelRigidBody.new()
+	body.body_size = size
+	body.mass = mass
+	body.position = at
+	root.add_child(body)
+	return body
+
+
+func test_box_body_properties() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	var body := PixelRigidBody.new()
+	body.body_size = Vector2i(8, 16)
+	body.mass = 128.0
+	body.lock_rotation = true
+	body.position = Vector2(0, 100)
+	root.add_child(body)
+	await _register()
+	world.step(240)
+	var y := body.position.y
+	var rotation := body.rotation
+	var mass := body.get_mass()
+	var resting: PackedInt32Array = world.body_contacts([body])
+	# Liveness after joining: terrain_collision off drops the body through the floor.
+	body.terrain_collision = false
+	world.step(30)
+	var through := body.position.y
+	# The other properties are live too: each setter goes through PhysicsWorld::set_props.
+	body.gravity_scale = 0.5
+	body.linear_damping = 1.0
+	body.angular_damping = 1.0
+	body.can_sleep = false
+	body.cell_proxies = true
+	body.proxy_step_height = 2
+	world.step(2)
+	var live: bool = body.gravity_scale == 0.5 and body.linear_damping == 1.0 \
+	    and body.angular_damping == 1.0 and not body.can_sleep and body.cell_proxies \
+	    and body.proxy_step_height == 2 and not body.terrain_collision
+	# A body that never joined has no contacts.
+	var spare := PixelRigidBody.new()
+	var contacts: PackedInt32Array = world.body_contacts([body, spare])
+	spare.free()
+	world.free()
+	body.free()
+	var ok: bool = absf(y - 248.0) <= 2.0 and absf(rotation) <= 0.001 and absf(mass - 128.0) <= 1.0 \
+	    and resting.size() == 1 and (resting[0] & PixelWorld.SIDE_FLOOR) != 0 \
+	    and through > 260.0 and live and contacts.size() == 2 and contacts[1] == 0
+	if not ok:
+		printerr("  box at y %.2f rotation %.3f mass %.2f, contacts %s, fell through to y %.2f, live %s, %s" \
+		    % [y, rotation, mass, resting, through, live, contacts])
+	return ok
+
+
+func test_joined_signal_fires_once() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	var body := _make_box_body(Vector2i(8, 8), 64.0, Vector2(0, 100))
+	var joined := [0]
+	body.joined.connect(func() -> void: joined[0] += 1)
+	await _register()
+	world.step(10)
+	var count: int = joined[0]
+	world.free()
+	body.free()
+	if count != 1:
+		printerr("  joined fired %d times, expected 1" % count)
+		return false
+	return true
+
+
+func test_bodies_stepped_order() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	var body := _make_box_body(Vector2i(8, 8), 64.0, Vector2(0, 20))
+	await _register()
+	var prevs: Array[Vector2] = []
+	var at_emit: Array[Vector2] = []
+	var ticks := [0]
+	var handler := func() -> void:
+		ticks[0] += 1
+		prevs.append(body.get_previous_position())
+		at_emit.append(body.position)
+	world.bodies_stepped.connect(handler)
+	world.step(3)
+	var fell := body.position
+	world.bodies_stepped.disconnect(handler)
+	# Emitted once per tick, after the Box2D step and before sync_bodies: the node still shows
+	# the start of this tick's sweep, and the tick's own movement shows in `position` after it.
+	var ok: bool = ticks[0] == 3 and prevs[0].is_equal_approx(at_emit[0]) \
+	    and fell.y > prevs[0].y + 0.5
+	# A teleport done in the handler is what the node shows after that same tick.
+	var teleported := [false]
+	var teleporter := func() -> void:
+		if teleported[0]:
+			return
+		teleported[0] = true
+		body.teleport(Vector2(30, 40))
+	world.bodies_stepped.connect(teleporter)
+	world.step(1)
+	var target := body.position
+	world.bodies_stepped.disconnect(teleporter)
+	ok = ok and target.is_equal_approx(Vector2(30, 40))
+	world.free()
+	body.free()
+	if not ok:
+		printerr("  %d ticks, prev %s vs emit %s, fell to y %.2f, teleport shows %s" \
+		    % [ticks[0], prevs[0], at_emit[0], fell.y, target])
+	return ok
+
+
+func test_bodies_stepped_handler_may_free() -> bool:
+	# A handler frees a crate mid-tick; the tick must carry on without it.
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	var crate := _make_box_body(Vector2i(8, 8), 64.0, Vector2(-20, 100))
+	var survivor := _make_box_body(Vector2i(8, 8), 64.0, Vector2(20, 100))
+	await _register()
+	var freer := func() -> void:
+		if is_instance_valid(crate):
+			crate.free()
+	world.bodies_stepped.connect(freer)
+	world.step(1)  # this tick frees the crate and carries on without it
+	world.bodies_stepped.disconnect(freer)
+	world.step(2)
+	var gone := not is_instance_valid(crate)
+	var left: int = world.get_stats().bodies
+	world.free()
+	survivor.free()
+	if not gone or left != 1:
+		printerr("  crate freed: %s, %d bodies left, expected 1" % [gone, left])
+		return false
+
+	# A handler frees the world itself; the tick must return cleanly. A signal handler cannot
+	# free the emitting object, so it frees the node that owns it instead.
+	var holder := Node2D.new()
+	root.add_child(holder)
+	var doomed: PixelWorld = await _make_world()
+	doomed.reparent(holder)
+	doomed.simulating = false
+	var rider := _make_box_body(Vector2i(8, 8), 64.0, Vector2(0, 100))
+	await _register()
+	doomed.bodies_stepped.connect(func() -> void: holder.free())
+	doomed.step(1)
+	await _register()
+	rider.free()
+	if is_instance_valid(doomed):
+		printerr("  the world a handler freed is still alive")
+		return false
+	return true
+
+
+func test_sweep_probe_scan_displace_batched() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	world.fill_rect(Rect2i(-40, 120, 80, 4), &"rock")     # ground, top row 120
+	world.fill_rect(Rect2i(20, 100, 2, 20), &"rock")      # wall the sweeps hit
+	world.fill_rect(Rect2i(-24, 156, 8, 8), &"sand")      # powder block
+	world.fill_rect(Rect2i(16, 156, 8, 8), &"rock")       # solid block
+	world.fill_rect(Rect2i(-24, 184, 4, 2), &"water")     # 8 liquid cells
+	world.fill_rect(Rect2i(0, 184, 1, 1), &"rock")
+	world.fill_rect(Rect2i(1, 184, 1, 1), &"sand")
+	world.fill_rect(Rect2i(-24, 200, 4, 4), &"sand")      # 16 cells to knock out
+	world.fill_rect(Rect2i(8, 200, 4, 4), &"water")       # 16 cells to splash
+	var solid: int = PixelWorld.RAY_SOLID | PixelWorld.RAY_POWDER
+	var sizes := PackedVector2Array([Vector2(8, 16), Vector2(8, 16), Vector2(8, 16)])
+
+	var swept: Dictionary = world.sweep_boxes(
+	    PackedVector2Array([Vector2(-20, 112), Vector2(0, 112), Vector2(-20, 40)]),
+	    PackedVector2Array([Vector2(-10, 112), Vector2(60, 112), Vector2(-20, 200)]), sizes, solid)
+	var position: PackedVector2Array = swept["position"]
+	var stopped: PackedInt32Array = swept["stopped"]
+	var sides: PackedInt32Array = swept["sides"]
+	var ok: bool = swept.size() == 3 and position.size() == 3 and stopped.size() == 3 \
+	    and sides.size() == 3 \
+	    and position[0].is_equal_approx(Vector2(-10, 112)) and stopped[0] == 0 \
+	    and sides[0] == PixelWorld.SIDE_FLOOR \
+	    and position[1].is_equal_approx(Vector2(16, 112)) and stopped[1] == PixelWorld.STOPPED_X \
+	    and sides[1] == (PixelWorld.SIDE_FLOOR | PixelWorld.SIDE_RIGHT) \
+	    and position[2].is_equal_approx(Vector2(-20, 112)) and stopped[2] == PixelWorld.STOPPED_Y \
+	    and sides[2] == PixelWorld.SIDE_FLOOR
+	if not ok:
+		printerr("  sweeps %s %s %s" % [position, stopped, sides])
+		world.free()
+		return false
+
+	var probed: PackedByteArray = world.probe_boxes(
+	    PackedVector2Array([Vector2(-20, 160), Vector2(20, 160), Vector2(0, 140)]),
+	    PackedVector2Array([Vector2(4, 4), Vector2(4, 4), Vector2(4, 4)]), solid)
+	var probed_solid: PackedByteArray = world.probe_boxes(
+	    PackedVector2Array([Vector2(-20, 160), Vector2(20, 160), Vector2(0, 140)]),
+	    PackedVector2Array([Vector2(4, 4), Vector2(4, 4), Vector2(4, 4)]), PixelWorld.RAY_SOLID)
+	ok = probed == PackedByteArray([1, 1, 0]) and probed_solid == PackedByteArray([0, 1, 0])
+	if not ok:
+		printerr("  probes %s (solid|powder) %s (solid)" % [probed, probed_solid])
+		world.free()
+		return false
+
+	var scanned: Dictionary = world.scan_boxes(
+	    PackedVector2Array([Vector2(-22, 185), Vector2(0.5, 184.5), Vector2(40, 60)]),
+	    PackedVector2Array([Vector2(4, 4), Vector2(2, 2), Vector2(4, 4)]))
+	var counts: PackedInt32Array = scanned["solid"]
+	var powders: PackedInt32Array = scanned["powder"]
+	var liquids: PackedInt32Array = scanned["liquid"]
+	var materials: PackedStringArray = scanned["liquid_material"]
+	ok = scanned.size() == 4 and counts == PackedInt32Array([0, 1, 0]) \
+	    and powders == PackedInt32Array([0, 1, 0]) and liquids == PackedInt32Array([8, 0, 0]) \
+	    and materials == PackedStringArray(["water", "", ""])
+	if not ok:
+		printerr("  scans %s %s %s %s" % [counts, powders, liquids, materials])
+		world.free()
+		return false
+
+	var displaced: PackedInt32Array = world.displace_cells(
+	    PackedVector2Array([Vector2(-22, 201.5), Vector2(9.5, 201.5), Vector2(40, 60)]),
+	    PackedVector2Array([Vector2(4, 4), Vector2(4, 4), Vector2(4, 4)]), PixelWorld.RAY_POWDER,
+	    PackedVector2Array([Vector2(2, -2), Vector2(2, -2), Vector2(2, -2)]),
+	    PackedInt32Array([16, 16, 16]), true, 0.5)
+	ok = displaced == PackedInt32Array([16, 0, 0]) \
+	    and world.get_material_at(Vector2i(-24, 200)) == &"air" \
+	    and world.get_material_at(Vector2i(-21, 203)) == &"air"
+	var splashed: PackedInt32Array = world.displace_cells(
+	    PackedVector2Array([Vector2(9.5, 201.5)]), PackedVector2Array([Vector2(4, 4)]),
+	    PixelWorld.RAY_LIQUID, PackedVector2Array([Vector2(1.5, -3)]), PackedInt32Array([3]), false, -0.5)
+	ok = ok and splashed == PackedInt32Array([3]) \
+	    and world.get_material_at(Vector2i(8, 200)) == &"air" \
+	    and world.get_material_at(Vector2i(10, 200)) == &"air" \
+	    and world.get_material_at(Vector2i(11, 200)) == &"water"
+	world.free()
+	if not ok:
+		printerr("  displaced %s, splash %s" % [displaced, splashed])
+	return ok
+
+
+func test_batched_query_rejects_bad_input() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	# The errors these push are the expected behaviour, not test failures.
+	var swept: Dictionary = world.sweep_boxes(PackedVector2Array([Vector2(0, 0)]),
+	    PackedVector2Array([Vector2(0, 0), Vector2(0, 0)]), PackedVector2Array([Vector2(4, 4)]),
+	    PixelWorld.RAY_SOLID)
+	var too_big: PackedByteArray = world.probe_boxes(PackedVector2Array([Vector2(0, 0)]),
+	    PackedVector2Array([Vector2(65, 4)]), PixelWorld.RAY_SOLID)
+	var too_small: PackedByteArray = world.probe_boxes(PackedVector2Array([Vector2(0, 0)]),
+	    PackedVector2Array([Vector2(0, 4)]), PixelWorld.RAY_SOLID)
+	var scanned: Dictionary = world.scan_boxes(PackedVector2Array([Vector2(0, 0), Vector2(0, 0)]),
+	    PackedVector2Array([Vector2(4, 4)]))
+	var displaced: PackedInt32Array = world.displace_cells(PackedVector2Array([Vector2(0, 0)]),
+	    PackedVector2Array([Vector2(4, 4)]), PixelWorld.RAY_SOLID, PackedVector2Array(),
+	    PackedInt32Array([1]), false, 0.5)
+	world.free()
+	var ok: bool = swept.is_empty() and too_big.is_empty() and too_small.is_empty() \
+	    and scanned.is_empty() and displaced.is_empty()
+	if not ok:
+		printerr("  bad input returned %s %s %s %s %s" % [swept, too_big, too_small, scanned, displaced])
+	return ok
+
+
+func test_teleport_keeps_rotation_when_omitted() -> bool:
+	var world: PixelWorld = await _make_world()
+	world.simulating = false
+	var body := _make_box_body(Vector2i(8, 8), 64.0, Vector2(0, 100))
+	await _register()
+	body.teleport(Vector2(-10, 120), 0.5)
+	var shown := body.rotation
+	body.teleport(Vector2(10, 130))
+	var kept := body.rotation
+	world.step(1)
+	var stepped := body.rotation
+	var at := body.position
+	world.free()
+	body.free()
+	var ok: bool = absf(shown - 0.5) <= 0.001 and absf(kept - 0.5) <= 0.001 \
+	    and absf(stepped - 0.5) <= 0.001 and absf(at.x - 10.0) <= 0.01 and absf(at.y - 130.0) <= 1.0
+	if not ok:
+		printerr("  rotation %.3f -> %.3f -> %.3f at %s" % [shown, kept, stepped, at])
+	return ok
+
+
 # --- creatures (Plan 5) ----------------------------------------------------------------------
 
 func _make_character(at: Vector2) -> PixelCharacter:

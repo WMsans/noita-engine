@@ -288,8 +288,11 @@ if [ "$RUN_VERIFY" -eq 1 ]; then
 	# (in particular one from a --headless code path that should be a silent no-op)
 	# must fail the run. Keep this list in sync with run_tests.gd: the tests that
 	# provoke errors are test_unknown_material, test_material_write_rejects_unknown,
-	# test_particle_api_rejects_bad_input/_unbounded_input and test_body_bad_definitions.
-	allowed_errors='^ERROR: PixelWorld: unknown material .|^ERROR: PixelWorld\.explode: radius 1000 is over the limit of 256$|^ERROR: PixelWorld\.spawn(_visual)?_particles: position is not finite$|^ERROR: PixelRigidBody .*: (has no texture|texture has no opaque pixels|pixel .* colour .* is not a material in the palette|pixel_material .* is not a material)$|^ERROR: PixelMaterial .*: (crust )?texture must be 16x16'
+	# test_particle_api_rejects_bad_input/_unbounded_input, test_body_bad_definitions,
+	# test_batched_query_rejects_bad_input, and
+	# test_bodies_stepped_handler_may_free (which frees the world from a bodies_stepped
+	# handler through its parent: a signal handler cannot free the emitter itself).
+	allowed_errors='^ERROR: PixelWorld: unknown material .|^ERROR: PixelWorld\.(sweep_boxes|probe_boxes|scan_boxes|displace_cells): .*|^ERROR: PixelWorld\.explode: radius 1000 is over the limit of 256$|^ERROR: PixelWorld\.spawn(_visual)?_particles: position is not finite$|^ERROR: Object .* was freed or unreferenced while a signal is being emitted from it\.|^ERROR: PixelRigidBody .*: (has no texture|texture has no opaque pixels|pixel .* colour .* is not a material in the palette|pixel_material .* is not a material)$|^ERROR: PixelMaterial .*: (crust )?texture must be 16x16'
 	unexpected="$(printf '%s\n' "$out" | grep -E '(^| )ERROR' | grep -vE "$allowed_errors" || true)"
 	if [ -n "$unexpected" ]; then
 		printf '%s\n' "$unexpected" >&2

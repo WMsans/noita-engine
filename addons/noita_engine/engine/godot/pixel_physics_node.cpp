@@ -12,6 +12,7 @@ void PixelPhysicsNode::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_world"), &PixelPhysicsNode::get_world_path);
 	ADD_PROPERTY(PropertyInfo(Variant::NODE_PATH, "world", PROPERTY_HINT_NODE_PATH_VALID_TYPES, "PixelWorld"), "set_world", "get_world");
 
+	ADD_SIGNAL(MethodInfo("joined"));
 	ADD_SIGNAL(MethodInfo("hit", PropertyInfo(Variant::OBJECT, "other"), PropertyInfo(Variant::VECTOR2, "point"),
 	                      PropertyInfo(Variant::VECTOR2, "normal"), PropertyInfo(Variant::FLOAT, "speed")));
 	ADD_SIGNAL(MethodInfo("left_world"));
@@ -60,6 +61,7 @@ void PixelPhysicsNode::try_join() {
 		return;
 	}
 	world_id = world->get_instance_id();
+	emit_signal("joined");  // last: a handler may free this node or the world
 }
 
 b2BodyId PixelPhysicsNode::body() const {
