@@ -1,5 +1,8 @@
 [gd_resource type="PixelMaterial" format=3]
 
+[ext_resource type="Texture2D" uid="uid://csh7qfg0mxpea" path="res://textures/blocks/stone_generic.png" id="1_tex"]
+[ext_resource type="Texture2D" uid="uid://cl0s7ouu0n5h8" path="res://textures/blocks/cobblestone.png" id="2_crust"]
+
 [resource]
 name = &"rock"
 material_class = 1
@@ -7,3 +10,5 @@ density = 3.0
 color = Color(0.45, 0.42, 0.4, 1)
 collision_solid = true
 light_opacity = 1.0
+texture = ExtResource("1_tex")
+crust_texture = ExtResource("2_crust")

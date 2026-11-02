@@ -60,6 +60,10 @@ void PixelWorldGenerator::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_room_cell_size"), &PixelWorldGenerator::get_room_cell_size);
 	ClassDB::bind_method(D_METHOD("set_room_chance", "value"), &PixelWorldGenerator::set_room_chance);
 	ClassDB::bind_method(D_METHOD("get_room_chance"), &PixelWorldGenerator::get_room_chance);
+	ClassDB::bind_method(D_METHOD("set_crust_chance", "value"), &PixelWorldGenerator::set_crust_chance);
+	ClassDB::bind_method(D_METHOD("get_crust_chance"), &PixelWorldGenerator::get_crust_chance);
+	ClassDB::bind_method(D_METHOD("set_crust_radius", "value"), &PixelWorldGenerator::set_crust_radius);
+	ClassDB::bind_method(D_METHOD("get_crust_radius"), &PixelWorldGenerator::get_crust_radius);
 	ClassDB::bind_method(D_METHOD("set_back_wall_enabled", "value"), &PixelWorldGenerator::set_back_wall_enabled);
 	ClassDB::bind_method(D_METHOD("get_back_wall_enabled"), &PixelWorldGenerator::get_back_wall_enabled);
 	ClassDB::bind_method(D_METHOD("set_back_wall_darken", "value"), &PixelWorldGenerator::set_back_wall_darken);
@@ -124,6 +128,8 @@ void PixelWorldGenerator::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "entrance_threshold"), "set_entrance_threshold", "get_entrance_threshold");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "room_cell_size"), "set_room_cell_size", "get_room_cell_size");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "room_chance"), "set_room_chance", "get_room_chance");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "crust_chance", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_crust_chance", "get_crust_chance");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "crust_radius", PROPERTY_HINT_RANGE, "1,32,1"), "set_crust_radius", "get_crust_radius");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "back_wall_enabled"), "set_back_wall_enabled", "get_back_wall_enabled");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "back_wall_darken", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_back_wall_darken", "get_back_wall_darken");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "back_wall_desaturate", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_back_wall_desaturate", "get_back_wall_desaturate");
@@ -172,6 +178,8 @@ bool PixelWorldGenerator::to_config(TerrainConfig &out, String &error) const {
 	config.entrance_threshold = entrance_threshold;
 	config.room_cell_size = room_cell_size;
 	config.room_chance = room_chance;
+	config.crust_chance = crust_chance;
+	config.crust_radius = crust_radius;
 	config.back_wall.enabled = back_wall_enabled;
 	config.back_wall.darken = back_wall_darken;
 	config.back_wall.desaturate = back_wall_desaturate;

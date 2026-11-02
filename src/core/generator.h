@@ -9,6 +9,10 @@
 // A cell carrying a material's defaults plus its own per-pixel shade. Shared by the
 // generators and by WorldGrid::set so both spawn identical cells.
 Cell spawn_cell(MatId mat, const MaterialTable& table, uint32_t seed, int wx, int wy);
+Cell spawn_cell(MatId mat, const MaterialTable& table, uint32_t seed, int wx, int wy, int tx, int ty);
+
+// Texel index into a 16x16 texture (row-major y*16+x); coordinates wrap mod 16.
+inline uint8_t texel_index(int tx, int ty) { return (uint8_t)((tx & 15) + (ty & 15) * 16); }
 
 class ChunkGenerator {
 public:

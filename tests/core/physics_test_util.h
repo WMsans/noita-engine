@@ -17,8 +17,8 @@
 namespace phystest {
 
 // air(implicit) + rock, sand (collision-solid powder), water, wood (light solid), acid
-// (acid + rock -> air + air, always).
-inline MaterialTable table() {
+// (acid + rock -> air + air, always). textured_wood gives wood a 16x16 texture.
+inline MaterialTable table(bool textured_wood = false) {
 	std::vector<MaterialDef> defs(5);
 	defs[0].name = "rock";
 	defs[0].cls = MatClass::Solid;
@@ -38,6 +38,10 @@ inline MaterialTable table() {
 	defs[3].collision_solid = true;
 	defs[4].name = "acid";
 	defs[4].cls = MatClass::Liquid;
+	if (textured_wood) {
+		defs[3].texture_rgba.resize(256);
+		for (size_t i = 0; i < defs[3].texture_rgba.size(); ++i) defs[3].texture_rgba[i] = (uint32_t)i;
+	}
 	defs[4].density = 1.1f;
 	ReactionDef acid_rock;
 	acid_rock.a = "acid";

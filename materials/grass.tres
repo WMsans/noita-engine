@@ -1,5 +1,7 @@
 [gd_resource type="PixelMaterial" format=3]
 
+[ext_resource type="Texture2D" uid="uid://dsjfwwb17qc6g" path="res://textures/blocks/grass_top.png" id="1_tex"]
+
 [resource]
 name = &"grass"
 material_class = 1
@@ -7,3 +9,4 @@ density = 1.5
 color = Color(0.3, 0.55, 0.2, 1)
 collision_solid = true
 light_opacity = 1.0
+texture = ExtResource("1_tex")

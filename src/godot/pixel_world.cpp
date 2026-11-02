@@ -54,6 +54,7 @@ constexpr int MAX_EXPLODE_RADIUS = 256;
 void PixelWorld::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_cell", "pos", "material"), &PixelWorld::set_cell);
 	ClassDB::bind_method(D_METHOD("get_material_at", "pos"), &PixelWorld::get_material_at);
+	ClassDB::bind_method(D_METHOD("get_color_at", "pos"), &PixelWorld::get_color_at);
 	ClassDB::bind_method(D_METHOD("fill_rect", "rect", "material"), &PixelWorld::fill_rect);
 	ClassDB::bind_method(D_METHOD("fill_circle", "center", "radius", "material"), &PixelWorld::fill_circle);
 	ClassDB::bind_method(D_METHOD("step", "ticks"), &PixelWorld::step);
@@ -205,19 +206,22 @@ void PixelWorld::_ready() {
 		const CompiledMaterial &material = table.get((MatId)i);
 		palette[i].color = color_from_rgba32(material.color_rgba);
 		palette[i].shade_amount = material.shade_amount;
+		palette[i].texture = &material.texture_rgba;
+		palette[i].crust = &material.crust_rgba;
 	}
-	cell_rgba.assign(palette.size() * 2 * 256, 0u);
+	cell_rgba.assign(palette.size() * 2 * 2 * 256, 0u);
 	for (size_t m = 0; m < palette.size(); ++m)
 		for (int burning = 0; burning < 2; ++burning)
-			for (int shade = 0; shade < 256; ++shade) {
-				Cell cell{};
-				cell.mat = (MatId)m;
-				cell.flags = burning ? FLAG_BURNING : 0;
-				cell.shade = (uint8_t)shade;
-				const Color color = cell_color(cell);
-				const uint8_t px[4] = {to_byte(color.r), to_byte(color.g), to_byte(color.b), to_byte(color.a)};
-				memcpy(&cell_rgba[(m * 2 + burning) * 256 + shade], px, sizeof(px));
-			}
+			for (int crust = 0; crust < 2; ++crust)
+				for (int shade = 0; shade < 256; ++shade) {
+					Cell cell{};
+					cell.mat = (MatId)m;
+					cell.flags = (uint8_t)((burning ? FLAG_BURNING : 0) | (crust ? FLAG_CRUST : 0));
+					cell.shade = (uint8_t)shade;
+					const Color color = cell_color(cell);
+					const uint8_t px[4] = {to_byte(color.r), to_byte(color.g), to_byte(color.b), to_byte(color.a)};
+					memcpy(&cell_rgba[(((m * 2 + burning) * 2 + crust) * 256) + shade], px, sizeof(px));
+				}
 	rebuild_light_palette();
 
 	// The pool must outlive the simulator, which is why the node owns both.
@@ -965,8 +969,15 @@ void PixelWorld::upload_dirty_chunks() {
 Color PixelWorld::cell_color(const Cell &p_cell) const {
 	if (p_cell.mat == MAT_AIR || p_cell.mat >= palette.size()) return Color(0, 0, 0, 0);
 	const PaletteEntry &entry = palette[p_cell.mat];
-	const float scale = 1.0f + entry.shade_amount * ((float)p_cell.shade / 255.0f - 0.5f);
-	Color color(entry.color.r * scale, entry.color.g * scale, entry.color.b * scale, entry.color.a);
+	Color color;
+	if ((p_cell.flags & FLAG_CRUST) && entry.crust && !entry.crust->empty())
+		color = color_from_rgba32((*entry.crust)[p_cell.shade]);
+	else if (entry.texture && !entry.texture->empty())
+		color = color_from_rgba32((*entry.texture)[p_cell.shade]);
+	else {
+		const float scale = 1.0f + entry.shade_amount * ((float)p_cell.shade / 255.0f - 0.5f);
+		color = Color(entry.color.r * scale, entry.color.g * scale, entry.color.b * scale, entry.color.a);
+	}
 	if (p_cell.flags & FLAG_BURNING) {  // half-way towards a glowing orange
 		color.r = Math::lerp(color.r, 1.0f, 0.5f);
 		color.g = Math::lerp(color.g, 0.5f, 0.5f);
@@ -989,7 +1000,12 @@ void PixelWorld::write_chunk_image(const Chunk &chunk, uint32_t *out) const {
 	    back_wall_enabled && chunk.back_wall.size() == (size_t)CHUNK * CHUNK;
 	for (size_t i = 0; i < (size_t)CHUNK * CHUNK; ++i) {
 		const Cell &cell = chunk.cells[i];
-		const uint32_t px = cell.mat < mats ? cell_rgba[((size_t)cell.mat * 2 + (cell.flags & FLAG_BURNING)) * 256 + cell.shade] : 0u;
+		const uint32_t px = cell.mat < mats
+		                    ? cell_rgba[(((size_t)cell.mat * 2 + (cell.flags & FLAG_BURNING)) * 2 +
+		                               (cell.flags & FLAG_CRUST ? 1 : 0)) *
+		                          256 +
+		                          cell.shade]
+		                    : 0u;
 		// Alpha is the top byte of these R, G, B, A words: an opaque cell covers the wall, and
 		// with no wall baked in the cell is all there is.
 		if (!bake_wall || (px >> 24) == 255u) {
@@ -1044,6 +1060,22 @@ StringName PixelWorld::get_material_at(const Vector2i &p_pos) const {
 	Cell cell{};
 	if (!grid->get(p_pos.x, p_pos.y, cell)) return StringName();
 	return StringName(table.name_of(cell.mat).c_str());
+}
+
+Color PixelWorld::get_color_at(const Vector2i &p_pos) const {
+	if (!grid) return Color(0, 0, 0, 0);
+	Cell cell{};
+	if (!grid->get(p_pos.x, p_pos.y, cell)) return Color(0, 0, 0, 0);
+	if (cell.mat == MAT_AIR || cell.mat >= palette.size()) return Color(0, 0, 0, 0);
+	const uint32_t px =
+	    cell_rgba[(((size_t)cell.mat * 2 + (cell.flags & FLAG_BURNING)) * 2 +
+	               (cell.flags & FLAG_CRUST ? 1 : 0)) *
+                 256 +
+                 cell.shade];
+	// cell_rgba holds the RGBA8 bytes exactly as they upload to the chunk texture
+	// (little-endian packed), so decode by byte rather than as 0xRRGGBBAA.
+	return Color((px & 0xFFu) / 255.0f, ((px >> 8) & 0xFFu) / 255.0f,
+	             ((px >> 16) & 0xFFu) / 255.0f, (px >> 24) / 255.0f);
 }
 
 int PixelWorld::fill_rect(const Rect2i &p_rect, const StringName &p_material) {

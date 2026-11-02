@@ -19,6 +19,8 @@ struct MaterialDef {
 	float density = 1.0f;
 	uint32_t color_rgba = 0xFFFFFFFF;
 	float shade_amount = 0.1f;  // brightness jitter 0..1
+	std::vector<uint32_t> texture_rgba;  // 16x16 texels, row-major y*16+x; empty = untextured
+	std::vector<uint32_t> crust_rgba;    // generated crust variant, same layout
 	uint8_t dispersion = 0;     // sideways cells/tick, liquid/gas, <= 16
 	float emission_r = 0, emission_g = 0, emission_b = 0, emission_energy = 0;
 	float light_opacity = 1.0f;
@@ -51,6 +53,8 @@ struct CompiledMaterial {
 	float density;
 	uint32_t color_rgba;
 	float shade_amount;
+	std::vector<uint32_t> texture_rgba;  // 16x16 texels, row-major y*16+x; empty = untextured
+	std::vector<uint32_t> crust_rgba;
 	uint8_t dispersion;
 	float emission_r, emission_g, emission_b, emission_energy, light_opacity;
 	bool collision_solid;

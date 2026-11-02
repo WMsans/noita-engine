@@ -10,12 +10,16 @@ std::unique_ptr<Chunk> make_chunk(ChunkCoord coord, const ChunkGenerator& gen, u
 }
 
 Cell spawn_cell(MatId mat, const MaterialTable& table, uint32_t seed, int wx, int wy) {
+	return spawn_cell(mat, table, seed, wx, wy, wx, wy);
+}
+
+Cell spawn_cell(MatId mat, const MaterialTable& table, uint32_t seed, int wx, int wy, int tx, int ty) {
 	const CompiledMaterial& def = table.get(mat);
 	Cell c{};
 	c.mat = mat;
 	c.temp = def.base_temp;
 	c.life = def.lifetime;
-	c.shade = (uint8_t)(hash5(seed, 0, wx, wy, 0) & 0xFF);
+	c.shade = def.texture_rgba.empty() ? (uint8_t)(hash5(seed, 0, wx, wy, 0) & 0xFF) : texel_index(tx, ty);
 	return c;
 }
 

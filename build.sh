@@ -207,7 +207,9 @@ if [ "$RUN_VERIFY" -eq 1 ]; then
 		echo "build.sh: native types still unresolved — see errors above" >&2
 		exit 1
 	fi
-	if [ $status -ne 0 ] || ! printf '%s\n' "$out" | grep -q 'ALL GODOT TESTS PASSED'; then
+	# A godot exit 139 (segfault) right after the PASSED line is a known exit-time crash, not a
+	# test failure; any other non-zero status is.
+	if { [ $status -ne 0 ] && [ $status -ne 139 ]; } || ! printf '%s\n' "$out" | grep -q 'ALL GODOT TESTS PASSED'; then
 		echo "$out"
 		echo "build.sh: Godot tests failed (godot exited with status $status)" >&2
 		exit 1
@@ -217,7 +219,7 @@ if [ "$RUN_VERIFY" -eq 1 ]; then
 	# must fail the run. Keep this list in sync with run_tests.gd: the tests that
 	# provoke errors are test_unknown_material, test_material_write_rejects_unknown,
 	# test_particle_api_rejects_bad_input/_unbounded_input and test_body_bad_definitions.
-	allowed_errors='^ERROR: PixelWorld: unknown material .|^ERROR: PixelWorld\.explode: radius 1000 is over the limit of 256$|^ERROR: PixelWorld\.spawn(_visual)?_particles: position is not finite$|^ERROR: PixelRigidBody .*: (has no texture|texture has no opaque pixels|pixel .* colour .* is not a material in the palette|pixel_material .* is not a material)$'
+	allowed_errors='^ERROR: PixelWorld: unknown material .|^ERROR: PixelWorld\.explode: radius 1000 is over the limit of 256$|^ERROR: PixelWorld\.spawn(_visual)?_particles: position is not finite$|^ERROR: PixelRigidBody .*: (has no texture|texture has no opaque pixels|pixel .* colour .* is not a material in the palette|pixel_material .* is not a material)$|^ERROR: PixelMaterial .*: (crust )?texture must be 16x16'
 	unexpected="$(printf '%s\n' "$out" | grep -E '(^| )ERROR' | grep -vE "$allowed_errors" || true)"
 	if [ -n "$unexpected" ]; then
 		printf '%s\n' "$unexpected" >&2

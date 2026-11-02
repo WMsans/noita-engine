@@ -12,6 +12,8 @@ CompiledMaterial compiled_from(const MaterialDef& d, MatId burns_into, MatId hig
 	c.density = d.density;
 	c.color_rgba = d.color_rgba;
 	c.shade_amount = d.shade_amount;
+	c.texture_rgba = d.texture_rgba;
+	c.crust_rgba = d.crust_rgba;
 	c.dispersion = d.dispersion;
 	c.emission_r = d.emission_r;
 	c.emission_g = d.emission_g;
@@ -87,6 +89,14 @@ bool MaterialTable::compile(const std::vector<MaterialDef>& defs,
 		}
 		if (tmp.lookup(d.name) != NO_MAT) {
 			error = "duplicate material '" + d.name + "'";
+			return false;
+		}
+		if (d.texture_rgba.size() != 0 && d.texture_rgba.size() != 256) {
+			error = d.name + ".texture: must be 16x16 (256 texels)";
+			return false;
+		}
+		if (d.crust_rgba.size() != 0 && d.crust_rgba.size() != 256) {
+			error = d.name + ".crust_texture: must be 16x16 (256 texels)";
 			return false;
 		}
 		tmp.mats.push_back(compiled_from(d, NO_MAT, NO_MAT, NO_MAT, NO_MAT));
