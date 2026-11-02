@@ -11,6 +11,7 @@ script = ExtResource("1_demo")
 material_set = ExtResource("2_set")
 generator = ExtResource("3_gen")
 follow_target = NodePath("../Camera2D")
+lighting_enabled = false
 emission_reach = 200.0
 
 [node name="Camera2D" type="Camera2D" parent="." unique_id=1757553662]
@@ -23,3 +24,4 @@ offset_left = 8.0
 offset_top = 8.0
 offset_right = 520.0
 offset_bottom = 140.0
+theme_override_font_sizes/font_size = 8
