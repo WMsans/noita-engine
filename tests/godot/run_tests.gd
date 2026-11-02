@@ -1058,7 +1058,7 @@ func test_character_refuses_4_cell_ledge() -> bool:
 func test_character_climbs_sand_pile() -> bool:
 	var world: PixelWorld = await _make_world()
 	world.simulating = false
-	world.fill_rect(Rect2i(30, 253, 40, 3), &"sand")
+	world.fill_rect(Rect2i(30, 253, 40, 3), &"sand")  # a wall three cells above the floor
 	world.step(120)  # let it settle into a pile on the floor
 	var character := _make_character(Vector2(0, 248))
 	await _register()
@@ -1070,8 +1070,11 @@ func test_character_climbs_sand_pile() -> bool:
 	var at := character.position
 	world.free()
 	character.free()
-	if at.x < 30.0 or at.y > start - 1.0:
-		printerr("  walked from y %.2f to %s, expected into the sand at x >= 30 and up a cell" % [start, at])
+	# The old creature suite climbed three cells onto the powder ahead of it, not just onto the
+	# pile's edge: one step up is not the behaviour this character has to keep.
+	var climbed := start - at.y
+	if at.x < 30.0 or climbed < 3.0:
+		printerr("  walked from y %.2f to %s: climbed %.2f cells, expected 3 past x 30" % [start, at, climbed])
 		return false
 	return true
 
