@@ -89,12 +89,12 @@ addons/noita_engine/
   textures/
     blocks/*.png            # was textures/blocks/
     rooms/*.png             # was rooms/*.png
-  resources/                # Godot data resources (.tres)
-    materials/*.tres        # was materials/
-    worldgen/*.tres         # was worldgen/
-    rooms/*.tres            # was rooms/*.tres
   demo/
     *.gd *.tscn             # was demo/
+    resources/              # example data; a host project makes its own
+      materials/*.tres      # was materials/
+      worldgen/*.tres       # was worldgen/
+      rooms/*.tres          # was rooms/*.tres
     pixel_character.gd      # NEW: one character's properties, state and input surface
     character_system.gd     # NEW: runs all characters' grid behaviour, batched
     car_controller.gd       # NEW: the car, pulled out of bodies_demo.gd
@@ -104,9 +104,10 @@ Outside the addon, kept for development only: `project.godot`, `thirdparty/`, `t
 `bench/`, `docs/`, `icon.svg`. The root `build.sh` and `SConstruct` are removed; the
 addon's are the only ones. `project.godot`'s main scene moves to the addon's demo path.
 
-`resources/` is a fifth folder the user didn't list (my call). `.tres` files are neither
-C++, textures nor scripts, and the material set and generator are what a host project will
-reuse first, so they shouldn't be buried in `demo/`.
+The `.tres` data (materials, reactions, worldgen, rooms) lives in `demo/resources/`
+(user's decision): it is example content. A host project is expected to write its own
+material set and generator and point its `PixelWorld` at them; the demo set is a starting
+point to copy from.
 
 ### Rules refactor
 
@@ -115,16 +116,16 @@ along that seam into `movement.cpp` and `chemistry.cpp`, with the shared helpers
 `rules_common.h`; `update_cell()` stays the single entry point the simulator calls. Pure
 move, no behaviour change. The core tests must pass unchanged. Every C++ file the engine
 needs from the rules is listed in `rules/README.md`, along with a worked "add a rule"
-example. Material/reaction data (`resources/materials`) is how most new rules are added
+example. Material/reaction data (`demo/resources/materials`) is how most new rules are added
 and the README says so first.
 
 ## Path migration
 
 | old | new |
 | --- | --- |
-| `res://materials/` | `res://addons/noita_engine/resources/materials/` |
-| `res://worldgen/` | `res://addons/noita_engine/resources/worldgen/` |
-| `res://rooms/*.tres` | `res://addons/noita_engine/resources/rooms/` |
+| `res://materials/` | `res://addons/noita_engine/demo/resources/materials/` |
+| `res://worldgen/` | `res://addons/noita_engine/demo/resources/worldgen/` |
+| `res://rooms/*.tres` | `res://addons/noita_engine/demo/resources/rooms/` |
 | `res://rooms/*.png` | `res://addons/noita_engine/textures/rooms/` |
 | `res://textures/` | `res://addons/noita_engine/textures/` |
 | `res://demo/` | `res://addons/noita_engine/demo/` |
@@ -307,7 +308,7 @@ count and timing of `CharacterSystem`'s handler.
 
 ## Build script
 
-`addons/noita_engine/build.sh`, adapted from the current root `build.sh`:
+`addons/noita_engine/build.sh` is the project's only build script: the root `build.sh` and `SConstruct` are moved into the addon (and adapted), not kept alongside. In this repo it is run as `addons/noita_engine/build.sh`; in a host project, from wherever the addon was copied. It:
 
 - Finds `thirdparty/` in this order: `--thirdparty <dir>`, `$NOITA_THIRDPARTY`,
   `<repo>/thirdparty` (this repo), `<addon>/thirdparty`. If none exists, it clones the
