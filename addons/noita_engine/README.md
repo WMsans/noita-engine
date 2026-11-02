@@ -24,6 +24,9 @@ and `thirdparty/` when fetched), so the copied folder remains self-contained.
 - a C++17 compiler (`clang++` or `g++`)
 - `git` — only the first build needs it, to fetch godot-cpp and box2d
 
+Noise is not a build dependency: FastNoiseLite (single MIT header, v1.1.1) is
+vendored at `engine/FastNoiseLite/FastNoiseLite.h` and compiles in-tree.
+
 ## Building
 
 `build.sh` resolves its two dependencies (godot-cpp and box2d) in this order:

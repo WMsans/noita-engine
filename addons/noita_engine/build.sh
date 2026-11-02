@@ -34,9 +34,12 @@
 set -euo pipefail
 
 ADDON="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# REPO is the development repo (the one with project.godot) when the addon lives in one.
+# REPO is the development repo, recognised by its project file and both test
+# suites; a host project whose git toplevel merely contains project.godot is not it.
 REPO="$(git -C "$ADDON" rev-parse --show-toplevel 2>/dev/null || true)"
-[ -n "$REPO" ] && [ -f "$REPO/project.godot" ] || REPO=""
+if [ -z "$REPO" ] || [ ! -f "$REPO/project.godot" ] || [ ! -d "$REPO/tests/core" ] || [ ! -d "$REPO/tests/godot" ]; then
+	REPO=""
+fi
 GODOT="${GODOT:-godot}"
 # Platform-aware job count: nproc on Linux, sysctl on macOS.
 if command -v nproc >/dev/null 2>&1; then
@@ -117,10 +120,8 @@ fi
 # --- thirdparty ------------------------------------------------------------
 # Every scons invocation reads godot-cpp/SConstruct, and both the extension and
 # the test binary compile box2d/src/*.c; those two are the git submodules, so
-# they are what this resolves and fetches.
-# shortcut: a copied addon also needs thirdparty/FastNoiseLite/FastNoiseLite.h
-# (engine/core includes it), which exists only as a tracked file in this repo's
-# thirdparty/ — vendor it into the addon before relying on the clone path.
+# they are what this resolves and fetches. FastNoiseLite is vendored in the addon
+# (engine/FastNoiseLite), so nothing else has to be fetched.
 thirdparty_ok() {
 	[ -f "$1/godot-cpp/SConstruct" ] && [ -f "$1/box2d/include/box2d/box2d.h" ]
 }
