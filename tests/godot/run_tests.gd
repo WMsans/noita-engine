@@ -1300,10 +1300,10 @@ func test_bench_light_gpu_gate_exemption() -> bool:
 	return true
 
 
-# Every demo except the acceptance scene keeps lighting off: they were tuned as unlit scenes, and
-# turning lighting on is a per-scene choice. world_demo is the scene tuned by eye for lighting.
+# Every demo scene keeps lighting off: they were tuned as unlit scenes, and turning lighting on is
+# a per-scene choice.
 func test_existing_scenes_opt_out() -> bool:
-	var scenes: Array[String] = ["res://addons/noita_engine/demo/paint_demo.tscn", "res://addons/noita_engine/demo/bodies_demo.tscn", "res://addons/noita_engine/demo/creatures_demo.tscn", "res://bench/bench.tscn"]
+	var scenes: Array[String] = ["res://addons/noita_engine/demo/paint_demo.tscn", "res://addons/noita_engine/demo/bodies_demo.tscn", "res://addons/noita_engine/demo/creatures_demo.tscn", "res://addons/noita_engine/demo/world_demo.tscn", "res://bench/bench.tscn"]
 	for path: String in scenes:
 		var scene: Node = load(path).instantiate()
 		var world: PixelWorld = scene.get_node_or_null("PixelWorld")
@@ -1312,13 +1312,6 @@ func test_existing_scenes_opt_out() -> bool:
 			scene.free()
 			return false
 		scene.free()
-	var tuned: Node = load("res://addons/noita_engine/demo/world_demo.tscn").instantiate()
-	var tuned_world: PixelWorld = tuned.get_node_or_null("PixelWorld")
-	var lit: bool = tuned_world != null and tuned_world.lighting_enabled
-	tuned.free()
-	if not lit:
-		printerr("  res://addons/noita_engine/demo/world_demo.tscn: PixelWorld lighting_enabled is off, expected on")
-		return false
 	return true
 
 
