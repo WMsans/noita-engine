@@ -672,6 +672,9 @@ func test_bodies_stepped_order() -> bool:
 	# the start of this tick's sweep, and the tick's own movement shows in `position` after it.
 	var ok: bool = ticks[0] == 3 and prevs[0].is_equal_approx(at_emit[0]) \
 	    and fell.y > prevs[0].y + 0.5
+	# The sweep start of the last tick, world-converted; it must not just mirror the node pose.
+	ok = ok and body.get_previous_position().is_equal_approx(at_emit[2]) \
+	    and not body.get_previous_position().is_equal_approx(body.get_global_position())
 	# A teleport done in the handler is what the node shows after that same tick.
 	var teleported := [false]
 	var teleporter := func() -> void:
@@ -724,7 +727,7 @@ func test_bodies_stepped_handler_may_free() -> bool:
 	var rider := _make_box_body(Vector2i(8, 8), 64.0, Vector2(0, 100))
 	await _register()
 	doomed.bodies_stepped.connect(func() -> void: holder.free())
-	doomed.step(1)
+	doomed.step(3)  # the loop must stop, not run the next tick on the freed world
 	await _register()
 	rider.free()
 	if is_instance_valid(doomed):

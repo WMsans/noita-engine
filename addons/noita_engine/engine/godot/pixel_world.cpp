@@ -1163,7 +1163,13 @@ int PixelWorld::fill_circle(const Vector2i &p_center, int p_radius, const String
 
 void PixelWorld::step(int p_ticks) {
 	if (!sim) return;
-	for (int i = 0; i < p_ticks; ++i) tick_world();
+	// A bodies_stepped handler may free this world through its parent; tick_world returns
+	// cleanly, but the next iteration would run on the freed object.
+	const ObjectID self_id(get_instance_id());
+	for (int i = 0; i < p_ticks; ++i) {
+		tick_world();
+		if (!ObjectDB::get_instance(self_id)) return;
+	}
 }
 
 // `p_velocity` rotated by a uniform angle in [-spread/2, spread/2] and scaled by [0.75, 1.25],

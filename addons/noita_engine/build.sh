@@ -289,14 +289,23 @@ if [ "$RUN_VERIFY" -eq 1 ]; then
 	# must fail the run. Keep this list in sync with run_tests.gd: the tests that
 	# provoke errors are test_unknown_material, test_material_write_rejects_unknown,
 	# test_particle_api_rejects_bad_input/_unbounded_input, test_body_bad_definitions,
-	# test_batched_query_rejects_bad_input, and
-	# test_bodies_stepped_handler_may_free (which frees the world from a bodies_stepped
-	# handler through its parent: a signal handler cannot free the emitter itself).
-	allowed_errors='^ERROR: PixelWorld: unknown material .|^ERROR: PixelWorld\.(sweep_boxes|probe_boxes|scan_boxes|displace_cells): .*|^ERROR: PixelWorld\.explode: radius 1000 is over the limit of 256$|^ERROR: PixelWorld\.spawn(_visual)?_particles: position is not finite$|^ERROR: Object .* was freed or unreferenced while a signal is being emitted from it\.|^ERROR: PixelRigidBody .*: (has no texture|texture has no opaque pixels|pixel .* colour .* is not a material in the palette|pixel_material .* is not a material)$|^ERROR: PixelMaterial .*: (crust )?texture must be 16x16'
+	# test_batched_query_rejects_bad_input, and test_bodies_stepped_handler_may_free, which
+	# frees the world from a bodies_stepped handler through its parent (a signal handler
+	# cannot free the emitter itself). Godot names the object only as <Object#id>, so that
+	# entry cannot name PixelWorld; it is pinned to the exact message and the count below
+	# requires it exactly once, so a free-during-emission bug in any other test or class
+	# still fails the run.
+	allowed_errors='^ERROR: PixelWorld: unknown material .|^ERROR: PixelWorld\.(sweep_boxes|probe_boxes|scan_boxes|displace_cells): .*|^ERROR: PixelWorld\.explode: radius 1000 is over the limit of 256$|^ERROR: PixelWorld\.spawn(_visual)?_particles: position is not finite$|^ERROR: Object '\''<Object#[0-9]+>'\'' was freed or unreferenced while a signal is being emitted from it\.|^ERROR: PixelRigidBody .*: (has no texture|texture has no opaque pixels|pixel .* colour .* is not a material in the palette|pixel_material .* is not a material)$|^ERROR: PixelMaterial .*: (crust )?texture must be 16x16'
 	unexpected="$(printf '%s\n' "$out" | grep -E '(^| )ERROR' | grep -vE "$allowed_errors" || true)"
 	if [ -n "$unexpected" ]; then
 		printf '%s\n' "$unexpected" >&2
 		echo "build.sh: unexpected error output from the Godot tests — see errors above" >&2
+		exit 1
+	fi
+	emit_frees="$(printf '%s\n' "$out" | grep -cE '^ERROR: Object '\''<Object#[0-9]+>'\'' was freed or unreferenced while a signal is being emitted from it\.' || true)"
+	if [ "$emit_frees" -ne 1 ]; then
+		printf '%s\n' "$out" | grep -E 'was freed or unreferenced while a signal' >&2
+		echo "build.sh: expected exactly one free-during-emission error, got $emit_frees" >&2
 		exit 1
 	fi
 	echo "    OK: ALL GODOT TESTS PASSED."

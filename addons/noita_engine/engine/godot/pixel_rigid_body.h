@@ -59,6 +59,7 @@ public:
 	// The shape when there is no texture: an unstamped box, which is how a character body is made.
 	void set_body_size(const Vector2i &p_value);
 	Vector2i get_body_size() const { return body_size; }
+	// 0 = from pixels; get_mass() is the effective Box2D mass.
 	void set_mass(float p_value);
 	float get_body_mass() const { return props.mass; }
 	void set_gravity_scale(float p_value) {
