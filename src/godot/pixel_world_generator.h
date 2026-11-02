@@ -46,6 +46,8 @@ class PixelWorldGenerator : public Resource {
 	float entrance_threshold = 0.75f;  // > 1 disables entrances
 	int room_cell_size = 256;
 	float room_chance = 0.25f;
+	float crust_chance = 0.3f;  // CrustPass: per-edge-cell probability
+	int crust_radius = 6;  // blob radius in cells
 	// BackWallConfig, field for field.
 	bool back_wall_enabled = true;
 	float back_wall_darken = 0.54f;
@@ -153,6 +155,12 @@ public:
 
 	void set_room_chance(float p_value) { room_chance = p_value; }
 	float get_room_chance() const { return room_chance; }
+
+	void set_crust_chance(float p_value) { crust_chance = p_value; }
+	float get_crust_chance() const { return crust_chance; }
+
+	void set_crust_radius(int p_value) { crust_radius = p_value; }
+	int get_crust_radius() const { return crust_radius; }
 
 	void set_back_wall_enabled(bool p_value) { back_wall_enabled = p_value; }
 	bool get_back_wall_enabled() const { return back_wall_enabled; }

@@ -69,6 +69,85 @@ func test_starter_set_ids_and_fields() -> bool:
 	return true
 
 
+# spawn_cell gives a textured cell the texel of its own position: (5, 3) reads texel (5, 3),
+# and (-1, -1) wraps to texel (15, 15).
+func test_material_texture_draws() -> bool:
+	var mat_set: PixelMaterialSet = load("res://materials/default_set.tres").duplicate(true)
+	var rock: PixelMaterial = mat_set.materials[0]
+	var image := Image.create_empty(16, 16, false, Image.FORMAT_RGBA8)
+	for y: int in 16:
+		for x: int in 16:
+			image.set_pixel(x, y, Color(x / 15.0, y / 15.0, 0.5))
+	rock.texture = ImageTexture.create_from_image(image)
+	var world: PixelWorld = PixelWorld.new()
+	world.material_set = mat_set
+	world.worker_threads = 1
+	root.add_child(world)
+	await process_frame
+	world.set_cell(Vector2i(5, 3), &"rock")
+	world.set_cell(Vector2i(-1, -1), &"rock")
+	world.set_cell(Vector2i(6, 3), &"water")
+	var water: PixelMaterial = mat_set.materials[3]
+	var rock_a: Color = world.get_color_at(Vector2i(5, 3))
+	var rock_b: Color = world.get_color_at(Vector2i(-1, -1))
+	var water_c: Color = world.get_color_at(Vector2i(6, 3))
+	world.free()
+	var ok: bool = _color_close(rock_a, Color(5.0 / 15.0, 3.0 / 15.0, 0.5)) \
+	    and _color_close(rock_b, Color(1.0, 1.0, 0.5)) \
+	    and _shade_close(water_c, water.color, water.shade_amount)
+	if not ok:
+		printerr("  get_color_at: rock(5,3)=%s rock(-1,-1)=%s water(6,3)=%s" % [rock_a, rock_b, water_c])
+	return ok
+
+
+# An 8x8 texture is rejected, and the material renders with its plain colour + shade.
+func test_material_texture_wrong_size_falls_back() -> bool:
+	var mat_set: PixelMaterialSet = load("res://materials/default_set.tres").duplicate(true)
+	var rock: PixelMaterial = mat_set.materials[0]
+	var image := Image.create_empty(8, 8, false, Image.FORMAT_RGBA8)
+	image.fill(Color(0.9, 0.1, 0.1))
+	rock.texture = ImageTexture.create_from_image(image)
+	var world: PixelWorld = PixelWorld.new()
+	world.material_set = mat_set
+	world.worker_threads = 1
+	root.add_child(world)
+	await process_frame
+	world.set_cell(Vector2i(5, 3), &"rock")
+	var rock_c: Color = world.get_color_at(Vector2i(5, 3))
+	world.free()
+	if not _shade_close(rock_c, rock.color, rock.shade_amount):
+		printerr("  8x8 texture cell colour %s is not within shade_amount of %s" % [rock_c, rock.color])
+		return false
+	return true
+
+
+func test_generator_crust_properties() -> bool:
+	var generator: PixelWorldGenerator = load("res://worldgen/default_generator.tres")
+	if generator == null:
+		printerr("  worldgen/default_generator.tres did not load")
+		return false
+	if not is_equal_approx(generator.crust_chance, 0.3) or generator.crust_radius != 6:
+		printerr("  crust defaults are %s / %d, expected 0.3 / 6" % [generator.crust_chance, generator.crust_radius])
+		return false
+	generator.crust_chance = 0.5
+	generator.crust_radius = 9
+	return generator.crust_chance == 0.5 and generator.crust_radius == 9
+
+
+# Within one texel per channel (the RGBA8 quantisation get_color_at goes through).
+func _color_close(a: Color, b: Color) -> bool:
+	var tol := 1.0 / 255.0
+	return absf(a.r - b.r) <= tol and absf(a.g - b.g) <= tol and absf(a.b - b.b) <= tol and absf(a.a - b.a) <= tol
+
+
+# A shade's scale is 1 + shade_amount * (shade / 255 - 0.5), so the channel can move by at
+# most half the shade_amount of the base channel.
+func _shade_close(a: Color, base: Color, amount: float) -> bool:
+	var tol := amount * 0.5 + 1.0 / 255.0
+	return absf(a.r - base.r) <= tol * base.r and absf(a.g - base.g) <= tol * base.g \
+	    and absf(a.b - base.b) <= tol * base.b and absf(a.a - base.a) <= tol * base.a
+
+
 func _make_world() -> PixelWorld:
 	var world: PixelWorld = PixelWorld.new()
 	world.material_set = load("res://materials/default_set.tres")

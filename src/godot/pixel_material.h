@@ -1,6 +1,8 @@
 #pragma once
 
+#include <godot_cpp/classes/ref.hpp>
 #include <godot_cpp/classes/resource.hpp>
+#include <godot_cpp/classes/texture2d.hpp>
 #include <godot_cpp/variant/color.hpp>
 #include <godot_cpp/variant/string_name.hpp>
 
@@ -29,6 +31,8 @@ private:
 	int material_class = CLASS_SOLID;
 	float density = 1.0f;
 	Color color = Color(1, 1, 1, 1);
+	Ref<Texture2D> texture;  // 16x16; empty = untextured
+	Ref<Texture2D> crust_texture;  // 16x16 generated-edge variant
 	float shade_amount = 0.1f;
 	int dispersion = 0;
 	Color emission = Color(0, 0, 0, 1);
@@ -66,6 +70,12 @@ public:
 
 	void set_color(const Color &p_color) { color = p_color; }
 	Color get_color() const { return color; }
+
+	void set_texture(const Ref<Texture2D> &p_texture) { texture = p_texture; }
+	Ref<Texture2D> get_texture() const { return texture; }
+
+	void set_crust_texture(const Ref<Texture2D> &p_crust_texture) { crust_texture = p_crust_texture; }
+	Ref<Texture2D> get_crust_texture() const { return crust_texture; }
 
 	void set_shade_amount(float p_shade_amount) { shade_amount = p_shade_amount; }
 	float get_shade_amount() const { return shade_amount; }

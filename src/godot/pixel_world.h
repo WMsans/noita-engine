@@ -56,6 +56,8 @@ class PixelWorld : public Node2D {
 	struct PaletteEntry {
 		Color color;
 		float shade_amount = 0.0f;
+		const std::vector<uint32_t> *texture = nullptr;  // into MaterialTable; empty = untextured
+		const std::vector<uint32_t> *crust = nullptr;
 	};
 
 	Ref<PixelMaterialSet> material_set;
@@ -111,8 +113,8 @@ class PixelWorld : public Node2D {
 	std::vector<ChunkCoord> loaded;
 	std::unordered_map<int64_t, ChunkView> views;
 	std::vector<PaletteEntry> palette;
-	// RGBA8 bytes per (material, burning, shade): the values cell_color() gives, so a chunk upload
-	// is one table lookup per cell instead of float colour maths.
+	// RGBA8 bytes per (material, burning, crust, shade): the values cell_color() gives, so a
+	// chunk upload is one table lookup per cell instead of float colour maths.
 	std::vector<uint32_t> cell_rgba;
 	PackedByteArray pixels;
 	std::vector<Chunk *> upload_chunks;   // this frame's dirty chunks
@@ -324,6 +326,8 @@ public:
 
 	bool set_cell(const Vector2i &p_pos, const StringName &p_material);
 	StringName get_material_at(const Vector2i &p_pos) const;
+	// The colour the chunk image draws for that cell; transparent when unloaded or air.
+	Color get_color_at(const Vector2i &p_pos) const;
 	bool is_area_ready(const Rect2i &p_rect) const;
 	int fill_rect(const Rect2i &p_rect, const StringName &p_material);
 	int fill_circle(const Vector2i &p_center, int p_radius, const StringName &p_material);

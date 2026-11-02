@@ -2,7 +2,9 @@
 
 #include <cstdint>
 
+#include <godot_cpp/classes/image.hpp>
 #include <godot_cpp/core/class_db.hpp>
+#include <godot_cpp/variant/utility_functions.hpp>
 
 namespace godot {
 
@@ -18,6 +20,27 @@ uint8_t to_uint8(int p_value) { return (uint8_t)(p_value < 0 ? 0 : p_value > UIN
 
 // -1 is the GDScript-visible "never"/"none"; the core spells it NO_TEMP.
 int16_t temp_or_none(int p_value) { return p_value < 0 ? NO_TEMP : to_int16(p_value); }
+
+// A 16x16 texture as the 256-texel vector; a wrong size pushes an error and leaves it empty,
+// so the material renders with its plain colour.
+std::vector<uint32_t> texture_pixels(const Ref<Texture2D> &p_tex, const StringName &p_name,
+                                     const char *p_label) {
+	std::vector<uint32_t> out;
+	if (!p_tex.is_valid()) return out;
+	Ref<Image> image = p_tex->get_image();
+	if (image.is_null()) return out;
+	image->convert(Image::FORMAT_RGBA8);  // in-place; also decompresses
+	if (image->get_width() != 16 || image->get_height() != 16) {
+		UtilityFunctions::push_error(vformat(
+		    "PixelMaterial '%s': %stexture must be 16x16, got %dx%d", String(p_name), p_label,
+		    image->get_width(), image->get_height()));
+		return out;
+	}
+	out.resize(256);
+	for (int y = 0; y < 16; ++y)
+		for (int x = 0; x < 16; ++x) out[(size_t)y * 16 + x] = image->get_pixel(x, y).to_rgba32();
+	return out;
+}
 
 } // namespace
 
@@ -35,6 +58,10 @@ void PixelMaterial::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_density"), &PixelMaterial::get_density);
 	ClassDB::bind_method(D_METHOD("set_color", "value"), &PixelMaterial::set_color);
 	ClassDB::bind_method(D_METHOD("get_color"), &PixelMaterial::get_color);
+	ClassDB::bind_method(D_METHOD("set_texture", "value"), &PixelMaterial::set_texture);
+	ClassDB::bind_method(D_METHOD("get_texture"), &PixelMaterial::get_texture);
+	ClassDB::bind_method(D_METHOD("set_crust_texture", "value"), &PixelMaterial::set_crust_texture);
+	ClassDB::bind_method(D_METHOD("get_crust_texture"), &PixelMaterial::get_crust_texture);
 	ClassDB::bind_method(D_METHOD("set_shade_amount", "value"), &PixelMaterial::set_shade_amount);
 	ClassDB::bind_method(D_METHOD("get_shade_amount"), &PixelMaterial::get_shade_amount);
 	ClassDB::bind_method(D_METHOD("set_dispersion", "value"), &PixelMaterial::set_dispersion);
@@ -78,6 +105,8 @@ void PixelMaterial::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "material_class", PROPERTY_HINT_ENUM, "Solid:1,Powder:2,Liquid:3,Gas:4"), "set_material_class", "get_material_class");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "density"), "set_density", "get_density");
 	ADD_PROPERTY(PropertyInfo(Variant::COLOR, "color"), "set_color", "get_color");
+	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "texture", PROPERTY_HINT_RESOURCE_TYPE, "Texture2D"), "set_texture", "get_texture");
+	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "crust_texture", PROPERTY_HINT_RESOURCE_TYPE, "Texture2D"), "set_crust_texture", "get_crust_texture");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "shade_amount"), "set_shade_amount", "get_shade_amount");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "dispersion"), "set_dispersion", "get_dispersion");
 	ADD_PROPERTY(PropertyInfo(Variant::COLOR, "emission"), "set_emission", "get_emission");
@@ -105,6 +134,8 @@ MaterialDef PixelMaterial::to_def() const {
 	d.cls = material_class >= CLASS_SOLID && material_class <= CLASS_GAS ? (MatClass)material_class : MatClass::Empty;
 	d.density = density;
 	d.color_rgba = color.to_rgba32();
+	d.texture_rgba = texture_pixels(texture, material_name, "");
+	d.crust_rgba = texture_pixels(crust_texture, material_name, "crust ");
 	d.shade_amount = shade_amount;
 	d.dispersion = to_uint8(dispersion);
 	d.emission_r = emission.r;
